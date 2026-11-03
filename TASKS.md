@@ -59,9 +59,9 @@ Note: the API runs on port 5050 (5000 is used by macOS AirPlay).
 - [x] Test the full lifecycle in Postman: open → assigned → in_progress → resolved → closed → reopened
 
 ## Phase 6 – Comments
-- [ ] `POST /api/tickets/:id/comments` with `{ content, is_internal }`
-- [ ] Only staff can create internal notes
-- [ ] Empty comments are rejected
+- [x] `POST /api/tickets/:id/comments` with `{ content, is_internal }`
+- [x] Only staff can create internal notes
+- [x] Empty comments are rejected
 
 ## Phase 7 – Users (admin)
 - [ ] `GET /api/users/agents`: active agents and admins (for the assign dropdown)

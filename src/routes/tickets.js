@@ -176,6 +176,31 @@ router.get('/:id', async (req, res) => {
   });
 });
 
+// POST /api/tickets/:id/comments { content, is_internal }
+router.post('/:id/comments', async (req, res) => {
+  const ticket = await loadTicket(req.params.id, req.user);
+  const content = text(req.body?.content);
+
+  if (!content) {
+    throw new HttpError(400, 'Comment cannot be empty');
+  }
+  // Only staff can write internal notes; an employee's is_internal flag is ignored
+  const isInternal = isStaff(req.user) && req.body?.is_internal === true;
+
+  const [result] = await pool.query(
+    'INSERT INTO comments (ticket_id, user_id, content, is_internal) VALUES (?, ?, ?, ?)',
+    [ticket.id, req.user.id, content, isInternal]
+  );
+  const [rows] = await pool.query(
+    `SELECT c.*, u.name AS author_name, u.role AS author_role
+     FROM comments c JOIN users u ON u.id = c.user_id
+     WHERE c.id = ?`,
+    [result.insertId]
+  );
+
+  res.status(201).json({ ...rows[0], is_internal: Boolean(rows[0].is_internal) });
+});
+
 // PATCH /api/tickets/:id/status { status, resolution? }
 router.patch('/:id/status', async (req, res) => {
   const ticket = await loadTicket(req.params.id, req.user);
