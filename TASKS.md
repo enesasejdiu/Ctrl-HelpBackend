@@ -26,10 +26,10 @@ Note: the API runs on port 5050 (5000 is used by macOS AirPlay).
 - [x] Test: `npm run db:setup` creates all tables
 
 ## Phase 3 – Error handling and auth middleware
-- [ ] `src/middleware/errors.js`: HttpError class, 404 handler, central error handler returning `{ message }`
-- [ ] `src/middleware/auth.js`: `requireAuth` (reads Bearer token, sets `req.user`)
-- [ ] `requireRole(...roles)` returns 403 for the wrong role
-- [ ] `isStaff(user)` helper (agent or admin)
+- [x] `src/middleware/errors.js`: HttpError class, 404 handler, central error handler returning `{ message }`
+- [x] `src/middleware/auth.js`: `requireAuth` (reads Bearer token, sets `req.user`)
+- [x] `requireRole(...roles)` returns 403 for the wrong role
+- [x] `isStaff(user)` helper (agent or admin)
 
 ## Phase 4 – Authentication
 - [ ] `POST /api/auth/register`: validates input, checks the email is unique, hashes the password, creates an employee, returns `{ token, user }`

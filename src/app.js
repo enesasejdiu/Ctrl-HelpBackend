@@ -3,6 +3,7 @@
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
+const { notFound, errorHandler } = require('./middleware/errors');
 
 const app = express();
 
@@ -15,5 +16,9 @@ app.use(express.json()); // parse JSON request bodies
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
 });
+
+// Error handling: must stay at the very end, after all routes
+app.use(notFound); // unknown routes -> 404
+app.use(errorHandler); // every error -> JSON { message }
 
 module.exports = app;
