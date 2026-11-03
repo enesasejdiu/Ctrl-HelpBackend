@@ -7,6 +7,7 @@ const { notFound, errorHandler } = require('./middleware/errors');
 const authRoutes = require('./routes/auth');
 const metaRoutes = require('./routes/meta');
 const ticketRoutes = require('./routes/tickets');
+const userRoutes = require('./routes/users');
 
 const app = express();
 
@@ -24,6 +25,7 @@ app.get('/api/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/meta', metaRoutes);
 app.use('/api/tickets', ticketRoutes);
+app.use('/api/users', userRoutes);
 
 // Error handling: must stay at the very end, after all routes
 app.use(notFound); // unknown routes -> 404

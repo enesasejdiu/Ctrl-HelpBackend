@@ -64,9 +64,9 @@ Note: the API runs on port 5050 (5000 is used by macOS AirPlay).
 - [x] Empty comments are rejected
 
 ## Phase 7 – Users (admin)
-- [ ] `GET /api/users/agents`: active agents and admins (for the assign dropdown)
-- [ ] `GET /api/users`: all users (admin only)
-- [ ] `PATCH /api/users/:id`: change role or activate/deactivate (admins cannot change their own account)
+- [x] `GET /api/users/agents`: active agents and admins (for the assign dropdown)
+- [x] `GET /api/users`: all users (admin only)
+- [x] `PATCH /api/users/:id`: change role or activate/deactivate (admins cannot change their own account)
 
 ## Phase 8 – Statistics (admin)
 - [ ] `GET /api/stats` returns:
