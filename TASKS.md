@@ -32,11 +32,11 @@ Note: the API runs on port 5050 (5000 is used by macOS AirPlay).
 - [x] `isStaff(user)` helper (agent or admin)
 
 ## Phase 4 – Authentication
-- [ ] `POST /api/auth/register`: validates input, checks the email is unique, hashes the password, creates an employee, returns `{ token, user }`
-- [ ] `POST /api/auth/login`: checks the password and that the account is active, returns `{ token, user }`
-- [ ] `GET /api/auth/me`: returns the current user
-- [ ] Never return `password_hash` in any response
-- [ ] Test all three in Postman
+- [x] `POST /api/auth/register`: validates input, checks the email is unique, hashes the password, creates an employee, returns `{ token, user }`
+- [x] `POST /api/auth/login`: checks the password and that the account is active, returns `{ token, user }`
+- [x] `GET /api/auth/me`: returns the current user
+- [x] Never return `password_hash` in any response
+- [x] Test all three in Postman
 
 ## Phase 5 – Tickets
 - [ ] `GET /api/meta` returns categories and priorities
