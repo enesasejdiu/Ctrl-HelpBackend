@@ -81,12 +81,12 @@ requireAuth checks the current role and active status in the database on every r
   - [x] trend: created vs resolved per week (last 8 weeks)
 
 ## Phase 9 – Seed data
-- [ ] `scripts/seed.js` clears all tables first
-- [ ] 6 categories and 4 priorities (Low 120h, Medium 72h, High 24h, Critical 4h)
-- [ ] 5 users, password `password123`: admin@, agent1@, agent2@, employee1@, employee2@ticketflow.local
-- [ ] About 8 realistic tickets in different statuses, including some resolved and some overdue
-- [ ] A few comments, including one internal note
-- [ ] Test: `npm run db:seed`, then log in with every demo account
+- [x] `scripts/seed.js` clears all tables first
+- [x] 6 categories and 4 priorities (Low 120h, Medium 72h, High 24h, Critical 4h)
+- [x] 5 users, password `password123`: admin@, agent1@, agent2@, employee1@, employee2@ticketflow.local
+- [x] About 8 realistic tickets in different statuses, including some resolved and some overdue
+- [x] A few comments, including one internal note
+- [x] Test: `npm run db:seed`, then log in with every demo account
 
 ## Phase 10 – Finish
 - [ ] Every query uses `?` placeholders (no SQL injection)
