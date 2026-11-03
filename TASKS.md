@@ -39,24 +39,24 @@ Note: the API runs on port 5050 (5000 is used by macOS AirPlay).
 - [x] Test all three in Postman
 
 ## Phase 5 – Tickets
-- [ ] `GET /api/meta` returns categories and priorities
-- [ ] `GET /api/tickets`: employees see only their own, staff see all
-- [ ] Filters: status, priority, category, assigned=me|unassigned, q (search), overdue=1
-- [ ] Include requester_name, assignee_name, category_name, priority_name, target_hours, is_overdue
-- [ ] Sort by priority (highest first), then newest
-- [ ] `POST /api/tickets` creates a ticket and logs "status: open" in history
-- [ ] `GET /api/tickets/:id` returns the ticket + comments + history (employees: own tickets only, no internal notes)
-- [ ] `PATCH /api/tickets/:id/status`
-  - [ ] Staff can set any status
-  - [ ] Employees can only close a resolved ticket or reopen a resolved/closed one
-  - [ ] Resolving requires a resolution note
-  - [ ] Set resolved_at / closed_at automatically; clear them on reopen
-- [ ] `PATCH /api/tickets/:id/priority` (staff only)
-- [ ] `PATCH /api/tickets/:id/assign`
-  - [ ] Admin can assign anyone; an agent can only assign to themselves
-  - [ ] An open/reopened ticket becomes "assigned"
-- [ ] Every change to status, priority or assignee is saved in `ticket_history`
-- [ ] Test the full lifecycle in Postman: open → assigned → in_progress → resolved → closed → reopened
+- [x] `GET /api/meta` returns categories and priorities
+- [x] `GET /api/tickets`: employees see only their own, staff see all
+- [x] Filters: status, priority, category, assigned=me|unassigned, q (search), overdue=1
+- [x] Include requester_name, assignee_name, category_name, priority_name, target_hours, is_overdue
+- [x] Sort by priority (highest first), then newest
+- [x] `POST /api/tickets` creates a ticket and logs "status: open" in history
+- [x] `GET /api/tickets/:id` returns the ticket + comments + history (employees: own tickets only, no internal notes)
+- [x] `PATCH /api/tickets/:id/status`
+  - [x] Staff can set any status
+  - [x] Employees can only close a resolved ticket or reopen a resolved/closed one
+  - [x] Resolving requires a resolution note
+  - [x] Set resolved_at / closed_at automatically; clear them on reopen
+- [x] `PATCH /api/tickets/:id/priority` (staff only)
+- [x] `PATCH /api/tickets/:id/assign`
+  - [x] Admin can assign anyone; an agent can only assign to themselves
+  - [x] An open/reopened ticket becomes "assigned"
+- [x] Every change to status, priority or assignee is saved in `ticket_history`
+- [x] Test the full lifecycle in Postman: open → assigned → in_progress → resolved → closed → reopened
 
 ## Phase 6 – Comments
 - [ ] `POST /api/tickets/:id/comments` with `{ content, is_internal }`

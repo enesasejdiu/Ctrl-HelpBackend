@@ -5,6 +5,8 @@ const helmet = require('helmet');
 const cors = require('cors');
 const { notFound, errorHandler } = require('./middleware/errors');
 const authRoutes = require('./routes/auth');
+const metaRoutes = require('./routes/meta');
+const ticketRoutes = require('./routes/tickets');
 
 const app = express();
 
@@ -20,6 +22,8 @@ app.get('/api/health', (req, res) => {
 
 // API routes
 app.use('/api/auth', authRoutes);
+app.use('/api/meta', metaRoutes);
+app.use('/api/tickets', ticketRoutes);
 
 // Error handling: must stay at the very end, after all routes
 app.use(notFound); // unknown routes -> 404
