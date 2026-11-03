@@ -6,14 +6,12 @@ const express = require('express');
 const pool = require('../db');
 const { HttpError } = require('../middleware/errors');
 const { requireAuth, requireRole, isStaff } = require('../middleware/auth');
+const { OVERDUE_SQL } = require('../overdue');
 
 const router = express.Router();
 
 const STATUSES = ['open', 'assigned', 'in_progress', 'waiting_for_user', 'resolved', 'closed', 'reopened'];
 
-// A ticket is overdue when it's still unfinished and older than its priority's target time
-const OVERDUE_SQL = `(t.status NOT IN ('resolved', 'closed')
-  AND TIMESTAMPDIFF(HOUR, t.created_at, NOW()) > p.target_hours)`;
 
 // Base query for a ticket with all its display names; append WHERE / ORDER BY as needed
 const TICKET_SELECT = `

@@ -1,25 +1,37 @@
 // Authentication and authorization middleware.
 // Clients send the JWT issued at login as "Authorization: Bearer <token>".
 const jwt = require('jsonwebtoken');
+const pool = require('../db');
 const { HttpError } = require('./errors');
 
-// Verifies the token and exposes the logged-in user as req.user = { id, name, role }
-function requireAuth(req, res, next) {
+// Verifies the token, then loads the user's CURRENT name, role and active status from the database,
+// so role changes and deactivation take effect immediately instead of when the token expires.
+// Exposes the logged-in user as req.user = { id, name, role }.
+async function requireAuth(req, res, next) {
   const header = req.headers.authorization || '';
   const [scheme, token] = header.split(' ');
 
   if (scheme !== 'Bearer' || !token) {
-    return next(new HttpError(401, 'Not logged in'));
+    throw new HttpError(401, 'Not logged in');
   }
 
+  let payload;
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = { id: payload.id, name: payload.name, role: payload.role };
-    next();
+    payload = jwt.verify(token, process.env.JWT_SECRET);
   } catch {
     // Covers malformed, tampered and expired tokens
-    next(new HttpError(401, 'Session expired, please log in again'));
+    throw new HttpError(401, 'Session expired, please log in again');
   }
+
+  const [rows] = await pool.query('SELECT id, name, role, is_active FROM users WHERE id = ?', [payload.id]);
+  const user = rows[0];
+  // A deleted or deactivated account loses access right away, even with a still-valid token
+  if (!user || !user.is_active) {
+    throw new HttpError(401, 'Session expired, please log in again');
+  }
+
+  req.user = { id: user.id, name: user.name, role: user.role };
+  next();
 }
 
 // Allows the request only for the given roles; use after requireAuth, e.g. requireRole('admin')

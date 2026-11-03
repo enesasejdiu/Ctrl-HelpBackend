@@ -8,6 +8,7 @@ const authRoutes = require('./routes/auth');
 const metaRoutes = require('./routes/meta');
 const ticketRoutes = require('./routes/tickets');
 const userRoutes = require('./routes/users');
+const statsRoutes = require('./routes/stats');
 
 const app = express();
 
@@ -26,6 +27,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/meta', metaRoutes);
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/stats', statsRoutes);
 
 // Error handling: must stay at the very end, after all routes
 app.use(notFound); // unknown routes -> 404

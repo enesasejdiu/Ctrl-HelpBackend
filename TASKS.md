@@ -31,6 +31,8 @@ Note: the API runs on port 5050 (5000 is used by macOS AirPlay).
 - [x] `requireRole(...roles)` returns 403 for the wrong role
 - [x] `isStaff(user)` helper (agent or admin)
 
+requireAuth checks the current role and active status in the database on every request (added in Phase 8).
+
 ## Phase 4 – Authentication
 - [x] `POST /api/auth/register`: validates input, checks the email is unique, hashes the password, creates an employee, returns `{ token, user }`
 - [x] `POST /api/auth/login`: checks the password and that the account is active, returns `{ token, user }`
@@ -69,14 +71,14 @@ Note: the API runs on port 5050 (5000 is used by macOS AirPlay).
 - [x] `PATCH /api/users/:id`: change role or activate/deactivate (admins cannot change their own account)
 
 ## Phase 8 – Statistics (admin)
-- [ ] `GET /api/stats` returns:
-  - [ ] total tickets and count by status
-  - [ ] average resolution time (hours) and resolved count
-  - [ ] overdue count
-  - [ ] by priority: count, target hours, average hours
-  - [ ] by category: count
-  - [ ] by agent: assigned, resolved, average hours
-  - [ ] trend: created vs resolved per week (last 8 weeks)
+- [x] `GET /api/stats` returns:
+  - [x] total tickets and count by status
+  - [x] average resolution time (hours) and resolved count
+  - [x] overdue count
+  - [x] by priority: count, target hours, average hours
+  - [x] by category: count
+  - [x] by agent: assigned, resolved, average hours
+  - [x] trend: created vs resolved per week (last 8 weeks)
 
 ## Phase 9 – Seed data
 - [ ] `scripts/seed.js` clears all tables first
