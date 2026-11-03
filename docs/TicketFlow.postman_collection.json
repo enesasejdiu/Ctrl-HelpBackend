@@ -1,0 +1,622 @@
+{
+  "info": {
+    "name": "TicketFlow API",
+    "description": "All TicketFlow backend endpoints. Run `npm run db:seed` first, then one of the Login requests: it saves the token into {{token}}, which every other request sends as a Bearer token. Log in as the admin to be allowed every request.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5050/api"
+    },
+    {
+      "key": "token",
+      "value": ""
+    },
+    {
+      "key": "ticketId",
+      "value": "1"
+    },
+    {
+      "key": "userId",
+      "value": "5"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "health"
+          ]
+        },
+        "auth": {
+          "type": "noauth"
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Login (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Logs in and stores the token in the {{token}} collection variable.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@ticketflow.local\",\n  \"password\": \"password123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Save the token so every other request uses it (collection auth = Bearer {{token}})",
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "  pm.collectionVariables.set('token', pm.response.json().token);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login (agent1)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Logs in and stores the token in the {{token}} collection variable.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"agent1@ticketflow.local\",\n  \"password\": \"password123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Save the token so every other request uses it (collection auth = Bearer {{token}})",
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "  pm.collectionVariables.set('token', pm.response.json().token);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login (employee1)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Logs in and stores the token in the {{token}} collection variable.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"employee1@ticketflow.local\",\n  \"password\": \"password123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Save the token so every other request uses it (collection auth = Bearer {{token}})",
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "  pm.collectionVariables.set('token', pm.response.json().token);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ]
+            },
+            "description": "Creates an employee account (a \"role\" field is ignored). Change the email to register again.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"New Employee\",\n  \"email\": \"new.employee@ticketflow.local\",\n  \"password\": \"password123\",\n  \"department\": \"Marketing\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Me",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Meta (categories + priorities)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/meta",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "meta"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Tickets",
+      "item": [
+        {
+          "name": "List tickets",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/tickets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "tickets"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "open",
+                  "description": "open | assigned | in_progress | waiting_for_user | resolved | closed | reopened",
+                  "disabled": true
+                },
+                {
+                  "key": "priority",
+                  "value": "4",
+                  "description": "priority id",
+                  "disabled": true
+                },
+                {
+                  "key": "category",
+                  "value": "1",
+                  "description": "category id",
+                  "disabled": true
+                },
+                {
+                  "key": "assigned",
+                  "value": "me",
+                  "description": "me | unassigned",
+                  "disabled": true
+                },
+                {
+                  "key": "q",
+                  "value": "wifi",
+                  "description": "search in title and description",
+                  "disabled": true
+                },
+                {
+                  "key": "overdue",
+                  "value": "1",
+                  "description": "only overdue tickets",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Employees only get their own tickets. Enable query params to filter."
+          },
+          "response": []
+        },
+        {
+          "name": "Create ticket",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/tickets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "tickets"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Keyboard missing keys\",\n  \"description\": \"The E and R keys came off my keyboard.\",\n  \"category_id\": 1,\n  \"priority_id\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get ticket (with comments + history)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/tickets/{{ticketId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "tickets",
+                "{{ticketId}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Add comment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/tickets/{{ticketId}}/comments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "tickets",
+                "{{ticketId}}",
+                "comments"
+              ]
+            },
+            "description": "is_internal: true only works for agents/admins.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": \"I restarted the laptop, still the same.\",\n  \"is_internal\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Change status",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/tickets/{{ticketId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "tickets",
+                "{{ticketId}}",
+                "status"
+              ]
+            },
+            "description": "resolution is required when resolving. Employees may only close a resolved ticket or reopen a resolved/closed one.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"resolved\",\n  \"resolution\": \"Replaced the power adapter.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Change priority",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/tickets/{{ticketId}}/priority",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "tickets",
+                "{{ticketId}}",
+                "priority"
+              ]
+            },
+            "description": "Agents and admins only.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"priority_id\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Assign ticket",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/tickets/{{ticketId}}/assign",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "tickets",
+                "{{ticketId}}",
+                "assign"
+              ]
+            },
+            "description": "Agents and admins. assigned_to: user id, or null to unassign. Agents can only assign themselves.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"assigned_to\": 2\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Users",
+      "item": [
+        {
+          "name": "Assignable agents",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/agents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "users",
+                "agents"
+              ]
+            },
+            "description": "Agents and admins only."
+          },
+          "response": []
+        },
+        {
+          "name": "List users",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "users"
+              ]
+            },
+            "description": "Admin only."
+          },
+          "response": []
+        },
+        {
+          "name": "Update user",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/users/{{userId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "users",
+                "{{userId}}"
+              ]
+            },
+            "description": "Admin only. Send role and/or is_active. Not allowed on your own account. The example keeps user 5 (Vjosa Hoxha) unchanged; try role \"agent\" or is_active false.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"employee\",\n  \"is_active\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Statistics",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/stats",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "stats"
+          ]
+        },
+        "description": "Admin only."
+      },
+      "response": []
+    }
+  ]
+}

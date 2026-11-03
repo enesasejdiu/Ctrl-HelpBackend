@@ -89,9 +89,9 @@ requireAuth checks the current role and active status in the database on every r
 - [x] Test: `npm run db:seed`, then log in with every demo account
 
 ## Phase 10 – Finish
-- [ ] Every query uses `?` placeholders (no SQL injection)
-- [ ] Every route is protected with the right role
-- [ ] README: setup steps, demo accounts, endpoint table
-- [ ] Comments in the code explaining the important parts
-- [ ] Export the Postman collection to `docs/` (optional)
-- [ ] Final commit and push
+- [x] Every query uses `?` placeholders (no SQL injection)
+- [x] Every route is protected with the right role
+- [x] README: setup steps, demo accounts, endpoint table
+- [x] Comments in the code explaining the important parts
+- [x] Export the Postman collection to `docs/` (optional)
+- [x] Final commit and push

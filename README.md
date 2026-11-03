@@ -1,34 +1,159 @@
 # TicketFlow Backend
 
-REST API for TicketFlow, an IT helpdesk / ticketing system.
+TicketFlow is an IT helpdesk / ticketing system. Employees report IT problems as tickets, agents pick them up,
+work on them and resolve them, and admins manage users and follow the team's performance on a statistics dashboard.
 
-## Stack
+This repository is the REST API. The frontend lives in a separate repository: **ticketflow-frontend**.
 
-- Node.js
-- Express
-- MySQL (via `mysql2`)
+## Tech stack
+
+- **Node.js** + **Express 5**: REST API
+- **MySQL 8** with **mysql2**: database (connection pool, `?` placeholders for every query)
+- **jsonwebtoken**: login tokens (JWT, sent as `Authorization: Bearer <token>`)
+- **bcryptjs**: password hashing
+- **helmet**, **cors**: security headers and allowing the frontend origin
+- **dotenv**: configuration from `.env`
+- **nodemon**: auto-restart during development
+
+## Requirements
+
+- Node.js 18 or newer
+- MySQL 8 running locally
 
 ## Setup
 
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
-2. Create your environment file and fill in your MySQL credentials and a JWT secret:
-   ```bash
-   cp .env.example .env
-   ```
-3. Start the dev server (auto-restarts on changes):
-   ```bash
-   npm run dev
-   ```
-4. Check it's running: http://localhost:5050/api/health should return `{ "status": "ok" }`.
+```bash
+npm install
+cp .env.example .env
+```
 
-## Scripts
+Edit `.env`: set `DB_PASSWORD` to your MySQL root password (leave it empty if root has none) and set `JWT_SECRET`
+to a long random string.
 
-| Script             | Description                       |
-| ------------------ | --------------------------------- |
-| `npm start`        | Start the server                  |
-| `npm run dev`      | Start with nodemon (auto-reload)  |
-| `npm run db:setup` | Create the database and tables    |
-| `npm run db:seed`  | Insert sample data                |
+```bash
+npm run db:setup   # creates the "ticketflow" database and all tables
+npm run db:seed    # fills it with demo data (wipes existing data, safe to re-run)
+npm run dev        # starts the API with auto-reload
+```
+
+The API runs on **http://localhost:5050**. Check it with http://localhost:5050/api/health → `{ "status": "ok" }`.
+(Port 5000 is not used because macOS AirPlay occupies it.)
+
+| Script             | Description                                |
+| ------------------ | ------------------------------------------ |
+| `npm start`        | Start the server                           |
+| `npm run dev`      | Start with nodemon (auto-reload)           |
+| `npm run db:setup` | Create the database and tables             |
+| `npm run db:seed`  | Reset all data and insert the demo data    |
+
+## Demo accounts
+
+All demo accounts use the password **`password123`**.
+
+| Name           | Email                        | Role     |
+| -------------- | ---------------------------- | -------- |
+| Admin User     | `admin@ticketflow.local`     | admin    |
+| Arben Krasniqi | `agent1@ticketflow.local`    | agent    |
+| Drita Berisha  | `agent2@ticketflow.local`    | agent    |
+| Liridon Gashi  | `employee1@ticketflow.local` | employee |
+| Vjosa Hoxha    | `employee2@ticketflow.local` | employee |
+
+## Roles
+
+- **Employee**: creates tickets and sees only their own. Can comment on them (never internal notes), close a
+  resolved ticket, or reopen a resolved/closed one. New sign-ups are always employees.
+- **Agent**: sees all tickets, takes tickets (assigns them to themselves), changes status and priority, and writes
+  public comments and internal notes. Cannot assign tickets to other people.
+- **Admin**: everything an agent can do, plus assign tickets to any active agent/admin, manage users
+  (change roles, activate/deactivate), and view the statistics.
+
+Role changes and deactivation take effect immediately: every request checks the user's current role and active
+status in the database.
+
+## Ticket status flow
+
+```
+open → assigned → in_progress ⇄ waiting_for_user → resolved → closed
+                                                       │          │
+                                                       └→ reopened ←┘   (employee: "it's not fixed")
+                                                            │
+                                                            └→ assigned → in_progress → ...
+```
+
+- **open**: just created. Assigning someone moves it to **assigned** automatically.
+- **in_progress** / **waiting_for_user**: the agent is working on it, or waiting for an answer from the employee.
+- **resolved**: requires a resolution note; sets `resolved_at`.
+- **closed**: the employee confirms the fix; sets `closed_at`.
+- **reopened**: the problem came back; clears `resolved_at` and `closed_at`. Assigning moves it to **assigned** again.
+
+Staff can set any status. Every change to status, priority or assignee is saved in `ticket_history`.
+A ticket is **overdue** when it is not resolved/closed and is older than its priority's target time
+(Low 120h, Medium 72h, High 24h, Critical 4h).
+
+## API endpoints
+
+All endpoints except health, register and login need `Authorization: Bearer <token>`.
+Errors are always JSON: `{ "message": "..." }`.
+
+| Method | Path                            | Who                 | What it does                                                                                    |
+| ------ | ------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------- |
+| GET    | `/api/health`                   | anyone              | Health check → `{ status: "ok" }`                                                               |
+| POST   | `/api/auth/register`            | anyone              | Create an employee account `{ name, email, password, department? }` → `{ token, user }`         |
+| POST   | `/api/auth/login`               | anyone              | Log in `{ email, password }` → `{ token, user }`                                                |
+| GET    | `/api/auth/me`                  | logged in           | The current user                                                                                |
+| GET    | `/api/meta`                     | logged in           | Categories and priorities (for dropdowns)                                                       |
+| GET    | `/api/tickets`                  | logged in           | List tickets (employees: own only). Filters: `status`, `priority`, `category`, `assigned=me\|unassigned`, `q`, `overdue=1` |
+| POST   | `/api/tickets`                  | logged in           | Create a ticket `{ title, description, category_id, priority_id }`                              |
+| GET    | `/api/tickets/:id`              | logged in           | One ticket with comments and history (employees: own tickets, no internal notes)                |
+| POST   | `/api/tickets/:id/comments`     | logged in           | Add a comment `{ content, is_internal? }` (internal notes: staff only)                          |
+| PATCH  | `/api/tickets/:id/status`       | logged in           | Change status `{ status, resolution? }` (employees: only close or reopen)                       |
+| PATCH  | `/api/tickets/:id/priority`     | agent, admin        | Change priority `{ priority_id }`                                                               |
+| PATCH  | `/api/tickets/:id/assign`       | agent, admin        | Assign `{ assigned_to }` (`null` = unassign; agents can only assign themselves)                 |
+| GET    | `/api/users/agents`             | agent, admin        | Active agents and admins (for the "Assign to" dropdown)                                         |
+| GET    | `/api/users`                    | admin               | All users                                                                                       |
+| PATCH  | `/api/users/:id`                | admin               | Change `{ role?, is_active? }` (not your own account)                                           |
+| GET    | `/api/stats`                    | admin               | Dashboard statistics: totals, by status/priority/category/agent, 8-week trend                   |
+
+A Postman collection with every request is in [`docs/TicketFlow.postman_collection.json`](docs/TicketFlow.postman_collection.json).
+Import it, run one of the **Login** requests (it saves the token automatically), then try the other requests.
+Log in as the admin to be allowed every request. Requests that change data (create, status, assign, ...) modify
+the demo data; run `npm run db:seed` to reset it.
+
+## Project structure
+
+```
+db/
+  schema.sql              Table definitions (MySQL 8)
+docs/
+  TicketFlow.postman_collection.json   Postman collection for every endpoint
+scripts/
+  setup-db.js             Creates the database and runs schema.sql (npm run db:setup)
+  seed.js                 Wipes all tables and inserts demo data (npm run db:seed)
+src/
+  server.js               Entry point: loads .env and starts the server
+  app.js                  Express app: middleware, routes, error handling
+  db.js                   MySQL connection pool
+  overdue.js              The shared "is this ticket overdue?" SQL rule
+  middleware/
+    auth.js               requireAuth, requireRole, isStaff
+    errors.js             HttpError, 404 handler, central error handler
+  routes/
+    auth.js               /api/auth: register, login, me
+    meta.js               /api/meta: categories and priorities
+    tickets.js            /api/tickets: list, create, view, comments, status, priority, assign
+    users.js              /api/users: agent list and user management
+    stats.js              /api/stats: dashboard statistics
+.env.example              Example configuration (copy to .env)
+TASKS.md                  Development task list
+```
+
+## Database tables
+
+| Table            | Contents                                                                                     |
+| ---------------- | -------------------------------------------------------------------------------------------- |
+| `users`          | Accounts: name, email, password hash, role (employee/agent/admin), department, active flag   |
+| `categories`     | Ticket categories (Hardware, Software, Network, Access, Email, Other)                         |
+| `priorities`     | Priority levels with their target resolution time in hours                                   |
+| `tickets`        | Tickets: requester, assignee, category, priority, status, resolution note, timestamps        |
+| `comments`       | Comments on tickets; `is_internal` marks staff-only notes                                    |
+| `ticket_history` | Audit trail: who changed which field (status, priority, assignee) from what to what, and when |

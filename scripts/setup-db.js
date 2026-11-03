@@ -19,6 +19,7 @@ async function setup() {
   });
 
   try {
+    // A database name can't be a ? placeholder; it comes from .env (not user input) and is quoted with backticks
     await connection.query(`CREATE DATABASE IF NOT EXISTS \`${dbName}\``);
     await connection.query(`USE \`${dbName}\``);
 

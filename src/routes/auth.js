@@ -10,7 +10,8 @@ const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
-// The token carries just enough to authorize requests without a DB lookup (see requireAuth)
+// Signed token identifying the user. requireAuth only trusts the id from it and reloads name/role from the DB;
+// name and role are included so the frontend can show them without an extra request.
 function makeToken(user) {
   return jwt.sign({ id: user.id, name: user.name, role: user.role }, process.env.JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRES_IN || '1d',
@@ -84,9 +85,10 @@ router.post('/login', async (req, res) => {
   res.json({ token: makeToken(user), user: publicUser(user) });
 });
 
-// GET /api/auth/me: fresh user data from the DB (the token itself may be up to a day old)
+// GET /api/auth/me: the logged-in user's profile (the frontend calls this on page load to restore the session)
 router.get('/me', requireAuth, async (req, res) => {
   const [rows] = await pool.query('SELECT * FROM users WHERE id = ?', [req.user.id]);
+  // Safety net: requireAuth already rejects deleted users, so this only triggers in a race with a delete
   if (rows.length === 0) {
     throw new HttpError(404, 'User not found');
   }

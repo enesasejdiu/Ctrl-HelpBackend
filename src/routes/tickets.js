@@ -12,7 +12,6 @@ const router = express.Router();
 
 const STATUSES = ['open', 'assigned', 'in_progress', 'waiting_for_user', 'resolved', 'closed', 'reopened'];
 
-
 // Base query for a ticket with all its display names; append WHERE / ORDER BY as needed
 const TICKET_SELECT = `
   SELECT t.*,
@@ -45,6 +44,7 @@ function toId(value) {
   return Number.isInteger(id) && id > 0 ? id : null;
 }
 
+// Records one change in the ticket's audit trail; values are stored as display text (e.g. names, not ids)
 async function logHistory(ticketId, userId, field, oldValue, newValue) {
   await pool.query(
     'INSERT INTO ticket_history (ticket_id, changed_by, field_changed, old_value, new_value) VALUES (?, ?, ?, ?, ?)',
@@ -70,7 +70,15 @@ router.use(requireAuth);
 
 // GET /api/tickets?status=&priority=&category=&assigned=me|unassigned&q=&overdue=1
 router.get('/', async (req, res) => {
-  const { status, priority, category, assigned, q, overdue } = req.query;
+  // text() ignores anything that isn't a single string, e.g. ?status=a&status=b (which Express turns into an array)
+  const status = text(req.query.status);
+  const priority = text(req.query.priority);
+  const category = text(req.query.category);
+  const assigned = text(req.query.assigned);
+  const q = text(req.query.q);
+  const overdue = text(req.query.overdue);
+
+  // Filters are collected as SQL fragments with ? placeholders, and their values go into params
   const where = [];
   const params = [];
 
@@ -96,9 +104,9 @@ router.get('/', async (req, res) => {
   } else if (assigned === 'unassigned') {
     where.push('t.assigned_to IS NULL');
   }
-  if (typeof q === 'string' && q.trim()) {
+  if (q) {
     where.push('(t.title LIKE ? OR t.description LIKE ?)');
-    params.push(`%${q.trim()}%`, `%${q.trim()}%`);
+    params.push(`%${q}%`, `%${q}%`);
   }
   if (overdue === '1') {
     where.push(OVERDUE_SQL);

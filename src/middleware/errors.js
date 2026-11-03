@@ -19,6 +19,11 @@ function notFound(req, res, next) {
 // Final error handler; Express recognises it as one by its 4 arguments, so keep `next` even though it's unused
 // eslint-disable-next-line no-unused-vars
 function errorHandler(err, req, res, next) {
+  // express.json() rejects a malformed body with a 400; give a clear message instead of the parser's
+  if (err.type === 'entity.parse.failed') {
+    return res.status(400).json({ message: 'Request body is not valid JSON' });
+  }
+
   const status = err.status || 500;
 
   // Unexpected errors: log the details server-side but never send them to the client
