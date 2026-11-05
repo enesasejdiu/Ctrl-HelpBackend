@@ -18,7 +18,7 @@ This repository is the REST API. The frontend lives in a separate repository: **
 ## Requirements
 
 - Node.js 18 or newer
-- MySQL 8 running locally
+- MySQL 8 running locally, **or** XAMPP (MariaDB 10.4 or newer). Both work with the same code and scripts.
 
 ## Setup
 
@@ -29,6 +29,9 @@ cp .env.example .env
 
 Edit `.env`: set `DB_PASSWORD` to your MySQL root password (leave it empty if root has none) and set `JWT_SECRET`
 to a long random string.
+
+> **Using XAMPP?** Start MySQL from the XAMPP Control Panel. XAMPP's root user has no password by default, so
+> leave it empty: `DB_PASSWORD=` (nothing after the `=`). If you put any value there, `npm run db:setup` cannot connect.
 
 ```bash
 npm run db:setup   # creates the "ticketflow" database and all tables
