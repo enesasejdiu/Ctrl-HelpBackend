@@ -35,7 +35,7 @@ to a long random string.
 
 ```bash
 npm run db:setup   # creates the "ticketflow" database and all tables
-npm run db:seed    # fills it with demo data (wipes existing data, safe to re-run)
+npm run db:seed    # fills the empty database with demo data
 npm run dev        # starts the API with auto-reload
 ```
 
@@ -47,7 +47,28 @@ The API runs on **http://localhost:5050**. Check it with http://localhost:5050/a
 | `npm start`        | Start the server                           |
 | `npm run dev`      | Start with nodemon (auto-reload)           |
 | `npm run db:setup` | Create the database and tables             |
-| `npm run db:seed`  | Reset all data and insert the demo data    |
+| `npm run db:seed`  | Insert the demo data (empty database only) |
+| `npm run db:backup` | Back up the database to `backups/`        |
+
+## Backups and reseeding
+
+`npm run db:backup` writes the whole database to `backups/ticketflow-<YYYY-MM-DD-HHmm>.sql`. It uses `mysqldump`, or
+falls back to `mysql2` if `mysqldump` isn't installed. The `backups/` folder is ignored by git and must never be
+committed, because backups contain emails and password hashes.
+
+To restore a backup (this replaces the current tables):
+
+```bash
+mysql -u root ticketflow < backups/ticketflow-<YYYY-MM-DD-HHmm>.sql
+```
+
+`npm run db:seed` **wipes every table**, so it refuses to run if the `users` table already has rows. To really wipe
+and reseed a non-empty database, back it up first and pass `--force`:
+
+```bash
+npm run db:backup
+npm run db:seed -- --force
+```
 
 ## Demo accounts
 
@@ -123,7 +144,7 @@ Errors are always JSON: `{ "message": "..." }`.
 A Postman collection with every request is in [`docs/TicketFlow.postman_collection.json`](docs/TicketFlow.postman_collection.json).
 Import it, run one of the **Login** requests (it saves the token automatically), then try the other requests.
 Log in as the admin to be allowed every request. Requests that change data (create, status, assign, ...) modify
-the demo data; run `npm run db:seed` to reset it.
+the demo data; see [Backups and reseeding](#backups-and-reseeding) to reset it.
 
 ## Project structure
 
@@ -135,6 +156,7 @@ docs/
 scripts/
   setup-db.js             Creates the database and runs schema.sql (npm run db:setup)
   seed.js                 Wipes all tables and inserts demo data (npm run db:seed)
+  backup-db.js            Writes a SQL backup to backups/ (npm run db:backup)
 src/
   server.js               Entry point: loads .env and starts the server
   app.js                  Express app: middleware, routes, error handling

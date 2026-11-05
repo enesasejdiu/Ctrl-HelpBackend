@@ -1,5 +1,6 @@
 // Fills the database with demo data: categories, priorities, 5 users, tickets with history, and comments.
-// WIPES ALL TABLES FIRST, so it can be re-run any time to reset the demo. Usage: npm run db:seed
+// WIPES ALL TABLES FIRST, so it refuses to run on a database that already has users unless you pass --force.
+// Usage: npm run db:seed (empty database), or npm run db:seed -- --force (wipe and reseed; run db:backup first)
 //
 // Ticket timestamps are relative to "now", so the demo always looks fresh (recent tickets, overdue ones, a
 // weekly trend). Each ticket is described as a list of events (assign / status change); the script derives
@@ -209,6 +210,14 @@ function playTicket(def, userIds, userNames) {
 }
 
 async function seed() {
+  // Safety check: never wipe a database that holds real data by accident
+  const [[{ userCount }]] = await pool.query('SELECT COUNT(*) AS userCount FROM users');
+  if (userCount > 0 && !process.argv.includes('--force')) {
+    console.error('Database is not empty. Run `npm run db:backup` first, then `npm run db:seed -- --force` to wipe and reseed.');
+    process.exitCode = 1;
+    return;
+  }
+
   // 1. Wipe everything (TRUNCATE also resets the AUTO_INCREMENT counters)
   await pool.query('SET FOREIGN_KEY_CHECKS = 0');
   for (const table of ['ticket_history', 'comments', 'tickets', 'priorities', 'categories', 'users']) {
