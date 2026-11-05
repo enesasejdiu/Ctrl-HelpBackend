@@ -69,6 +69,7 @@ requireAuth checks the current role and active status in the database on every r
 - [x] `GET /api/users/agents`: active agents and admins (for the assign dropdown)
 - [x] `GET /api/users`: all users (admin only)
 - [x] `PATCH /api/users/:id`: change role or activate/deactivate (admins cannot change their own account)
+- [x] Demoting or deactivating an agent/admin unassigns their unfinished tickets (logged in ticket history)
 
 ## Phase 8 – Statistics (admin)
 - [x] `GET /api/stats` returns:
