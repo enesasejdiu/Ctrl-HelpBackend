@@ -240,9 +240,15 @@ router.patch('/:id/status', async (req, res) => {
     sets.push('resolution = ?', 'resolved_at = NOW()');
     params.push(resolution);
   } else if (status === 'closed') {
+    // resolved_at stays: closed tickets still count as resolved in the statistics
     sets.push('closed_at = NOW()');
-  } else if (status === 'reopened') {
-    sets.push('resolved_at = NULL', 'closed_at = NULL');
+  } else {
+    // Back to an unfinished status: the statistics treat resolved_at as "this ticket is resolved".
+    // The resolution text stays, to show as the previous resolution and prefill the next one.
+    sets.push('resolved_at = NULL');
+  }
+  if (status !== 'closed') {
+    sets.push('closed_at = NULL');
   }
 
   await pool.query(`UPDATE tickets SET ${sets.join(', ')} WHERE id = ?`, [...params, ticket.id]);

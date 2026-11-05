@@ -84,7 +84,10 @@ open → assigned → in_progress ⇄ waiting_for_user → resolved → closed
 - **in_progress** / **waiting_for_user**: the agent is working on it, or waiting for an answer from the employee.
 - **resolved**: requires a resolution note; sets `resolved_at`.
 - **closed**: the employee confirms the fix; sets `closed_at`.
-- **reopened**: the problem came back; clears `resolved_at` and `closed_at`. Assigning moves it to **assigned** again.
+- **reopened**: the problem came back. Assigning moves it to **assigned** again.
+
+Moving a ticket back to an unfinished status clears `resolved_at` and `closed_at`, so it no longer counts as resolved
+in the statistics. Moving a closed ticket back to **resolved** clears `closed_at`. The resolution note is kept.
 
 Staff can set any status. Every change to status, priority or assignee is saved in `ticket_history`.
 A ticket is **overdue** when it is not resolved/closed and is older than its priority's target time

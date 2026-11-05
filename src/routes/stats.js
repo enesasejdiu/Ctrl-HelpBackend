@@ -29,7 +29,7 @@ router.get('/', async (req, res) => {
   );
 
   // Average resolution time and number of resolved tickets. Closed tickets keep their resolved_at, so they count;
-  // reopened tickets have it cleared, so they don't.
+  // tickets moved back to an unfinished status have it cleared, so they don't.
   const [[resolution]] = await pool.query(
     `SELECT ${AVG_HOURS_SQL} AS avg_hours, COUNT(*) AS resolved_count
      FROM tickets t WHERE t.resolved_at IS NOT NULL`
