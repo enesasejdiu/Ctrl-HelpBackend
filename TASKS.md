@@ -96,3 +96,7 @@ requireAuth checks the current role and active status in the database on every r
 - [x] Comments in the code explaining the important parts
 - [x] Export the Postman collection to `docs/` (optional)
 - [x] Final commit and push
+
+## v1.0
+
+- [x] Add input validation with a library (zod) on every endpoint, with clear 400 messages
