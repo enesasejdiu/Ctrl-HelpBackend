@@ -6,11 +6,12 @@ const express = require('express');
 const pool = require('../db');
 const { HttpError } = require('../middleware/errors');
 const { requireAuth, requireRole, isStaff } = require('../middleware/auth');
+const validate = require('../middleware/validate');
 const { OVERDUE_SQL } = require('../overdue');
+const schemas = require('../schemas/tickets');
+const { addComment } = require('../schemas/comments');
 
 const router = express.Router();
-
-const STATUSES = ['open', 'assigned', 'in_progress', 'waiting_for_user', 'resolved', 'closed', 'reopened'];
 
 // Base query for a ticket with all its display names; append WHERE / ORDER BY as needed
 const TICKET_SELECT = `
@@ -33,17 +34,6 @@ function formatTicket(row) {
   return { ...row, is_overdue: Boolean(row.is_overdue) };
 }
 
-// Reads a body field as a trimmed string ('' if missing or not a string)
-function text(value) {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-// Parses a positive integer id from a URL param or body field; null if invalid
-function toId(value) {
-  const id = Number(value);
-  return Number.isInteger(id) && id > 0 ? id : null;
-}
-
 // Records one change in the ticket's audit trail; values are stored as display text (e.g. names, not ids)
 async function logHistory(ticketId, userId, field, oldValue, newValue) {
   await pool.query(
@@ -54,8 +44,7 @@ async function logHistory(ticketId, userId, field, oldValue, newValue) {
 
 // Fetches one ticket and checks the user may see it (employees: only their own)
 async function loadTicket(id, user) {
-  const ticketId = toId(id);
-  const [rows] = ticketId ? await pool.query(`${TICKET_SELECT} WHERE t.id = ?`, [ticketId]) : [[]];
+  const [rows] = await pool.query(`${TICKET_SELECT} WHERE t.id = ?`, [id]);
   if (rows.length === 0) {
     throw new HttpError(404, 'Ticket not found');
   }
@@ -69,14 +58,8 @@ async function loadTicket(id, user) {
 router.use(requireAuth);
 
 // GET /api/tickets?status=&priority=&category=&assigned=me|unassigned&q=&overdue=1
-router.get('/', async (req, res) => {
-  // text() ignores anything that isn't a single string, e.g. ?status=a&status=b (which Express turns into an array)
-  const status = text(req.query.status);
-  const priority = text(req.query.priority);
-  const category = text(req.query.category);
-  const assigned = text(req.query.assigned);
-  const q = text(req.query.q);
-  const overdue = text(req.query.overdue);
+router.get('/', validate(schemas.listTickets), async (req, res) => {
+  const { status, priority, category, assigned, q, overdue } = req.valid.query;
 
   // Filters are collected as SQL fragments with ? placeholders, and their values go into params
   const where = [];
@@ -108,7 +91,7 @@ router.get('/', async (req, res) => {
     where.push('(t.title LIKE ? OR t.description LIKE ?)');
     params.push(`%${q}%`, `%${q}%`);
   }
-  if (overdue === '1') {
+  if (overdue) {
     where.push(OVERDUE_SQL);
   }
 
@@ -122,19 +105,8 @@ router.get('/', async (req, res) => {
 });
 
 // POST /api/tickets { title, description, category_id, priority_id }
-router.post('/', async (req, res) => {
-  const body = req.body || {};
-  const title = text(body.title);
-  const description = text(body.description);
-  const categoryId = toId(body.category_id);
-  const priorityId = toId(body.priority_id);
-
-  if (!title || !description || !categoryId || !priorityId) {
-    throw new HttpError(400, 'Title, description, category and priority are required');
-  }
-  if (title.length > 150) {
-    throw new HttpError(400, 'Title must be at most 150 characters');
-  }
+router.post('/', validate(schemas.createTicket), async (req, res) => {
+  const { title, description, category_id: categoryId, priority_id: priorityId } = req.valid.body;
 
   const [categories] = await pool.query('SELECT id FROM categories WHERE id = ?', [categoryId]);
   if (categories.length === 0) {
@@ -155,8 +127,8 @@ router.post('/', async (req, res) => {
 });
 
 // GET /api/tickets/:id → ticket + comments + history (oldest first)
-router.get('/:id', async (req, res) => {
-  const ticket = await loadTicket(req.params.id, req.user);
+router.get('/:id', validate(schemas.getTicket), async (req, res) => {
+  const ticket = await loadTicket(req.valid.params.id, req.user);
 
   // Internal notes are staff-only
   const internalFilter = isStaff(req.user) ? '' : 'AND c.is_internal = FALSE';
@@ -183,15 +155,12 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST /api/tickets/:id/comments { content, is_internal }
-router.post('/:id/comments', async (req, res) => {
-  const ticket = await loadTicket(req.params.id, req.user);
-  const content = text(req.body?.content);
+router.post('/:id/comments', validate(addComment), async (req, res) => {
+  const ticket = await loadTicket(req.valid.params.id, req.user);
+  const { content, is_internal: wantsInternal } = req.valid.body;
 
-  if (!content) {
-    throw new HttpError(400, 'Comment cannot be empty');
-  }
   // Only staff can write internal notes; an employee's is_internal flag is ignored
-  const isInternal = isStaff(req.user) && req.body?.is_internal === true;
+  const isInternal = isStaff(req.user) && wantsInternal === true;
 
   const [result] = await pool.query(
     'INSERT INTO comments (ticket_id, user_id, content, is_internal) VALUES (?, ?, ?, ?)',
@@ -208,13 +177,10 @@ router.post('/:id/comments', async (req, res) => {
 });
 
 // PATCH /api/tickets/:id/status { status, resolution? }
-router.patch('/:id/status', async (req, res) => {
-  const ticket = await loadTicket(req.params.id, req.user);
-  const status = text(req.body?.status);
+router.patch('/:id/status', validate(schemas.updateStatus), async (req, res) => {
+  const ticket = await loadTicket(req.valid.params.id, req.user);
+  const { status } = req.valid.body;
 
-  if (!STATUSES.includes(status)) {
-    throw new HttpError(400, `Status must be one of: ${STATUSES.join(', ')}`);
-  }
   if (status === ticket.status) {
     throw new HttpError(400, `Ticket is already ${status}`);
   }
@@ -233,7 +199,7 @@ router.patch('/:id/status', async (req, res) => {
 
   if (status === 'resolved') {
     // A new note replaces the old one; otherwise keep the note from an earlier resolve
-    const resolution = text(req.body?.resolution) || ticket.resolution;
+    const resolution = req.valid.body.resolution || ticket.resolution;
     if (!resolution) {
       throw new HttpError(400, 'Please write a resolution note');
     }
@@ -258,11 +224,11 @@ router.patch('/:id/status', async (req, res) => {
 });
 
 // PATCH /api/tickets/:id/priority { priority_id } (staff only)
-router.patch('/:id/priority', requireRole('agent', 'admin'), async (req, res) => {
-  const ticket = await loadTicket(req.params.id, req.user);
-  const priorityId = toId(req.body?.priority_id);
+router.patch('/:id/priority', requireRole('agent', 'admin'), validate(schemas.updatePriority), async (req, res) => {
+  const ticket = await loadTicket(req.valid.params.id, req.user);
+  const { priority_id: priorityId } = req.valid.body;
 
-  const [rows] = priorityId ? await pool.query('SELECT id, name FROM priorities WHERE id = ?', [priorityId]) : [[]];
+  const [rows] = await pool.query('SELECT id, name FROM priorities WHERE id = ?', [priorityId]);
   if (rows.length === 0) {
     throw new HttpError(400, 'Invalid priority');
   }
@@ -277,17 +243,9 @@ router.patch('/:id/priority', requireRole('agent', 'admin'), async (req, res) =>
 });
 
 // PATCH /api/tickets/:id/assign { assigned_to } (staff only; null = unassign)
-router.patch('/:id/assign', requireRole('agent', 'admin'), async (req, res) => {
-  const ticket = await loadTicket(req.params.id, req.user);
-  const raw = req.body?.assigned_to;
-
-  if (raw === undefined) {
-    throw new HttpError(400, 'assigned_to is required (use null to unassign)');
-  }
-  const assigneeId = raw === null ? null : toId(raw);
-  if (raw !== null && !assigneeId) {
-    throw new HttpError(400, 'That user cannot be assigned tickets');
-  }
+router.patch('/:id/assign', requireRole('agent', 'admin'), validate(schemas.assignTicket), async (req, res) => {
+  const ticket = await loadTicket(req.valid.params.id, req.user);
+  const { assigned_to: assigneeId } = req.valid.body;
 
   // Agents can take a ticket, or release one they hold, but not hand tickets to others
   if (req.user.role === 'agent') {
