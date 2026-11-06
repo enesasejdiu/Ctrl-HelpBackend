@@ -147,22 +147,7 @@ A ticket is **overdue** when it is not resolved/closed and is older than its pri
 ## API endpoints
 
 All endpoints except health, register and login need `Authorization: Bearer <token>`.
-Errors are always JSON with a `message` that can be shown to the user: `{ "message": "..." }`.
-
-Invalid input gets status 400, and `errors` lists every problem by field. `message` is the first of them:
-
-```json
-{
-  "message": "Title is required",
-  "errors": [
-    { "field": "title", "message": "Title is required" },
-    { "field": "requester_id", "message": "requester_id is not allowed" }
-  ]
-}
-```
-
-Every body, `:id` and ticket list filter is checked with [zod](https://zod.dev/) before the route runs. Fields that
-aren't listed for an endpoint are refused. An empty filter (`?status=`) means no filter.
+Errors are always JSON: `{ "message": "..." }`.
 
 | Method | Path                            | Who                 | What it does                                                                                    |
 | ------ | ------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------- |
@@ -207,10 +192,6 @@ src/
   middleware/
     auth.js               requireAuth, requireRole, isStaff
     errors.js             HttpError, 404 handler, central error handler
-    validate.js           Checks a request against zod schemas; results go in req.valid
-  schemas/
-    common.js             Shared pieces: id, email, name, password, status, role
-    auth.js, tickets.js, comments.js, users.js   What each endpoint accepts
   routes/
     auth.js               /api/auth: register, login, me
     meta.js               /api/meta: categories and priorities

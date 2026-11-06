@@ -4,10 +4,10 @@ const express = require('express');
 const pool = require('../db');
 const { HttpError } = require('../middleware/errors');
 const { requireAuth, requireRole } = require('../middleware/auth');
-const validate = require('../middleware/validate');
-const schemas = require('../schemas/users');
 
 const router = express.Router();
+
+const ROLES = ['employee', 'agent', 'admin'];
 
 // Columns safe to send to the client; password_hash is never selected
 const USER_COLUMNS = 'id, name, email, role, department, is_active, created_at';
@@ -34,16 +34,27 @@ router.get('/', requireRole('admin'), async (req, res) => {
 });
 
 // PATCH /api/users/:id { role?, is_active? } (admin only)
-router.patch('/:id', requireRole('admin'), validate(schemas.updateUser), async (req, res) => {
-  const { id } = req.valid.params;
-  const { role, is_active: isActive } = req.valid.body;
+router.patch('/:id', requireRole('admin'), async (req, res) => {
+  const id = Number(req.params.id);
+  const { role, is_active: isActive } = req.body || {};
 
   // Stops an admin from deactivating themselves or removing their own admin role
   if (id === req.user.id) {
     throw new HttpError(400, 'You cannot change your own account here');
   }
+  if (role === undefined && isActive === undefined) {
+    throw new HttpError(400, 'Send a role and/or is_active to change');
+  }
+  if (role !== undefined && !ROLES.includes(role)) {
+    throw new HttpError(400, 'Invalid role');
+  }
+  if (isActive !== undefined && typeof isActive !== 'boolean') {
+    throw new HttpError(400, 'is_active must be true or false');
+  }
 
-  const [existing] = await pool.query('SELECT id, name, role, is_active FROM users WHERE id = ?', [id]);
+  const [existing] = Number.isInteger(id)
+    ? await pool.query('SELECT id, name, role, is_active FROM users WHERE id = ?', [id])
+    : [[]];
   if (existing.length === 0) {
     throw new HttpError(404, 'User not found');
   }
