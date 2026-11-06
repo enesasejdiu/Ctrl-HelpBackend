@@ -31,51 +31,24 @@ Edit `.env`: set `DB_PASSWORD` to your MySQL root password (leave it empty if ro
 to a long random string.
 
 > **Using XAMPP?** Start MySQL from the XAMPP Control Panel. XAMPP's root user has no password by default, so
-> leave it empty: `DB_PASSWORD=` (nothing after the `=`). If you put any value there, `npm run db:migrate` cannot connect.
+> leave it empty: `DB_PASSWORD=` (nothing after the `=`). If you put any value there, `npm run db:setup` cannot connect.
 
 ```bash
-npm run db:migrate   # creates the "ticketflow" database and all tables
-npm run db:seed      # fills the empty database with demo data
-npm run dev          # starts the API with auto-reload
+npm run db:setup   # creates the "ticketflow" database and all tables
+npm run db:seed    # fills the empty database with demo data
+npm run dev        # starts the API with auto-reload
 ```
 
 The API runs on **http://localhost:5050**. Check it with http://localhost:5050/api/health → `{ "status": "ok" }`.
 (Port 5000 is not used because macOS AirPlay occupies it.)
 
-| Script               | Description                                    |
-| -------------------- | ---------------------------------------------- |
-| `npm start`          | Start the server                               |
-| `npm run dev`        | Start with nodemon (auto-reload)               |
-| `npm run db:migrate` | Create the database or apply new migrations    |
-| `npm run db:seed`    | Insert the demo data (empty database only)     |
-| `npm run db:backup`  | Back up the database to `backups/`             |
-
-## Updating and migrations
-
-The database structure lives in numbered files in `migrations/`. To update an installation without losing its data:
-
-```bash
-git pull
-npm install
-npm run db:migrate
-```
-
-Then restart the server. `db:migrate` runs only the files this database hasn't run yet, in number order, and records
-each one in the `schema_migrations` table. If there is something to apply and the database already has tables, it
-makes a backup first, and stops if the backup fails.
-
-To change the database, add a new file with the next number, such as `migrations/002_add_ticket_tags.sql`:
-
-- **Never edit a migration that has been applied or pushed.** `db:migrate` refuses to run if an applied file changed.
-  Put the change in a new file instead.
-- **Keep the data.** Change tables with `ALTER TABLE`, and when you rename or reshape a column, move its data in the
-  same migration.
-- **Pull before picking a number.** Two files with the same number stop `db:migrate` until one is renumbered.
-- Each statement ends with `;`. `DELIMITER` doesn't work, because it's a feature of the `mysql` command line.
-
-MySQL can't roll back schema changes, so a migration that fails partway can leave some of its changes in place. Restore
-the backup named in the error, fix the file, and run `db:migrate` again. A restore doesn't remove tables that aren't in
-the backup, so drop any table the failed migration created.
+| Script             | Description                                |
+| ------------------ | ------------------------------------------ |
+| `npm start`        | Start the server                           |
+| `npm run dev`      | Start with nodemon (auto-reload)           |
+| `npm run db:setup` | Create the database and tables             |
+| `npm run db:seed`  | Insert the demo data (empty database only) |
+| `npm run db:backup` | Back up the database to `backups/`        |
 
 ## Backups and reseeding
 
@@ -176,12 +149,12 @@ the demo data; see [Backups and reseeding](#backups-and-reseeding) to reset it.
 ## Project structure
 
 ```
+db/
+  schema.sql              Table definitions (MySQL 8)
 docs/
   TicketFlow.postman_collection.json   Postman collection for every endpoint
-migrations/
-  001_initial.sql         The original tables; later changes go in new numbered files
 scripts/
-  migrate.js              Creates the database and applies new migrations (npm run db:migrate)
+  setup-db.js             Creates the database and runs schema.sql (npm run db:setup)
   seed.js                 Wipes all tables and inserts demo data (npm run db:seed)
   backup-db.js            Writes a SQL backup to backups/ (npm run db:backup)
 src/
@@ -212,4 +185,3 @@ TASKS.md                  Development task list
 | `tickets`        | Tickets: requester, assignee, category, priority, status, resolution note, timestamps        |
 | `comments`       | Comments on tickets; `is_internal` marks staff-only notes                                    |
 | `ticket_history` | Audit trail: who changed which field (status, priority, assignee) from what to what, and when |
-| `schema_migrations` | Which migrations this database has run, and when                                           |

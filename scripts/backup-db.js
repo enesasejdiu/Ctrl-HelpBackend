@@ -101,12 +101,7 @@ async function dumpWithMysql2(file) {
 
 async function backup() {
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
-  // Never overwrite: a backup taken right after a failed migration must not replace the good one from the same minute
-  const name = `${dbName}-${timestamp()}`;
-  let file = path.join(BACKUP_DIR, `${name}.sql`);
-  for (let copy = 2; fs.existsSync(file); copy++) {
-    file = path.join(BACKUP_DIR, `${name}-${copy}.sql`);
-  }
+  const file = path.join(BACKUP_DIR, `${dbName}-${timestamp()}.sql`);
   // Written under a temporary name, so a failed run can never look like a finished backup
   const tempFile = `${file}.tmp`;
 
@@ -121,18 +116,12 @@ async function backup() {
 
     const size = (fs.statSync(file).size / 1024).toFixed(1);
     console.log(`Backup written with ${useMysqldump ? 'mysqldump' : 'mysql2'}: backups/${path.basename(file)} (${size} KB)`);
-    return path.basename(file);
   } finally {
     fs.rmSync(tempFile, { force: true });
   }
 }
 
-// Run directly by npm run db:backup; scripts/migrate.js imports backup() instead
-if (require.main === module) {
-  backup().catch((err) => {
-    console.error('Backup failed:', err.message);
-    process.exitCode = 1;
-  });
-}
-
-module.exports = { backup };
+backup().catch((err) => {
+  console.error('Backup failed:', err.message);
+  process.exitCode = 1;
+});
