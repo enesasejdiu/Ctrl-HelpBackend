@@ -1,5 +1,6 @@
--- TicketFlow database schema (MySQL 8).
--- Run via `npm run db:setup`, which creates the database and selects it first.
+-- The original TicketFlow tables (MySQL 8). Applied by `npm run db:migrate`, which selects the database first.
+-- IF NOT EXISTS is only here for databases created before migrations existed: this file then changes nothing and
+-- is simply recorded as applied. Later migrations don't need it, because each one runs exactly once.
 -- Tables are ordered so that every foreign key points at a table created above it.
 
 -- People who use the system: employees raise tickets, agents work them, admins manage everything
