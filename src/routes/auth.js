@@ -7,6 +7,8 @@ const jwt = require('jsonwebtoken');
 const pool = require('../db');
 const { HttpError } = require('../middleware/errors');
 const { requireAuth } = require('../middleware/auth');
+const validate = require('../middleware/validate');
+const schemas = require('../schemas/auth');
 
 const router = express.Router();
 
@@ -29,26 +31,10 @@ function publicUser(user) {
   };
 }
 
-// Reads a body field as a trimmed string ('' if missing or not a string), so bad input gives a 400, not a crash
-function text(value) {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
 // POST /api/auth/register: self-registration always creates an employee
-router.post('/register', async (req, res) => {
-  const body = req.body || {};
-  const name = text(body.name);
-  // Emails are stored lowercase so "Ann@x.com" and "ann@x.com" are the same account
-  const email = text(body.email).toLowerCase();
-  const password = typeof body.password === 'string' ? body.password : ''; // not trimmed: spaces are allowed
-  const department = text(body.department) || null;
-
-  if (!name || !email || !password) {
-    throw new HttpError(400, 'Name, email and password are required');
-  }
-  if (password.length < 6) {
-    throw new HttpError(400, 'Password must be at least 6 characters');
-  }
+router.post('/register', validate(schemas.register), async (req, res) => {
+  const { name, email, password } = req.valid.body;
+  const department = req.valid.body.department || null;
 
   const [existing] = await pool.query('SELECT id FROM users WHERE email = ?', [email]);
   if (existing.length > 0) {
@@ -56,7 +42,7 @@ router.post('/register', async (req, res) => {
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
-  // role is hard-coded: a "role" field in the request body is ignored
+  // role is hard-coded, and the schema refuses a "role" field in the request body
   const [result] = await pool.query(
     'INSERT INTO users (name, email, password_hash, role, department) VALUES (?, ?, ?, ?, ?)',
     [name, email, passwordHash, 'employee', department]
@@ -67,15 +53,14 @@ router.post('/register', async (req, res) => {
 });
 
 // POST /api/auth/login
-router.post('/login', async (req, res) => {
-  const email = text(req.body?.email).toLowerCase();
-  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+router.post('/login', validate(schemas.login), async (req, res) => {
+  const { email, password } = req.valid.body;
 
   const [rows] = await pool.query('SELECT * FROM users WHERE email = ?', [email]);
   const user = rows[0];
 
   // Same message for unknown email and wrong password, so attackers can't probe which emails exist
-  if (!user || !password || !(await bcrypt.compare(password, user.password_hash))) {
+  if (!user || !(await bcrypt.compare(password, user.password_hash))) {
     throw new HttpError(401, 'Wrong email or password');
   }
   if (!user.is_active) {

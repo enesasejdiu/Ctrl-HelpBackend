@@ -31,6 +31,6 @@ app.use('/api/stats', statsRoutes);
 
 // Error handling: must stay at the very end, after all routes
 app.use(notFound); // unknown routes -> 404
-app.use(errorHandler); // every error -> JSON { message }
+app.use(errorHandler); // every other error -> JSON { message }
 
 module.exports = app;
