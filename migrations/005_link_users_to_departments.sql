@@ -27,13 +27,14 @@ CREATE TABLE IF NOT EXISTS department_migration_005 (
 START TRANSACTION;
 
 -- Explicit merges for near-duplicates: old value (any case, spaces don't matter) → department name.
--- Fill in from the report, one row per value, e.g. ('Slaes', 'Sales'), ('HR', 'Human Resources'). None are needed for
--- the data this was written for.
+-- Fill in from the report, one row per value, e.g. ('Slaes', 'Sales'), ('HR', 'Human Resources').
+-- For the real database: "Test" and "Test QA" (test accounts) and "QA" (accounts made by the e2e tests) are not real
+-- departments, so those users go to IT.
 CREATE TEMPORARY TABLE IF NOT EXISTS department_mapping_005 (
   from_name VARCHAR(100) NOT NULL PRIMARY KEY,
   to_name VARCHAR(100) NOT NULL
 ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
--- INSERT IGNORE INTO department_mapping_005 (from_name, to_name) VALUES ('Slaes', 'Sales'), ('HR', 'Human Resources');
+INSERT IGNORE INTO department_mapping_005 (from_name, to_name) VALUES ('Test', 'IT'), ('Test QA', 'IT'), ('QA', 'IT');
 
 -- Users to link, with their cleaned value (after the mapping)
 CREATE TEMPORARY TABLE department_users_005 (
@@ -56,7 +57,9 @@ CREATE TEMPORARY TABLE department_names_005 (
 INSERT INTO department_names_005 (name)
   SELECT clean_name FROM (
     SELECT clean_name, ROW_NUMBER() OVER (PARTITION BY clean_name ORDER BY uses DESC, BINARY clean_name) AS pick
-    FROM (SELECT clean_name, COUNT(*) AS uses FROM department_users_005 GROUP BY BINARY clean_name) AS spellings
+    -- MIN(): every row in a BINARY group is the same spelling, so this just picks it. A bare clean_name is refused by
+    -- MySQL's ONLY_FULL_GROUP_BY (on by default), because it isn't the GROUP BY expression itself.
+    FROM (SELECT MIN(clean_name) AS clean_name, COUNT(*) AS uses FROM department_users_005 GROUP BY BINARY clean_name) AS spellings
   ) AS ranked
   WHERE pick = 1;
 
