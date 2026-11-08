@@ -2,7 +2,8 @@
 const { z } = require('zod');
 
 const STATUSES = ['open', 'assigned', 'in_progress', 'waiting_for_user', 'resolved', 'closed', 'reopened'];
-const ROLES = ['employee', 'agent', 'admin'];
+// HR manages employee accounts but otherwise works like an employee (see isStaff in middleware/auth.js)
+const ROLES = ['employee', 'agent', 'hr', 'admin'];
 
 function tooLong(label, max) {
   return `${label} must be ${max.toLocaleString('en-US')} characters or less`;
@@ -48,11 +49,12 @@ const name = requiredText('Name', 100);
 const passwordText = z.string({
   error: (issue) => (issue.input == null ? 'Password is required' : 'Password must be text'),
 });
+// Not used by any route right now: kept for the upcoming "change your password" endpoint
 const newPassword = passwordText.min(1, 'Password is required').min(6, 'Password must be at least 6 characters');
 const existingPassword = passwordText.min(1, 'Password is required'); // no length rule: login only compares it
 
 const status = z.enum(STATUSES, { error: `Status must be one of: ${STATUSES.join(', ')}` });
-const role = z.enum(ROLES, { error: 'Invalid role' });
+const role = z.enum(ROLES, { error: (issue) => (issue.input === undefined ? 'Role is required' : 'Invalid role') });
 
 const ticketParams = z.object({ id: id('Ticket id') });
 

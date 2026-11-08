@@ -1,4 +1,4 @@
-// Smoke test: proves the test setup works (test database, app, login). The full API tests come next.
+// Smoke test: proves the test setup works (test database, app, login).
 const { api, resetData, createUser, loginAs } = require('./helpers');
 
 beforeEach(resetData);

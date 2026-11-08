@@ -1,6 +1,11 @@
-// Request schema for /api/users.
+// Request schemas for /api/users.
 const { z } = require('zod');
-const { id, role } = require('./common');
+const { id, role, name, email, optionalText } = require('./common');
+
+// Strict, so a password or must_change_password in the body is refused: the server always makes the password
+const createUser = {
+  body: z.strictObject({ name, email, role, department: optionalText('Department', 100) }),
+};
 
 const updateUser = {
   params: z.object({ id: id('User id') }),
@@ -14,4 +19,4 @@ const updateUser = {
     }),
 };
 
-module.exports = { updateUser };
+module.exports = { createUser, updateUser };

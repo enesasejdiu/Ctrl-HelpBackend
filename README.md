@@ -130,11 +130,17 @@ All demo accounts use the password **`password123`**.
 ## Roles
 
 - **Employee**: creates tickets and sees only their own. Can comment on them (never internal notes), close a
-  resolved ticket, or reopen a resolved/closed one. New sign-ups are always employees.
+  resolved ticket, or reopen a resolved/closed one.
 - **Agent**: sees all tickets, takes tickets (assigns them to themselves), changes status and priority, and writes
   public comments and internal notes. Cannot assign tickets to other people.
-- **Admin**: everything an agent can do, plus assign tickets to any active agent/admin, manage users
-  (change roles, activate/deactivate), and view the statistics.
+- **HR**: creates employee accounts and activates/deactivates employees. Cannot change roles or touch staff, HR or
+  admin accounts. For tickets, HR is an employee: own tickets only, no internal notes, no statistics.
+- **Admin**: everything an agent can do, plus assign tickets to any active agent/admin, create accounts with any
+  role, manage users (change roles, activate/deactivate), and view the statistics.
+
+There is no self-registration. An admin or HR creates each account with `POST /api/users`; the response contains a
+**temporary password**, shown only that once (only its hash is stored). Pass it on to the new user, who logs in with
+it. Their `must_change_password` is `true` until they set their own password (that endpoint comes in a later task).
 
 Role changes and deactivation take effect immediately: every request checks the user's current role and active
 status in the database.
@@ -164,7 +170,7 @@ A ticket is **overdue** when it is not resolved/closed and is older than its pri
 
 ## API endpoints
 
-All endpoints except health, register and login need `Authorization: Bearer <token>`.
+All endpoints except health and login need `Authorization: Bearer <token>`.
 Errors are always JSON with a `message` that can be shown to the user: `{ "message": "..." }`.
 
 Invalid input gets status 400, and `errors` lists every problem by field. `message` is the first of them:
@@ -185,8 +191,7 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | Method | Path                            | Who                 | What it does                                                                                    |
 | ------ | ------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------- |
 | GET    | `/api/health`                   | anyone              | Health check → `{ status: "ok" }`                                                               |
-| POST   | `/api/auth/register`            | anyone              | Create an employee account `{ name, email, password, department? }` → `{ token, user }`         |
-| POST   | `/api/auth/login`               | anyone              | Log in `{ email, password }` → `{ token, user }`                                                |
+| POST   | `/api/auth/login`               | anyone              | Log in `{ email, password }` → `{ token, user }` (`user.must_change_password` is true for a temporary password) |
 | GET    | `/api/auth/me`                  | logged in           | The current user                                                                                |
 | GET    | `/api/meta`                     | logged in           | Categories and priorities (for dropdowns)                                                       |
 | GET    | `/api/tickets`                  | logged in           | List tickets (employees: own only). Filters: `status`, `priority`, `category`, `assigned=me\|unassigned`, `q`, `overdue=1` |
@@ -197,8 +202,9 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | PATCH  | `/api/tickets/:id/priority`     | agent, admin        | Change priority `{ priority_id }`                                                               |
 | PATCH  | `/api/tickets/:id/assign`       | agent, admin        | Assign `{ assigned_to }` (`null` = unassign; agents can only assign themselves)                 |
 | GET    | `/api/users/agents`             | agent, admin        | Active agents and admins (for the "Assign to" dropdown)                                         |
-| GET    | `/api/users`                    | admin               | All users                                                                                       |
-| PATCH  | `/api/users/:id`                | admin               | Change `{ role?, is_active? }` (not your own account)                                           |
+| GET    | `/api/users`                    | admin, hr           | All users                                                                                       |
+| POST   | `/api/users`                    | admin, hr           | Create an account `{ name, email, role, department? }` → `{ user, temporaryPassword }` (HR: employees only) |
+| PATCH  | `/api/users/:id`                | admin, hr           | Change `{ role?, is_active? }` (not your own account; HR: only `is_active`, only for employees) |
 | GET    | `/api/stats`                    | admin               | Dashboard statistics: totals, by status/priority/category/agent, 8-week trend                   |
 
 A Postman collection with every request is in [`docs/TicketFlow.postman_collection.json`](docs/TicketFlow.postman_collection.json).
@@ -231,10 +237,10 @@ src/
     common.js             Shared pieces: id, email, name, password, status, role
     auth.js, tickets.js, comments.js, users.js   What each endpoint accepts
   routes/
-    auth.js               /api/auth: register, login, me
+    auth.js               /api/auth: login, me
     meta.js               /api/meta: categories and priorities
     tickets.js            /api/tickets: list, create, view, comments, status, priority, assign
-    users.js              /api/users: agent list and user management
+    users.js              /api/users: agent list, creating accounts, user management
     stats.js              /api/stats: dashboard statistics
 tests/
   globalSetup.js          Creates the throwaway test database before all tests
