@@ -2,7 +2,7 @@
 const { z } = require('zod');
 
 const STATUSES = ['open', 'assigned', 'in_progress', 'waiting_for_user', 'resolved', 'closed', 'reopened'];
-const ROLES = ['employee', 'agent', 'admin'];
+const ROLES = ['employee', 'agent', 'admin', 'hr'];
 
 function tooLong(label, max) {
   return `${label} must be ${max.toLocaleString('en-US')} characters or less`;

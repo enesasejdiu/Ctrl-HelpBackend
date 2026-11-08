@@ -3,7 +3,7 @@
 const express = require('express');
 const pool = require('../db');
 const { HttpError } = require('../middleware/errors');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requireRole, isStaff } = require('../middleware/auth');
 const validate = require('../middleware/validate');
 const schemas = require('../schemas/users');
 
@@ -61,11 +61,11 @@ router.patch('/:id', requireRole('admin'), validate(schemas.updateUser), async (
     params.push(isActive);
   }
 
-  // If this change means the user can no longer work tickets (demoted to employee or deactivated),
-  // their unfinished tickets go back to the queue so they don't get stuck with someone who can't act on them
+  // If this change means the user can no longer work tickets (moved to a non-staff role such as employee or hr,
+  // or deactivated), their unfinished tickets go back to the queue so they don't get stuck with someone who can't act on them
   const newRole = role ?? user.role;
   const newActive = isActive ?? Boolean(user.is_active);
-  const stopsBeingStaff = user.role !== 'employee' && (newRole === 'employee' || !newActive);
+  const stopsBeingStaff = isStaff(user) && (!isStaff({ role: newRole }) || !newActive);
 
   // A transaction so the user change and the ticket release happen together or not at all
   const conn = await pool.getConnection();
