@@ -49,9 +49,16 @@ const name = requiredText('Name', 100);
 const passwordText = z.string({
   error: (issue) => (issue.input == null ? 'Password is required' : 'Password must be text'),
 });
-// Not used by any route right now: kept for the upcoming "change your password" endpoint
-const newPassword = passwordText.min(1, 'Password is required').min(6, 'Password must be at least 6 characters');
 const existingPassword = passwordText.min(1, 'Password is required'); // no length rule: login only compares it
+
+// A password the user chooses: 10+ characters with at least one letter and one number. Not trimmed.
+// At most 72 characters because bcrypt ignores everything after 72 bytes, so a longer one would only look stronger.
+const newPassword = z
+  .string({ error: (issue) => (issue.input == null ? 'New password is required' : 'New password must be text') })
+  .min(10, 'New password must be at least 10 characters')
+  .max(72, 'New password must be 72 characters or less')
+  .regex(/[A-Za-z]/, 'New password must contain at least one letter')
+  .regex(/\d/, 'New password must contain at least one number');
 
 const status = z.enum(STATUSES, { error: `Status must be one of: ${STATUSES.join(', ')}` });
 const role = z.enum(ROLES, { error: (issue) => (issue.input === undefined ? 'Role is required' : 'Invalid role') });

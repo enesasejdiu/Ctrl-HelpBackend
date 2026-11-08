@@ -1,4 +1,4 @@
-// Authentication routes: login and "who am I".
+// Authentication routes: login, "who am I" and change password.
 // Mounted at /api/auth. A successful login returns { token, user }; the client sends the token back
 // as "Authorization: Bearer <token>" on later requests.
 // There is no self-registration: admins and HR create accounts with POST /api/users.
@@ -60,6 +60,27 @@ router.get('/me', requireAuth, async (req, res) => {
     throw new HttpError(404, 'User not found');
   }
   res.json(publicUser(rows[0]));
+});
+
+// POST /api/auth/change-password { currentPassword, newPassword } → { user }
+// Also the way out of a temporary password: requireAuth lets a flagged user reach this route, and it clears the flag.
+router.post('/change-password', requireAuth, validate(schemas.changePassword), async (req, res) => {
+  const { currentPassword, newPassword } = req.valid.body;
+  const [[user]] = await pool.query('SELECT * FROM users WHERE id = ?', [req.user.id]);
+
+  if (!(await bcrypt.compare(currentPassword, user.password_hash))) {
+    throw new HttpError(401, 'Current password is wrong');
+  }
+  if (newPassword === currentPassword) {
+    throw new HttpError(400, 'New password must be different from the current one');
+  }
+
+  const passwordHash = await bcrypt.hash(newPassword, 10);
+  await pool.query('UPDATE users SET password_hash = ?, must_change_password = FALSE WHERE id = ?', [
+    passwordHash,
+    user.id,
+  ]);
+  res.json({ user: publicUser({ ...user, must_change_password: false }) });
 });
 
 module.exports = router;

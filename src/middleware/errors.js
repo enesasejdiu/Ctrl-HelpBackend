@@ -2,12 +2,14 @@
 // Route handlers throw (or pass to next) an HttpError with a status code; errorHandler turns it into a JSON response.
 // Express 5 forwards errors from async handlers automatically, so no try/catch wrappers are needed.
 
-// An error that carries the HTTP status to respond with, e.g. throw new HttpError(404, 'Ticket not found')
+// An error that carries the HTTP status to respond with, e.g. throw new HttpError(404, 'Ticket not found').
+// `code` is optional: a fixed name the frontend can react to (e.g. 'PASSWORD_CHANGE_REQUIRED'), sent as { code }.
 class HttpError extends Error {
-  constructor(status, message) {
+  constructor(status, message, code) {
     super(message);
     this.name = 'HttpError';
     this.status = status;
+    if (code) this.code = code;
   }
 }
 
@@ -32,7 +34,9 @@ function errorHandler(err, req, res, next) {
     return res.status(500).json({ message: 'Something went wrong on the server' });
   }
 
-  res.status(status).json({ message: err.message });
+  // Only our own HttpError codes are sent; other errors can carry a `code` too (e.g. from MySQL) that must stay private
+  const code = err instanceof HttpError ? err.code : undefined;
+  res.status(status).json(code ? { message: err.message, code } : { message: err.message });
 }
 
 module.exports = { HttpError, notFound, errorHandler };
