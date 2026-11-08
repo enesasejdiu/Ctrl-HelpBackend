@@ -34,7 +34,7 @@ Note: the API runs on port 5050 (5000 is used by macOS AirPlay).
 requireAuth checks the current role and active status in the database on every request (added in Phase 8).
 
 ## Phase 4 – Authentication
-- [x] `POST /api/auth/register`: validates input, checks the email is unique, hashes the password, creates an employee, returns `{ token, user }`
+- [x] ~~`POST /api/auth/register`~~: removed in v1.0. Admins and HR create accounts with `POST /api/users`
 - [x] `POST /api/auth/login`: checks the password and that the account is active, returns `{ token, user }`
 - [x] `GET /api/auth/me`: returns the current user
 - [x] Never return `password_hash` in any response
