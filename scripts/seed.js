@@ -10,27 +10,11 @@ require('dotenv').config();
 
 const bcrypt = require('bcryptjs');
 const pool = require('../src/db');
+const { categories, priorities } = require('./reference-data');
 
 const PASSWORD = 'password123';
 const HOUR = 60 * 60 * 1000;
 const now = Date.now();
-
-const categories = [
-  ['Hardware', 'Laptops, desktops, monitors, printers and other devices'],
-  ['Software', 'Installing, updating or fixing applications'],
-  ['Network', 'Wi-Fi, cabling, internet and network outages'],
-  ['Access', 'Accounts, passwords, VPN and permissions'],
-  ['Email', 'Mailboxes, Outlook, calendars and suspicious emails'],
-  ['Other', 'Anything that does not fit another category'],
-];
-
-// [name, level, target_hours]
-const priorities = [
-  ['Low', 1, 120],
-  ['Medium', 2, 72],
-  ['High', 3, 24],
-  ['Critical', 4, 4],
-];
 
 // key → [name, email, role, department]; tickets below refer to users by key
 const users = {

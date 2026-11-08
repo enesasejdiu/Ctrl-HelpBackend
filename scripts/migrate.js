@@ -1,6 +1,7 @@
 // Brings the database up to date: applies the files in migrations/ that it hasn't run yet, in number order.
 // Creates the database if it's missing, and never touches migrations that are already applied, so existing data
 // stays. Applied files are recorded in the schema_migrations table. Usage: npm run db:migrate
+// tests/globalSetup.js imports migrate() to build its throwaway test database with these same migrations.
 require('dotenv').config();
 
 const crypto = require('crypto');
@@ -11,7 +12,6 @@ const { backup } = require('./backup-db');
 
 const MIGRATIONS_DIR = path.join(__dirname, '..', 'migrations');
 const FILE_NAME = /^(\d{3})_[a-z0-9_]+\.sql$/;
-const dbName = process.env.DB_NAME;
 
 function readMigrations() {
   const numbers = new Set();
@@ -59,7 +59,8 @@ function findPending(migrations, applied) {
   return pending;
 }
 
-async function migrate() {
+// dbName defaults to DB_NAME from .env. backupFirst: false skips the backup, for a brand-new empty database.
+async function migrate({ dbName = process.env.DB_NAME, backupFirst = true } = {}) {
   if (!dbName) {
     throw new Error('DB_NAME is not set. Copy .env.example to .env first');
   }
@@ -102,7 +103,7 @@ async function migrate() {
     // MySQL can't roll back schema changes, so a failed migration can only be undone from a backup.
     // If the backup fails this stops here, before anything has changed.
     const [tables] = await connection.query('SHOW TABLES');
-    const backupFile = tables.length > 1 ? await backup() : null;
+    const backupFile = backupFirst && tables.length > 1 ? await backup() : null;
 
     for (const migration of pending) {
       try {
@@ -123,7 +124,12 @@ async function migrate() {
   }
 }
 
-migrate().catch((err) => {
-  console.error('Migration failed:', err.message);
-  process.exitCode = 1;
-});
+// Run directly by npm run db:migrate; tests/globalSetup.js imports migrate() instead
+if (require.main === module) {
+  migrate().catch((err) => {
+    console.error('Migration failed:', err.message);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { migrate };
