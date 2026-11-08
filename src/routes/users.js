@@ -94,15 +94,13 @@ router.post('/', requireRole('admin', 'hr'), validate(schemas.createUser), async
   res.status(201).json({ user: formatUser(rows[0]), temporaryPassword });
 });
 
-// POST /api/users/:id/reset-password (admin and HR) → 200 { user, temporaryPassword }
-// Replaces the password with a new temporary one (the old one stops working at once) and sets must_change_password,
-// so the user has to choose their own at the next login. Deactivated accounts can be reset too.
-router.post('/:id/reset-password', requireRole('admin', 'hr'), validate(schemas.resetPassword), async (req, res) => {
+// Step 1 of a reset: who may reset whom. Runs before the body is looked at.
+async function checkResetAllowed(req, res, next) {
   const { id } = req.valid.params;
 
   // Your own password needs your current one, so it goes through POST /api/auth/change-password instead
   if (id === req.user.id) {
-    throw new HttpError(400, 'Use Change password for your own account');
+    throw new HttpError(403, 'Use Change password for your own account');
   }
 
   const [existing] = await pool.query('SELECT id, role FROM users WHERE id = ?', [id]);
@@ -112,14 +110,36 @@ router.post('/:id/reset-password', requireRole('admin', 'hr'), validate(schemas.
   if (req.user.role === 'hr' && existing[0].role !== 'employee') {
     throw new HttpError(403, 'HR can only reset passwords of employee accounts');
   }
+  next();
+}
 
-  const temporaryPassword = makeTemporaryPassword();
-  const passwordHash = await bcrypt.hash(temporaryPassword, 10);
-  await pool.query('UPDATE users SET password_hash = ?, must_change_password = TRUE WHERE id = ?', [passwordHash, id]);
+// POST /api/users/:id/reset-password (admin and HR), no body → 200 { user, temporaryPassword }
+// Replaces the password with a new temporary one (the old one stops working at once) and sets must_change_password,
+// so the user has to choose their own at the next login. Deactivated accounts can be reset too.
+// Sessions: tokens are stateless JWTs and can't be revoked, but requireAuth reloads the user on every request and
+// refuses everything except /auth/me and /auth/change-password while must_change_password is set, so a session from
+// before the reset can do nothing without the new temporary password.
+router.post(
+  '/:id/reset-password',
+  requireRole('admin', 'hr'),
+  validate(schemas.resetPassword),
+  checkResetAllowed,
+  validate(schemas.resetPasswordBody),
+  async (req, res) => {
+    const { id } = req.valid.params;
 
-  const [rows] = await pool.query(`SELECT ${USER_COLUMNS} FROM users WHERE id = ?`, [id]);
-  res.json({ user: formatUser(rows[0]), temporaryPassword });
-});
+    const temporaryPassword = makeTemporaryPassword();
+    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+    // One statement, so the new hash and the flag are saved together or not at all
+    await pool.query(
+      'UPDATE users SET password_hash = ?, must_change_password = TRUE, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [passwordHash, id]
+    );
+
+    const [rows] = await pool.query(`SELECT ${USER_COLUMNS} FROM users WHERE id = ?`, [id]);
+    res.json({ user: formatUser(rows[0]), temporaryPassword });
+  }
+);
 
 // Step 1 of PATCH: the user must exist (404 comes before any problem with the body), and the caller must be allowed to
 // change them. HR may only change employees, and may not send a role at all, whatever its value.

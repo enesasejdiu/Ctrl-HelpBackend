@@ -397,11 +397,13 @@ describe('POST /api/users/:id/reset-password', () => {
   test.each([
     ['admin', () => [admin, adminToken]],
     ['HR', () => [hr, hrToken]],
-  ])('%s resetting their own account gets 400', async (_, who) => {
+  ])('%s resetting their own account gets 403 and the password stays', async (_, who) => {
     const [me, token] = who();
+    const before = (await dbUser(me.id)).password_hash;
     const res = await reset(me.id, token);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(403);
     expect(res.body.message).toBe('Use Change password for your own account');
+    expect((await dbUser(me.id)).password_hash).toBe(before);
   });
 
   test('an unknown user returns 404', async () => {
@@ -441,6 +443,77 @@ describe('POST /api/users/:id/reset-password', () => {
     const a = await reset(target.id, adminToken);
     const b = await reset(target.id, adminToken);
     expect(a.body.temporaryPassword).not.toBe(b.body.temporaryPassword);
+  });
+
+  test.each([
+    ['a chosen password', { password: 'MyChoice123' }, 'password', 'password is not allowed'],
+    ['any other field', { notify: true }, 'notify', 'notify is not allowed'],
+    ['a JSON array', [], 'body', 'Request body must be a JSON object'],
+  ])('a body with %s returns 400 and the password stays', async (_, body, field, message) => {
+    const target = await createUser();
+    const before = (await dbUser(target.id)).password_hash;
+    const res = await api.post(`/api/users/${target.id}/reset-password`).set(auth(adminToken)).send(body);
+    expect(res.status).toBe(400);
+    expect(res.body.errors).toContainEqual({ field, message });
+    expect((await dbUser(target.id)).password_hash).toBe(before);
+  });
+
+  test('an empty JSON body is the same as no body', async () => {
+    const target = await createUser();
+    const res = await api.post(`/api/users/${target.id}/reset-password`).set(auth(adminToken)).send({});
+    expect(res.status).toBe(200);
+  });
+
+  test('an unknown user returns 404 before the body is looked at', async () => {
+    const res = await api.post('/api/users/999999/reset-password').set(auth(adminToken)).send({ password: 'x' });
+    expect(res.status).toBe(404);
+  });
+
+  test('without a token returns 401', async () => {
+    const target = await createUser();
+    expect((await api.post(`/api/users/${target.id}/reset-password`)).status).toBe(401);
+  });
+
+  test('stores only a bcrypt hash of the new password, and moves updated_at forward', async () => {
+    const target = await createUser();
+    await pool.query('UPDATE users SET updated_at = ? WHERE id = ?', ['2020-01-01 00:00:00', target.id]);
+    const res = await reset(target.id, adminToken);
+
+    const row = await dbUser(target.id);
+    expect(row.password_hash).not.toBe(res.body.temporaryPassword);
+    expect(row.password_hash).toMatch(/^\$2[aby]\$10\$/);
+    expect(await bcrypt.compare(res.body.temporaryPassword, row.password_hash)).toBe(true);
+    expect(row.updated_at.getFullYear()).toBeGreaterThan(2020);
+    expect(JSON.stringify(res.body)).not.toMatch(/password_hash|\$2[aby]\$/);
+  });
+
+  test("a session from before the reset can't use the app or change the password without the new one", async () => {
+    const target = await createUser();
+    const oldToken = await loginAs(target);
+    await reset(target.id, adminToken);
+
+    const change = await api
+      .post('/api/auth/change-password')
+      .set(auth(oldToken))
+      .send({ currentPassword: target.password, newPassword: 'Attacker1234' });
+    expect(change.status).toBe(401);
+    expect(change.body.message).toBe('Current password is wrong');
+    for (const path of ['/api/tickets', '/api/meta']) {
+      expect((await api.get(path).set(auth(oldToken))).status).toBe(403);
+    }
+  });
+
+  test('the temporary password is never written to the console', async () => {
+    const target = await createUser();
+    const spies = ['log', 'info', 'warn', 'error', 'debug'].map((level) => jest.spyOn(console, level).mockImplementation(() => {}));
+    try {
+      const res = await reset(target.id, adminToken);
+      expect(res.status).toBe(200);
+      const written = spies.flatMap((spy) => spy.mock.calls.flat().map(String)).join('\n');
+      expect(written).not.toContain(res.body.temporaryPassword);
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+    }
   });
 });
 

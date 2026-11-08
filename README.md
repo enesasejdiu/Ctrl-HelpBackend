@@ -231,6 +231,34 @@ Authorization: Bearer <admin or HR token>
 }
 ```
 
+### Resetting a password: `POST /api/users/:id/reset-password`
+
+Admins and HR only, with no request body. Checks, in order:
+
+1. 401 without a valid token, 403 for roles other than admin and HR
+2. 403 for your own account (use `POST /api/auth/change-password`)
+3. 404 if the user doesn't exist
+4. 403 when HR resets anyone who isn't an employee
+5. 400 if a body with any field is sent (the server always makes the password)
+
+The new temporary password is made like the one for a new account. Only its bcrypt hash is stored, together with
+`must_change_password = true` and a new `updated_at`, in one statement. The old password stops working at once.
+Deactivated accounts can be reset too.
+
+```json
+200 OK
+{
+  "user": { "id": 12, "email": "teuta@ticketflow.local", "role": "employee", "must_change_password": true, ... },
+  "temporaryPassword": "Hq4wZr8NpT2kXa"
+}
+```
+
+**Sessions.** Logins are stateless JWTs (valid for `JWT_EXPIRES_IN`, 1 day by default) with no revocation list.
+Even so, a session from before the reset can do nothing: every request reloads the user, and while
+`must_change_password` is set only `GET /api/auth/me` and `POST /api/auth/change-password` work, and the latter needs
+the new temporary password. Once the user has chosen a new password, though, older tokens work again until they
+expire. Ending them for good would need a per-user token version or "valid after" time in the JWT.
+
 Role changes and deactivation take effect immediately: every request checks the user's current role and active
 status in the database.
 
@@ -294,7 +322,7 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | GET    | `/api/users/agents`             | agent, admin        | Active agents and admins (for the "Assign to" dropdown)                                         |
 | GET    | `/api/users`                    | admin, hr           | All users                                                                                       |
 | POST   | `/api/users`                    | admin, hr           | Create an account `{ name, email, role, department_id?, job_title?, department? }` → `{ user, temporaryPassword }` (HR: employees only, role optional). See [Creating an account](#creating-an-account-post-apiusers) |
-| POST   | `/api/users/:id/reset-password` | admin, hr        | New temporary password → `{ user, temporaryPassword }`; sets `must_change_password` (not your own account; HR: employees only) |
+| POST   | `/api/users/:id/reset-password` | admin, hr        | No body. New temporary password → `{ user, temporaryPassword }`; sets `must_change_password` (not your own account: 403; HR: employees only). See [Resetting a password](#resetting-a-password-post-apiusersidreset-password) |
 | PATCH  | `/api/users/:id`                | admin, hr           | Change `{ name?, email?, department?, department_id?, job_title?, role?, is_active? }` (at least one). Admin: anyone, but not their own role/active status, and never the last active admin. HR: employees only, never `role`. See [Editing an account](#editing-an-account-patch-apiusersid) |
 | GET    | `/api/stats`                    | admin               | Dashboard statistics: totals, by status/priority/category/agent, 8-week trend                   |
 
