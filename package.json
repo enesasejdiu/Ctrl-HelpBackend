@@ -10,6 +10,8 @@
     "db:seed": "node scripts/seed.js",
     "db:rollback": "node scripts/rollback.js",
     "db:backup": "node scripts/backup-db.js",
+    "db:department-report": "node scripts/department-report.js",
+    "db:verify-departments": "node scripts/verify-department-migration.js",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage"

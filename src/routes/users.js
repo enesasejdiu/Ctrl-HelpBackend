@@ -12,10 +12,18 @@ const { makeTemporaryPassword } = require('../temporaryPassword');
 
 const router = express.Router();
 
-// Columns safe to send to the client; password_hash is never selected
-const USER_COLUMNS =
-  'id, name, email, role, department, department_id, job_title, is_active, must_change_password, last_login_at, ' +
-  'created_at, updated_at';
+// Columns safe to send to the client (password_hash is never selected), with the department's name joined in.
+// The old free-text users.department column is no longer read or written (see migrations/005).
+const USER_SELECT = `
+  SELECT u.id, u.name, u.email, u.role, u.department_id, d.name AS department_name, u.job_title, u.is_active,
+         u.must_change_password, u.last_login_at, u.created_at, u.updated_at
+  FROM users u
+  LEFT JOIN departments d ON d.id = u.department_id`;
+
+async function findUser(id) {
+  const [rows] = await pool.query(`${USER_SELECT} WHERE u.id = ?`, [id]);
+  return formatUser(rows[0]);
+}
 
 // MySQL returns booleans as 0/1; send real true/false to the client
 function formatUser(row) {
@@ -39,18 +47,17 @@ router.get('/agents', requireRole('agent', 'admin'), async (req, res) => {
 
 // GET /api/users → every account, newest first (admin and HR)
 router.get('/', requireRole('admin', 'hr'), async (req, res) => {
-  const [rows] = await pool.query(`SELECT ${USER_COLUMNS} FROM users ORDER BY created_at DESC, id DESC`);
+  const [rows] = await pool.query(`${USER_SELECT} ORDER BY u.created_at DESC, u.id DESC`);
   res.json(rows.map(formatUser));
 });
 
-// POST /api/users { name, email, role, department?, department_id?, job_title? } (admin and HR)
+// POST /api/users { name, email, role, department_id?, job_title? } (admin and HR)
 // → 201 { user, temporaryPassword }. HR may leave out role (it means employee); admins must send it.
 // The server makes a temporary password and returns it only in this response; only its hash is stored.
 router.post('/', requireRole('admin', 'hr'), validate(schemas.createUser), async (req, res) => {
   const { name, email } = req.valid.body;
   const isHr = req.user.role === 'hr';
   const role = req.valid.body.role ?? (isHr ? 'employee' : undefined);
-  const department = req.valid.body.department || null;
   const departmentId = req.valid.body.department_id ?? null;
   const jobTitle = req.valid.body.job_title || null;
 
@@ -78,9 +85,9 @@ router.post('/', requireRole('admin', 'hr'), validate(schemas.createUser), async
   let result;
   try {
     [result] = await pool.query(
-      `INSERT INTO users (name, email, password_hash, role, department, department_id, job_title, must_change_password)
-       VALUES (?, ?, ?, ?, ?, ?, ?, TRUE)`,
-      [name, email, passwordHash, role, department, departmentId, jobTitle]
+      `INSERT INTO users (name, email, password_hash, role, department_id, job_title, must_change_password)
+       VALUES (?, ?, ?, ?, ?, ?, TRUE)`,
+      [name, email, passwordHash, role, departmentId, jobTitle]
     );
   } catch (err) {
     // Two requests for the same email at once: both pass the check above, and the UNIQUE index stops the second
@@ -90,8 +97,7 @@ router.post('/', requireRole('admin', 'hr'), validate(schemas.createUser), async
     throw err;
   }
 
-  const [rows] = await pool.query(`SELECT ${USER_COLUMNS} FROM users WHERE id = ?`, [result.insertId]);
-  res.status(201).json({ user: formatUser(rows[0]), temporaryPassword });
+  res.status(201).json({ user: await findUser(result.insertId), temporaryPassword });
 });
 
 // Step 1 of a reset: who may reset whom. Runs before the body is looked at.
@@ -136,8 +142,7 @@ router.post(
       [passwordHash, id]
     );
 
-    const [rows] = await pool.query(`SELECT ${USER_COLUMNS} FROM users WHERE id = ?`, [id]);
-    res.json({ user: formatUser(rows[0]), temporaryPassword });
+    res.json({ user: await findUser(id), temporaryPassword });
   }
 );
 
@@ -164,13 +169,13 @@ async function loadEditableUser(req, res, next) {
   next();
 }
 
-// PATCH /api/users/:id { name?, email?, department?, department_id?, job_title?, role?, is_active? } → the updated user
+// PATCH /api/users/:id { name?, email?, department_id?, job_title?, role?, is_active? } → the updated user
 // Only the fields sent change. Admin: anyone, including their own details (but not their own role or active status),
 // and never the last active admin's role or active status. HR: employee accounts only, and never a role.
 // Step 2, once the body is valid
 async function editUser(req, res) {
   const { id } = req.valid.params;
-  const { name, email, department, department_id: departmentId, job_title: jobTitle, role } = req.valid.body;
+  const { name, email, department_id: departmentId, job_title: jobTitle, role } = req.valid.body;
   const isActive = req.valid.body.is_active;
   const user = req.target;
 
@@ -205,10 +210,6 @@ async function editUser(req, res) {
   if (email !== undefined) {
     sets.push('email = ?');
     params.push(email);
-  }
-  if (department !== undefined) {
-    sets.push('department = ?');
-    params.push(department || null); // an empty department is stored as "none"
   }
   if (departmentId !== undefined) {
     sets.push('department_id = ?');
@@ -289,8 +290,7 @@ async function editUser(req, res) {
     conn.release();
   }
 
-  const [rows] = await pool.query(`SELECT ${USER_COLUMNS} FROM users WHERE id = ?`, [id]);
-  res.json(formatUser(rows[0]));
+  res.json(await findUser(id));
 }
 
 router.patch(

@@ -39,7 +39,8 @@ beforeEach(async () => {
 
 describe('POST /api/users', () => {
   test.each(['employee', 'agent', 'hr', 'admin'])('admin creates a %s with a temporary password', async (role) => {
-    const body = newUserBody(role, { department: '  IT  ' });
+    const departmentId = await createDepartment();
+    const body = newUserBody(role, { department_id: departmentId });
     const res = await api.post('/api/users').set(auth(adminToken)).send(body);
 
     expect(res.status).toBe(201);
@@ -47,7 +48,8 @@ describe('POST /api/users', () => {
       name: body.name,
       email: body.email,
       role,
-      department: 'IT', // trimmed
+      department_id: departmentId,
+      department_name: `Department ${departmentCount}`,
       is_active: true,
       must_change_password: true,
     });
@@ -120,6 +122,7 @@ describe('POST /api/users', () => {
     ['unknown role', { role: 'superuser' }, 'role', 'Invalid role'],
     ['password sent', { password: 'chosen-by-client' }, 'password', 'password is not allowed'],
     ['flag sent', { must_change_password: false }, 'must_change_password', 'must_change_password is not allowed'],
+    ['old free-text department sent', { department: 'IT' }, 'department', 'department is not allowed'],
   ])('invalid body (%s) returns 400', async (_, change, field, message) => {
     const before = await userCount();
     const res = await api.post('/api/users').set(auth(adminToken)).send(newUserBody('employee', change));
@@ -517,17 +520,16 @@ describe('POST /api/users/:id/reset-password', () => {
   });
 });
 
-describe('PATCH /api/users/:id edits name, email and department', () => {
+describe('PATCH /api/users/:id edits name and email', () => {
   const patch = (id, token, body) => api.patch(`/api/users/${id}`).set(auth(token)).send(body);
 
   test.each([
     ['name', { name: '  Renamed Person  ' }, { name: 'Renamed Person' }],
     ['email', { email: '  New.Address@Test.Local ' }, { email: 'new.address@test.local' }],
-    ['department', { department: ' Logistics ' }, { department: 'Logistics' }],
-    ['department to none', { department: null }, { department: null }],
-    ['department to empty', { department: '   ' }, { department: null }],
+    ['job title', { job_title: ' Analyst ' }, { job_title: 'Analyst' }],
+    ['job title to empty', { job_title: '   ' }, { job_title: null }],
   ])('admin edits %s', async (_, body, expected) => {
-    const target = await createUser({ role: 'agent', department: 'IT' });
+    const target = await createUser({ role: 'agent' });
     const res = await patch(target.id, adminToken, body);
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ id: target.id, ...expected });
@@ -538,17 +540,22 @@ describe('PATCH /api/users/:id edits name, email and department', () => {
 
   test('admin edits several fields at once, and the user logs in with the new email', async () => {
     const target = await createUser();
-    const res = await patch(target.id, adminToken, { name: 'Both Changed', email: 'both@test.local', department: 'Ops' });
+    const departmentId = await createDepartment();
+    const res = await patch(target.id, adminToken, { name: 'Both Changed', email: 'both@test.local', department_id: departmentId });
     expect(res.status).toBe(200);
     const login = await api.post('/api/auth/login').send({ email: 'both@test.local', password: target.password });
     expect(login.status).toBe(200);
-    expect(login.body.user).toMatchObject({ name: 'Both Changed', department: 'Ops' });
+    expect(login.body.user).toMatchObject({
+      name: 'Both Changed',
+      department_id: departmentId,
+      department_name: `Department ${departmentCount}`,
+    });
   });
 
   test('admin edits their own details, but not their own role or active status', async () => {
-    const own = await patch(admin.id, adminToken, { name: 'Head Admin', department: 'Management' });
+    const own = await patch(admin.id, adminToken, { name: 'Head Admin', job_title: 'Director' });
     expect(own.status).toBe(200);
-    expect(own.body).toMatchObject({ name: 'Head Admin', department: 'Management', role: 'admin' });
+    expect(own.body).toMatchObject({ name: 'Head Admin', job_title: 'Director', role: 'admin' });
 
     for (const body of [{ role: 'agent' }, { is_active: false }, { name: 'X', role: 'employee' }]) {
       const res = await patch(admin.id, adminToken, body);
@@ -560,9 +567,9 @@ describe('PATCH /api/users/:id edits name, email and department', () => {
 
   test("HR edits an employee's details", async () => {
     const employee = await createUser();
-    const res = await patch(employee.id, hrToken, { name: 'Edited By HR', email: 'edited.by.hr@test.local', department: 'Sales' });
+    const res = await patch(employee.id, hrToken, { name: 'Edited By HR', email: 'edited.by.hr@test.local', job_title: 'Clerk' });
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ name: 'Edited By HR', email: 'edited.by.hr@test.local', department: 'Sales' });
+    expect(res.body).toMatchObject({ name: 'Edited By HR', email: 'edited.by.hr@test.local', job_title: 'Clerk' });
   });
 
   test.each(['agent', 'admin', 'hr'])("HR editing a(n) %s's details gets 403 and nothing changes", async (role) => {
@@ -607,7 +614,7 @@ describe('PATCH /api/users/:id edits name, email and department', () => {
   test.each([
     ['invalid email', { email: 'not-an-email' }, 'email', 'Enter a valid email'],
     ['empty name', { name: '   ' }, 'name', 'Name is required'],
-    ['too long department', { department: 'x'.repeat(101) }, 'department', 'Department must be 100 characters or less'],
+    ['the old free-text department', { department: 'IT' }, 'department', 'department is not allowed'],
     ['unknown field', { password: 'sneaky123' }, 'password', 'password is not allowed'],
   ])('%s returns 400', async (_, body, field, message) => {
     const target = await createUser();
@@ -621,7 +628,7 @@ describe('PATCH /api/users/:id edits name, email and department', () => {
     const res = await patch(target.id, adminToken, {});
     expect(res.status).toBe(400);
     expect(res.body.message).toBe(
-      'Send at least one of name, email, department, department_id, job_title, role or is_active to change'
+      'Send at least one of name, email, department_id, job_title, role or is_active to change'
     );
   });
 });
@@ -635,7 +642,6 @@ describe('PATCH /api/users/:id: department_id, job_title, order of checks, times
     const body = {
       name: 'All Fields',
       email: `all.fields.${role}@test.local`,
-      department: 'Ops',
       department_id: departmentId,
       job_title: 'Team Lead',
     };
@@ -665,8 +671,8 @@ describe('PATCH /api/users/:id: department_id, job_title, order of checks, times
 
   test('a partial update leaves every other field as it was', async () => {
     const departmentId = await createDepartment();
-    const target = await createUser({ name: 'Keep Me', department: 'IT' });
-    await patch(target.id, adminToken, { department_id: departmentId, job_title: 'Engineer' });
+    const target = await createUser({ name: 'Keep Me', departmentId });
+    await patch(target.id, adminToken, { job_title: 'Engineer' });
     const before = await dbUser(target.id);
 
     const res = await patch(target.id, adminToken, { job_title: 'Senior Engineer' });

@@ -11,14 +11,14 @@ const api = request(app);
 const DEFAULT_PASSWORD = 'password123';
 let userCount = 0;
 
-// Empties users, tickets, comments and ticket_history. Categories, priorities and schema_migrations stay.
+// Empties users, departments, tickets, comments and ticket_history. Categories, priorities and schema_migrations stay.
 async function resetData() {
   assertTestDbName(process.env.DB_NAME); // second safety net: never empty a real database
   // FOREIGN_KEY_CHECKS is per connection, so every statement must run on the same one
   const connection = await pool.getConnection();
   try {
     await connection.query('SET FOREIGN_KEY_CHECKS = 0');
-    for (const table of ['ticket_history', 'comments', 'tickets', 'users']) {
+    for (const table of ['ticket_history', 'comments', 'tickets', 'users', 'departments']) {
       await connection.query(`TRUNCATE TABLE ${table}`);
     }
   } finally {
@@ -33,7 +33,7 @@ async function createUser({
   isActive = true,
   name,
   email,
-  department = null,
+  departmentId = null,
   password = DEFAULT_PASSWORD,
   mustChangePassword = false,
 } = {}) {
@@ -42,14 +42,14 @@ async function createUser({
     name: name || `Test ${role} ${userCount}`,
     email: email || `${role}${userCount}.${Date.now()}@test.local`,
     role,
-    department,
+    department_id: departmentId,
     is_active: isActive,
   };
   // Cost 4 instead of the app's 10: the hash still works with bcrypt.compare, and tests stay fast
   const passwordHash = await bcrypt.hash(password, 4);
   const [result] = await pool.query(
-    'INSERT INTO users (name, email, password_hash, role, department, is_active, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [user.name, user.email, passwordHash, user.role, user.department, user.is_active, mustChangePassword]
+    'INSERT INTO users (name, email, password_hash, role, department_id, is_active, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [user.name, user.email, passwordHash, user.role, user.department_id, user.is_active, mustChangePassword]
   );
   return { id: result.insertId, ...user, password };
 }

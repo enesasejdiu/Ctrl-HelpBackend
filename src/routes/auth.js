@@ -21,6 +21,14 @@ function makeToken(user) {
   });
 }
 
+// What these routes load about a user: the public fields, plus the password hash and active flag for the checks.
+// The department comes from departments; the old free-text users.department is no longer read (see migrations/005).
+const AUTH_USER_SELECT = `
+  SELECT u.id, u.name, u.email, u.role, u.password_hash, u.is_active, u.must_change_password,
+         u.department_id, d.name AS department_name
+  FROM users u
+  LEFT JOIN departments d ON d.id = u.department_id`;
+
 // The only user shape ever sent to clients; password_hash is deliberately left out
 function publicUser(user) {
   return {
@@ -28,7 +36,8 @@ function publicUser(user) {
     name: user.name,
     email: user.email,
     role: user.role,
-    department: user.department,
+    department_id: user.department_id,
+    department_name: user.department_name,
     // True for an account created by an admin or HR, until the user sets their own password
     must_change_password: Boolean(user.must_change_password),
   };
@@ -40,7 +49,7 @@ function publicUser(user) {
 router.post('/login', validate(schemas.login), async (req, res) => {
   const { email, password } = req.valid.body;
 
-  const [rows] = await pool.query('SELECT * FROM users WHERE email = ?', [email]);
+  const [rows] = await pool.query(`${AUTH_USER_SELECT} WHERE u.email = ?`, [email]);
   const user = rows[0];
 
   // Same message for unknown email and wrong password, so attackers can't probe which emails exist
@@ -60,7 +69,7 @@ router.post('/login', validate(schemas.login), async (req, res) => {
 
 // GET /api/auth/me: the logged-in user's profile (the frontend calls this on page load to restore the session)
 router.get('/me', requireAuth, async (req, res) => {
-  const [rows] = await pool.query('SELECT * FROM users WHERE id = ?', [req.user.id]);
+  const [rows] = await pool.query(`${AUTH_USER_SELECT} WHERE u.id = ?`, [req.user.id]);
   // Safety net: requireAuth already rejects deleted users, so this only triggers in a race with a delete
   if (rows.length === 0) {
     throw new HttpError(404, 'User not found');
@@ -75,7 +84,7 @@ router.get('/me', requireAuth, async (req, res) => {
 // token used for this request stays valid.
 router.post('/change-password', requireAuth, validate(schemas.changePassword), async (req, res) => {
   const { currentPassword, newPassword } = req.valid.body;
-  const [[user]] = await pool.query('SELECT * FROM users WHERE id = ?', [req.user.id]);
+  const [[user]] = await pool.query(`${AUTH_USER_SELECT} WHERE u.id = ?`, [req.user.id]);
 
   // 400, not 401: the session is fine, only the typed password is wrong. A 401 would look like an expired login.
   if (!(await bcrypt.compare(currentPassword, user.password_hash))) {

@@ -1,4 +1,4 @@
-// Fills the database with demo data: categories, priorities, 5 users, tickets with history, and comments.
+// Fills the database with demo data: categories, priorities, departments, 6 users, tickets with history, and comments.
 // WIPES ALL TABLES FIRST, so it refuses to run on a database that already has users unless you pass --force.
 // Usage: npm run db:seed (empty database), or npm run db:seed -- --force (wipe and reseed; run db:backup first)
 //
@@ -16,13 +16,18 @@ const PASSWORD = 'password123';
 const HOUR = 60 * 60 * 1000;
 const now = Date.now();
 
-// key → [name, email, role, department]; tickets below refer to users by key
+// Operations has nobody in it, so "delete an empty department" can be tried on the demo data
+const departments = ['IT', 'Finance', 'Sales', 'Human Resources', 'Operations'];
+
+// key → [name, email, role, department name or null]; tickets below refer to users by key.
+// The admin has no department, so the demo also shows a user without one.
 const users = {
-  admin: ['Admin User', 'admin@ticketflow.local', 'admin', 'IT'],
+  admin: ['Admin User', 'admin@ticketflow.local', 'admin', null],
   agent1: ['Arben Krasniqi', 'agent1@ticketflow.local', 'agent', 'IT'],
   agent2: ['Drita Berisha', 'agent2@ticketflow.local', 'agent', 'IT'],
   employee1: ['Liridon Gashi', 'employee1@ticketflow.local', 'employee', 'Finance'],
   employee2: ['Vjosa Hoxha', 'employee2@ticketflow.local', 'employee', 'Sales'],
+  hr: ['Teuta Morina', 'hr@ticketflow.local', 'hr', 'Human Resources'],
 };
 
 // ago = hours before now the ticket was created; event/comment `at` = hours after the ticket was created.
@@ -193,21 +198,38 @@ function playTicket(def, userIds, userNames) {
   };
 }
 
-async function seed() {
+// force: wipe and reseed even when there are users (npm run db:seed -- --force). Returns false if it refused.
+async function seed({ force = process.argv.includes('--force') } = {}) {
   // Safety check: never wipe a database that holds real data by accident
   const [[{ userCount }]] = await pool.query('SELECT COUNT(*) AS userCount FROM users');
-  if (userCount > 0 && !process.argv.includes('--force')) {
+  if (userCount > 0 && !force) {
     console.error('Database is not empty. Run `npm run db:backup` first, then `npm run db:seed -- --force` to wipe and reseed.');
     process.exitCode = 1;
-    return;
+    return false;
   }
 
-  // 1. Wipe everything (TRUNCATE also resets the AUTO_INCREMENT counters)
-  await pool.query('SET FOREIGN_KEY_CHECKS = 0');
-  for (const table of ['ticket_history', 'comments', 'tickets', 'priorities', 'categories', 'users']) {
-    await pool.query(`TRUNCATE TABLE ${table}`);
+  // 1. Wipe everything (TRUNCATE also resets the AUTO_INCREMENT counters). FOREIGN_KEY_CHECKS is per connection, so
+  // every statement here runs on the same one.
+  const connection = await pool.getConnection();
+  try {
+    await connection.query('SET FOREIGN_KEY_CHECKS = 0');
+    for (const table of ['ticket_history', 'comments', 'tickets', 'priorities', 'categories', 'users', 'departments']) {
+      await connection.query(`TRUNCATE TABLE ${table}`);
+    }
+  } finally {
+    await connection.query('SET FOREIGN_KEY_CHECKS = 1');
+    connection.release();
   }
-  await pool.query('SET FOREIGN_KEY_CHECKS = 1');
+
+  // Departments by name: an existing one (any letter case) is reused, so seeding never makes duplicates.
+  // LAST_INSERT_ID(id) makes insertId the existing row's id when the name is already there.
+  const departmentIds = {};
+  for (const name of departments) {
+    const [r] = await pool.query('INSERT INTO departments (name) VALUES (?) ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)', [
+      name,
+    ]);
+    departmentIds[name] = r.insertId;
+  }
 
   // 2–3. Lookup tables
   const categoryIds = {};
@@ -227,8 +249,8 @@ async function seed() {
   for (const [key, [name, email, role, department]] of Object.entries(users)) {
     const hash = await bcrypt.hash(PASSWORD, 10);
     const [r] = await pool.query(
-      'INSERT INTO users (name, email, password_hash, role, department) VALUES (?, ?, ?, ?, ?)',
-      [name, email, hash, role, department]
+      'INSERT INTO users (name, email, password_hash, role, department_id) VALUES (?, ?, ?, ?, ?)',
+      [name, email, hash, role, department ? departmentIds[department] : null]
     );
     userIds[key] = r.insertId;
     userNames[key] = name;
@@ -265,6 +287,7 @@ async function seed() {
   const count = async (table) => (await pool.query(`SELECT COUNT(*) AS n FROM ${table}`))[0][0].n;
   console.log('Seed complete:');
   console.log(`  users:          ${await count('users')}`);
+  console.log(`  departments:    ${await count('departments')}`);
   console.log(`  categories:     ${await count('categories')}`);
   console.log(`  priorities:     ${await count('priorities')}`);
   console.log(`  tickets:        ${await count('tickets')}`);
@@ -273,11 +296,17 @@ async function seed() {
   console.log('');
   Object.values(users).forEach(([name, email, role]) => console.log(`  ${role.padEnd(9)} ${email.padEnd(27)} ${name}`));
   console.log(`\nAll demo users have password: ${PASSWORD}`);
+  return true;
 }
 
-seed()
-  .catch((err) => {
-    console.error('Seeding failed:', err.message);
-    process.exitCode = 1;
-  })
-  .finally(() => pool.end());
+// Run directly by npm run db:seed; tests/seed.test.js imports seed() instead
+if (require.main === module) {
+  seed()
+    .catch((err) => {
+      console.error('Seeding failed:', err.message);
+      process.exitCode = 1;
+    })
+    .finally(() => pool.end());
+}
+
+module.exports = { seed, departments, users };

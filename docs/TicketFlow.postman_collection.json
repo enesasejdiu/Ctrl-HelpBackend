@@ -30,6 +30,10 @@
     {
       "key": "userId",
       "value": "5"
+    },
+    {
+      "key": "departmentId",
+      "value": "1"
     }
   ],
   "item": [
@@ -584,7 +588,7 @@
             "description": "Admin or HR. Creates an account and returns { user, temporaryPassword }. The temporary password is only shown in this response; the new user logs in with it and has must_change_password = true. Admins must send a role (employee, agent, hr, admin); HR can only create employees and may leave role out. department_id (an existing department) and job_title are optional. Change the email to create another account.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"New Employee\",\n  \"email\": \"new.employee@ticketflow.local\",\n  \"role\": \"employee\",\n  \"department\": \"Marketing\",\n  \"job_title\": \"Marketing Assistant\"\n}",
+              "raw": "{\n  \"name\": \"New Employee\",\n  \"email\": \"new.employee@ticketflow.local\",\n  \"role\": \"employee\",\n  \"job_title\": \"Marketing Assistant\",\n  \"department_id\": 1\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -634,16 +638,123 @@
                 "{{userId}}"
               ]
             },
-            "description": "Send any of name, email, department, department_id, job_title, role, is_active (at least one); only those change, and null clears department, department_id and job_title. Admin: anyone, but not their own role or active status, and never the last active admin (409). HR: employee accounts only, and never role (403 even for the same value). 404 for an unknown user, 409 if the email is taken. The example keeps user 5 (Vjosa Hoxha) unchanged; try a new job_title or is_active false.",
+            "description": "Send any of name, email, department_id, job_title, role, is_active (at least one); only those change, and null clears department_id and job_title. Admin: anyone, but not their own role or active status, and never the last active admin (409). HR: employee accounts only, and never role (403 even for the same value). 404 for an unknown user, 409 if the email is taken. The example keeps user 5 (Vjosa Hoxha) unchanged; try a new job_title or is_active false.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"department\": \"Sales\",\n  \"job_title\": \"Sales Representative\",\n  \"is_active\": true\n}",
+              "raw": "{\n  \"job_title\": \"Sales Representative\",\n  \"is_active\": true,\n  \"department_id\": 1\n}",
               "options": {
                 "raw": {
                   "language": "json"
                 }
               }
             }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Departments",
+      "item": [
+        {
+          "name": "List departments",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/departments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "departments"
+              ]
+            },
+            "description": "Any logged-in user. Sorted by name, each with user_count."
+          },
+          "response": []
+        },
+        {
+          "name": "Create department",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/departments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "departments"
+              ]
+            },
+            "description": "Admin or HR. The name is trimmed and inner spaces collapsed; 1-100 characters. 409 DEPARTMENT_NAME_TAKEN if the name exists in any letter case.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Marketing\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Rename department",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/departments/{{departmentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "departments",
+                "{{departmentId}}"
+              ]
+            },
+            "description": "Admin or HR. Rename only. The same name is a no-op; 409 DEPARTMENT_NAME_TAKEN if another department has it.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Marketing and Sales\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete department",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/departments/{{departmentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "departments",
+                "{{departmentId}}"
+              ]
+            },
+            "description": "Admin or HR. Only an empty department: 204, or 409 DEPARTMENT_NOT_EMPTY with user_count."
           },
           "response": []
         }

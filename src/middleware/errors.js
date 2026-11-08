@@ -4,12 +4,14 @@
 
 // An error that carries the HTTP status to respond with, e.g. throw new HttpError(404, 'Ticket not found').
 // `code` is optional: a fixed name the frontend can react to (e.g. 'PASSWORD_CHANGE_REQUIRED'), sent as { code }.
+// `details` is optional too: extra fields for the response body, e.g. { user_count: 3 }.
 class HttpError extends Error {
-  constructor(status, message, code) {
+  constructor(status, message, code, details) {
     super(message);
     this.name = 'HttpError';
     this.status = status;
     if (code) this.code = code;
+    if (details) this.details = details;
   }
 }
 
@@ -34,9 +36,12 @@ function errorHandler(err, req, res, next) {
     return res.status(500).json({ message: 'Something went wrong on the server' });
   }
 
-  // Only our own HttpError codes are sent; other errors can carry a `code` too (e.g. from MySQL) that must stay private
-  const code = err instanceof HttpError ? err.code : undefined;
-  res.status(status).json(code ? { message: err.message, code } : { message: err.message });
+  // Only our own HttpError codes and details are sent; other errors can carry a `code` too (e.g. from MySQL) that must
+  // stay private
+  if (!(err instanceof HttpError)) {
+    return res.status(status).json({ message: err.message });
+  }
+  res.status(status).json({ message: err.message, ...(err.code && { code: err.code }), ...err.details });
 }
 
 module.exports = { HttpError, notFound, errorHandler };

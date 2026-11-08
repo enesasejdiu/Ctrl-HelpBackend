@@ -49,6 +49,8 @@ The API runs on **http://localhost:5050**. Check it with http://localhost:5050/a
 | `npm run db:migrate` | Create the database or apply new migrations    |
 | `npm run db:seed`    | Insert the demo data (empty database only)     |
 | `npm run db:rollback` | Undo the most recent migration (backs up first) |
+| `npm run db:department-report` | Read-only: the free-text department values migration 005 will turn into departments |
+| `npm run db:verify-departments` | Read-only: checks that migration 005 linked every user correctly |
 | `npm run db:backup`  | Back up the database to `backups/`             |
 
 ## Updating and migrations
@@ -124,7 +126,8 @@ Tests live in `tests/**/*.test.js`. `tests/helpers.js` has `api` (a supertest cl
 
 ## Demo accounts
 
-All demo accounts use the password **`password123`**.
+All demo accounts use the password **`password123`**. The demo departments are IT (both agents), Finance, Sales,
+Human Resources (the HR account) and Operations, which has nobody in it. The admin has no department.
 
 | Name           | Email                        | Role     |
 | -------------- | ---------------------------- | -------- |
@@ -133,6 +136,7 @@ All demo accounts use the password **`password123`**.
 | Drita Berisha  | `agent2@ticketflow.local`    | agent    |
 | Liridon Gashi  | `employee1@ticketflow.local` | employee |
 | Vjosa Hoxha    | `employee2@ticketflow.local` | employee |
+| Teuta Morina   | `hr@ticketflow.local`        | hr       |
 
 ## Roles
 
@@ -140,7 +144,7 @@ All demo accounts use the password **`password123`**.
   resolved ticket, or reopen a resolved/closed one.
 - **Agent**: sees all tickets, takes tickets (assigns them to themselves), changes status and priority, and writes
   public comments and internal notes. Cannot assign tickets to other people.
-- **HR**: creates employee accounts, edits their name, email and department, resets their passwords, and
+- **HR**: creates employee accounts, edits their name, email, department and job title, resets their passwords, and
   activates/deactivates them. Cannot change roles or touch staff, HR or admin accounts. For tickets, HR is an employee: own tickets only, no internal notes, no statistics.
 - **Admin**: everything an agent can do, plus assign tickets to any active agent/admin, create accounts with any
   role, manage users (change roles, activate/deactivate), and view the statistics.
@@ -204,7 +208,6 @@ Admins and HR only (anyone else gets 403, no token gets 401).
 | `role`          | admins: yes. HR: no (means `employee`)  | `employee`, `agent`, `hr` or `admin`. HR may only use `employee` (403 otherwise) |
 | `department_id` | no                                      | Must be the id of a row in `departments`                     |
 | `job_title`     | no                                      | Up to 255 characters                                         |
-| `department`    | no                                      | The older free-text department, up to 100 characters         |
 
 Any other field (such as `password`) is refused. The server makes the temporary password: 14 random letters and digits
 from `crypto.randomInt`, hashed with bcrypt.
@@ -221,7 +224,7 @@ Authorization: Bearer <admin or HR token>
 {
   "user": {
     "id": 12, "name": "Teuta Krasniqi", "email": "teuta@ticketflow.local", "role": "employee",
-    "department": null, "department_id": 2, "job_title": "Accountant",
+    "department_id": 2, "department_name": "Finance", "job_title": "Accountant",
     "is_active": true, "must_change_password": true, "created_at": "2026-11-08T15:40:12.000Z"
   },
   "temporaryPassword": "k7RmQ2xWp9aHtB"
@@ -233,8 +236,8 @@ fields, a missing role from an admin, or a `department_id` that doesn't exist.
 
 ### Editing an account: `PATCH /api/users/:id`
 
-Admins and HR only. Send at least one of `name`, `email`, `department`, `department_id`, `job_title`, `role`,
-`is_active`; only those change. `null` clears `department`, `department_id` and `job_title`. Any other field
+Admins and HR only. Send at least one of `name`, `email`, `department_id`, `job_title`, `role`, `is_active`;
+only those change. `null` clears `department_id` and `job_title`. Any other field
 (`password`, `must_change_password`, `last_login_at`, `created_at`, ...) is refused by name.
 
 The checks run in this order, and a request that fails one changes nothing:
@@ -260,7 +263,7 @@ Authorization: Bearer <admin or HR token>
 200 OK
 {
   "id": 12, "name": "Teuta Krasniqi", "email": "teuta@ticketflow.local", "role": "employee",
-  "department": null, "department_id": null, "job_title": "Senior Accountant", "is_active": true,
+  "department_id": null, "department_name": null, "job_title": "Senior Accountant", "is_active": true,
   "must_change_password": false, "last_login_at": null,
   "created_at": "2026-11-08T15:40:12.000Z", "updated_at": "2026-11-08T16:02:45.000Z"
 }
@@ -296,6 +299,57 @@ expire. Ending them for good would need a per-user token version or "valid after
 
 Role changes and deactivation take effect immediately: every request checks the user's current role and active
 status in the database.
+
+## Departments
+
+Anyone logged in can list departments; admins and HR create, rename and delete them.
+
+- **Names** are trimmed, with runs of spaces inside collapsed to one, and must be 1–100 characters. They are unique
+  regardless of letter case: "Sales" and "sales" clash. The table's collation (`utf8mb4_unicode_ci`) makes the
+  `UNIQUE` index on `name` case-insensitive, so the database guarantees this too. The same collation also treats
+  accents as equal ("Café" and "Cafe" clash). A clash is 409 `DEPARTMENT_NAME_TAKEN`. Invalid names, a missing name
+  and extra fields are 400 in the usual `{ message, errors }` format.
+- **Renaming** to exactly the current name is a 200 that changes nothing. Changing only the letter case is a real
+  rename.
+- **Deleting** only works for a department nobody is in. Otherwise it's 409:
+
+  ```json
+  { "message": "Move the users out of this department before deleting it", "code": "DEPARTMENT_NOT_EMPTY", "user_count": 2 }
+  ```
+
+  The check and the delete run in one transaction that locks the department row. A user being put into the department
+  at the same moment is either counted (if their change came first) or refused with "Department not found" (if it
+  came second). Without the lock, the `ON DELETE SET NULL` foreign key would silently take them out of it.
+- An unknown id is 404 on rename and delete, checked before the body.
+
+```json
+GET /api/departments → 200
+[
+  { "id": 2, "name": "Finance", "user_count": 0, "created_at": "2026-11-08T17:10:00.000Z", "updated_at": "2026-11-08T17:10:00.000Z" },
+  { "id": 1, "name": "IT", "user_count": 3, "created_at": "2026-11-08T17:09:12.000Z", "updated_at": "2026-11-08T17:09:12.000Z" }
+]
+```
+
+`POST /api/departments { "name": "  Human   Resources " }` → 201 with `{ "id": 3, "name": "Human Resources", "user_count": 0, ... }`.
+
+### From the old free-text department to departments (migration 005)
+
+Users used to have a free-text `department`. Migration 005 turns those values into rows in `departments` and links
+each user through `department_id`. The app now reads and writes only `department_id`; user responses include the
+joined `department_name`, and sending `department` is refused like any other unknown field.
+
+1. `npm run db:department-report` shows the raw values, the groups they will form, and likely near-duplicates
+   ("Slaes" / "Sales", "HR" / "Human Resources"). Nothing is merged by guessing: add explicit merges to the mapping in
+   `migrations/005_link_users_to_departments.sql` before running it.
+2. `npm run db:migrate` applies it and prints a summary (departments created and reused, users linked, users left
+   without one).
+3. `npm run db:verify-departments` checks the result.
+
+Values are trimmed, inner whitespace is collapsed, and case and accents are ignored. Empty values mean no department.
+A group's name is its most common spelling. Existing departments are reused, and users who already had a
+`department_id` are left alone. `npm run db:rollback` undoes exactly what 005 did, using its
+`department_migration_005` table. The old `users.department` column is kept for now; a later migration will drop
+it, together with that table.
 
 ## Ticket status flow
 
@@ -356,10 +410,14 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | PATCH  | `/api/tickets/:id/assign`       | agent, admin        | Assign `{ assigned_to }` (`null` = unassign; agents can only assign themselves)                 |
 | GET    | `/api/users/agents`             | agent, admin        | Active agents and admins (for the "Assign to" dropdown)                                         |
 | GET    | `/api/users`                    | admin, hr           | All users                                                                                       |
-| POST   | `/api/users`                    | admin, hr           | Create an account `{ name, email, role, department_id?, job_title?, department? }` → `{ user, temporaryPassword }` (HR: employees only, role optional). See [Creating an account](#creating-an-account-post-apiusers) |
+| POST   | `/api/users`                    | admin, hr           | Create an account `{ name, email, role, department_id?, job_title? }` → `{ user, temporaryPassword }` (HR: employees only, role optional). See [Creating an account](#creating-an-account-post-apiusers) |
 | POST   | `/api/users/:id/reset-password` | admin, hr        | No body. New temporary password → `{ user, temporaryPassword }`; sets `must_change_password` (not your own account: 403; HR: employees only). See [Resetting a password](#resetting-a-password-post-apiusersidreset-password) |
-| PATCH  | `/api/users/:id`                | admin, hr           | Change `{ name?, email?, department?, department_id?, job_title?, role?, is_active? }` (at least one). Admin: anyone, but not their own role/active status, and never the last active admin. HR: employees only, never `role`. See [Editing an account](#editing-an-account-patch-apiusersid) |
+| PATCH  | `/api/users/:id`                | admin, hr           | Change `{ name?, email?, department_id?, job_title?, role?, is_active? }` (at least one). Admin: anyone, but not their own role/active status, and never the last active admin. HR: employees only, never `role`. See [Editing an account](#editing-an-account-patch-apiusersid) |
 | GET    | `/api/stats`                    | admin               | Dashboard statistics: totals, by status/priority/category/agent, 8-week trend                   |
+| GET    | `/api/departments`              | logged in           | All departments, sorted by name, with `user_count` |
+| POST   | `/api/departments`              | admin, hr           | Create `{ name }` → 201 the department (409 `DEPARTMENT_NAME_TAKEN`) |
+| PATCH  | `/api/departments/:id`          | admin, hr           | Rename `{ name }` → the department (409 `DEPARTMENT_NAME_TAKEN`) |
+| DELETE | `/api/departments/:id`          | admin, hr           | Delete an empty department → 204 (409 `DEPARTMENT_NOT_EMPTY` with `user_count`). See [Departments](#departments) |
 
 A Postman collection with every request is in [`docs/TicketFlow.postman_collection.json`](docs/TicketFlow.postman_collection.json).
 Import it, run one of the **Login** requests (it saves the token automatically), then try the other requests.
@@ -373,12 +431,15 @@ docs/
   TicketFlow.postman_collection.json   Postman collection for every endpoint
 migrations/
   001_initial.sql         The original tables; later changes go in new numbered files
+  005_link_users_to_departments.sql   Turns the free-text department into departments
   down/                   Rollback files, named like the migration they undo (npm run db:rollback)
 scripts/
   migrate.js              Creates the database and applies new migrations (npm run db:migrate)
   rollback.js             Undoes the most recent migration (npm run db:rollback)
-  seed.js                 Wipes all tables and inserts demo data (npm run db:seed)
+  seed.js                 Wipes all tables and inserts demo data, departments included (npm run db:seed)
   backup-db.js            Writes a SQL backup to backups/ (npm run db:backup)
+  department-report.js    Read-only report on the free-text departments (npm run db:department-report)
+  verify-department-migration.js   Checks migration 005 (npm run db:verify-departments)
   reference-data.js       The categories and priorities (used by seed.js and the tests)
 src/
   server.js               Entry point: loads .env and starts the server
@@ -400,6 +461,7 @@ src/
     tickets.js            /api/tickets: list, create, view, comments, status, priority, assign
     users.js              /api/users: agent list, creating accounts, user management
     stats.js              /api/stats: dashboard statistics
+    departments.js        /api/departments: list, create, rename, delete
 tests/
   globalSetup.js          Creates the throwaway test database before all tests
   globalTeardown.js       Drops it after all tests
@@ -408,6 +470,7 @@ tests/
   helpers.js              api, resetData, createUser, loginAs
   testDb.js               Test database name rules and safety guard
   smoke.test.js           Smoke test proving the setup works
+  departments.test.js     Departments, including deleting while a user is being assigned
   routes.test.js          Every route needs a login and blocks users with a temporary password
 jest.config.js            Jest settings
 .env.example              Example configuration (copy to .env)
@@ -418,8 +481,8 @@ TASKS.md                  Development task list
 
 | Table            | Contents                                                                                     |
 | ---------------- | -------------------------------------------------------------------------------------------- |
-| `users`          | Accounts: name, email, password hash, role (employee/agent/admin), department, active flag   |
-| `departments`    | Departments (not used by the app yet; `users.department_id` links to them)                   |
+| `users`          | Accounts: name, email, password hash, role (employee/agent/hr/admin), department_id, job title, active flag. `department` is the old free-text value, no longer used |
+| `departments`    | Departments people belong to; `users.department_id` links to them (see [Departments](#departments)) |
 | `categories`     | Ticket categories (Hardware, Software, Network, Access, Email, Other)                         |
 | `priorities`     | Priority levels with their target resolution time in hours                                   |
 | `tickets`        | Tickets: requester, assignee, category, priority, status, resolution note, timestamps        |

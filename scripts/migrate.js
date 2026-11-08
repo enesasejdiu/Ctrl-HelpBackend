@@ -59,12 +59,20 @@ function findPending(migrations, applied) {
   return pending;
 }
 
+// A migration can report what it did by ending with a SELECT that has a `summary` column; those rows are printed.
+// With several statements the driver returns one result per statement, and row sets are the arrays among them.
+function summaryRows(results) {
+  const sets = Array.isArray(results) && results.some(Array.isArray) ? results.filter(Array.isArray) : [results];
+  return sets.flat().filter((row) => row && typeof row === 'object' && 'summary' in row);
+}
+
 // dbName defaults to DB_NAME from .env. backupFirst: false skips the backup, for a brand-new empty database.
-async function migrate({ dbName = process.env.DB_NAME, backupFirst = true } = {}) {
+// until: apply only the migrations up to and including this number (e.g. '004'); tests use it to build an older schema.
+async function migrate({ dbName = process.env.DB_NAME, backupFirst = true, until } = {}) {
   if (!dbName) {
     throw new Error('DB_NAME is not set. Copy .env.example to .env first');
   }
-  const migrations = readMigrations();
+  const migrations = readMigrations().filter((migration) => !until || migration.file.slice(0, 3) <= until);
 
   // Connect without selecting a database, since it may not exist yet
   const connection = await mysql.createConnection({
@@ -107,7 +115,11 @@ async function migrate({ dbName = process.env.DB_NAME, backupFirst = true } = {}
 
     for (const migration of pending) {
       try {
-        await connection.query(migration.sql);
+        const [results] = await connection.query(migration.sql);
+        for (const { summary, ...counts } of summaryRows(results)) {
+          const text = Object.entries(counts).map(([key, value]) => `${key.replace(/_/g, ' ')}: ${value}`);
+          console.log(`  ${summary}: ${text.join(', ')}`);
+        }
       } catch (err) {
         const restore = backupFile ? ` Restore backups/${backupFile} before trying again.` : '';
         throw new Error(`${migration.file} failed and may be half applied: ${err.message}.${restore}`);
