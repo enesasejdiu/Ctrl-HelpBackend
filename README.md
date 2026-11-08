@@ -140,7 +140,15 @@ All demo accounts use the password **`password123`**.
 
 There is no self-registration. An admin or HR creates each account with `POST /api/users`; the response contains a
 **temporary password**, shown only that once (only its hash is stored). Pass it on to the new user, who logs in with
-it. Their `must_change_password` is `true` until they set their own password (that endpoint comes in a later task).
+it. Their `must_change_password` is `true` until they set their own password with `POST /api/auth/change-password`.
+Until then **every other endpoint answers 403** (only `GET /api/auth/me` and the change-password request work):
+
+```json
+{ "message": "You must change your password before continuing", "code": "PASSWORD_CHANGE_REQUIRED" }
+```
+
+The frontend uses `code` to send the user to its "Set your password" page. A new password needs 10–72 characters with
+at least one letter and one number, and must differ from the current one.
 
 Role changes and deactivation take effect immediately: every request checks the user's current role and active
 status in the database.
@@ -193,6 +201,7 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | GET    | `/api/health`                   | anyone              | Health check → `{ status: "ok" }`                                                               |
 | POST   | `/api/auth/login`               | anyone              | Log in `{ email, password }` → `{ token, user }` (`user.must_change_password` is true for a temporary password) |
 | GET    | `/api/auth/me`                  | logged in           | The current user                                                                                |
+| POST   | `/api/auth/change-password`     | logged in           | Change your password `{ currentPassword, newPassword }` → `{ user }`; clears `must_change_password` (401 if the current password is wrong) |
 | GET    | `/api/meta`                     | logged in           | Categories and priorities (for dropdowns)                                                       |
 | GET    | `/api/tickets`                  | logged in           | List tickets (employees: own only). Filters: `status`, `priority`, `category`, `assigned=me\|unassigned`, `q`, `overdue=1` |
 | POST   | `/api/tickets`                  | logged in           | Create a ticket `{ title, description, category_id, priority_id }`                              |
