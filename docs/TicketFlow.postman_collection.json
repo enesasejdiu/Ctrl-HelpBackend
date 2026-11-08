@@ -595,6 +595,26 @@
           "response": []
         },
         {
+          "name": "Reset password",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/{{userId}}/reset-password",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "users",
+                "{{userId}}",
+                "reset-password"
+              ]
+            },
+            "description": "Admin or HR. Gives the user a new temporary password, returned once as { user, temporaryPassword }. The old password stops working immediately, and the user must change the new one at their next login (must_change_password). Admins can reset anyone but themselves; HR only employees. Running this changes the password of user {{userId}}."
+          },
+          "response": []
+        },
+        {
           "name": "Update user",
           "request": {
             "method": "PATCH",

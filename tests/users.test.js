@@ -289,3 +289,89 @@ describe('HR is an employee for tickets and stats', () => {
     expect(res.status).toBe(403);
   });
 });
+
+describe('POST /api/users/:id/reset-password', () => {
+  const reset = (id, token) => api.post(`/api/users/${id}/reset-password`).set(auth(token));
+
+  test.each(['agent', 'hr', 'employee', 'admin'])('admin resets a(n) %s', async (role) => {
+    const target = await createUser({ role });
+    const res = await reset(target.id, adminToken);
+
+    expect(res.status).toBe(200);
+    expect(res.body.user).toMatchObject({ id: target.id, role, must_change_password: true });
+    expect(res.body.user).not.toHaveProperty('password_hash');
+    expect(res.body.temporaryPassword).toMatch(/^[A-Za-z0-9]{12,}$/);
+    expect((await dbUser(target.id)).must_change_password).toBe(1);
+  });
+
+  test('HR resets an employee', async () => {
+    const target = await createUser();
+    const res = await reset(target.id, hrToken);
+    expect(res.status).toBe(200);
+    expect(res.body.user.must_change_password).toBe(true);
+  });
+
+  test.each(['agent', 'admin', 'hr'])('HR resetting a(n) %s gets 403 and the password stays', async (role) => {
+    const target = await createUser({ role });
+    const before = (await dbUser(target.id)).password_hash;
+    const res = await reset(target.id, hrToken);
+    expect(res.status).toBe(403);
+    expect(res.body.message).toBe('HR can only reset passwords of employee accounts');
+    expect((await dbUser(target.id)).password_hash).toBe(before);
+  });
+
+  test.each(['employee', 'agent'])('a(n) %s gets 403', async (role) => {
+    const target = await createUser();
+    const res = await reset(target.id, await loginAs(await createUser({ role })));
+    expect(res.status).toBe(403);
+  });
+
+  test.each([
+    ['admin', () => [admin, adminToken]],
+    ['HR', () => [hr, hrToken]],
+  ])('%s resetting their own account gets 400', async (_, who) => {
+    const [me, token] = who();
+    const res = await reset(me.id, token);
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe('Use Change password for your own account');
+  });
+
+  test('an unknown user returns 404', async () => {
+    expect((await reset(999999, adminToken)).status).toBe(404);
+  });
+
+  test('a non-numeric id returns 400', async () => {
+    const res = await reset('abc', adminToken);
+    expect(res.status).toBe(400);
+    expect(res.body.errors[0].field).toBe('id');
+  });
+
+  test('a deactivated account can be reset too', async () => {
+    const target = await createUser({ isActive: false });
+    expect((await reset(target.id, adminToken)).status).toBe(200);
+  });
+
+  test('the old password stops working, the new one logs in, and the user must change it', async () => {
+    const target = await createUser();
+    const oldToken = await loginAs(target);
+    const res = await reset(target.id, adminToken);
+    const { temporaryPassword } = res.body;
+
+    const oldLogin = await api.post('/api/auth/login').send({ email: target.email, password: target.password });
+    expect(oldLogin.status).toBe(401);
+    const newLogin = await api.post('/api/auth/login').send({ email: target.email, password: temporaryPassword });
+    expect(newLogin.status).toBe(200);
+    expect(newLogin.body.user.must_change_password).toBe(true);
+
+    // Any session the user still has is blocked until they choose a new password
+    const blocked = await api.get('/api/tickets').set(auth(oldToken));
+    expect(blocked.body.code).toBe('PASSWORD_CHANGE_REQUIRED');
+  });
+
+  test('every reset gives a different password', async () => {
+    const target = await createUser();
+    const a = await reset(target.id, adminToken);
+    const b = await reset(target.id, adminToken);
+    expect(a.body.temporaryPassword).not.toBe(b.body.temporaryPassword);
+  });
+});
