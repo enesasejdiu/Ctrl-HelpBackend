@@ -48,6 +48,7 @@ The API runs on **http://localhost:5050**. Check it with http://localhost:5050/a
 | `npm run dev`        | Start with nodemon (auto-reload)               |
 | `npm run db:migrate` | Create the database or apply new migrations    |
 | `npm run db:seed`    | Insert the demo data (empty database only)     |
+| `npm run db:rollback` | Undo the most recent migration (backs up first) |
 | `npm run db:backup`  | Back up the database to `backups/`             |
 
 ## Updating and migrations
@@ -72,6 +73,12 @@ To change the database, add a new file with the next number, such as `migrations
   same migration.
 - **Pull before picking a number.** Two files with the same number stop `db:migrate` until one is renumbered.
 - Each statement ends with `;`. `DELIMITER` doesn't work, because it's a feature of the `mysql` command line.
+
+To undo the most recent migration, run `npm run db:rollback`. It backs up first, runs the file with the same name in
+`migrations/down/`, and removes the migration from `schema_migrations` so the next `db:migrate` applies it again. It
+undoes one migration per run, and refuses if that migration has no file in `migrations/down/` (001 and 002 have none).
+A rollback usually deletes data (the columns and tables the migration added), so read the down file first. When you
+add a migration that can be undone, add its down file in the same commit.
 
 MySQL can't roll back schema changes, so a migration that fails partway can leave some of its changes in place. Restore
 the backup named in the error, fix the file, and run `db:migrate` again. A restore doesn't remove tables that aren't in
@@ -219,8 +226,10 @@ docs/
   TicketFlow.postman_collection.json   Postman collection for every endpoint
 migrations/
   001_initial.sql         The original tables; later changes go in new numbered files
+  down/                   Rollback files, named like the migration they undo (npm run db:rollback)
 scripts/
   migrate.js              Creates the database and applies new migrations (npm run db:migrate)
+  rollback.js             Undoes the most recent migration (npm run db:rollback)
   seed.js                 Wipes all tables and inserts demo data (npm run db:seed)
   backup-db.js            Writes a SQL backup to backups/ (npm run db:backup)
   reference-data.js       The categories and priorities (used by seed.js and the tests)
@@ -260,6 +269,7 @@ TASKS.md                  Development task list
 | Table            | Contents                                                                                     |
 | ---------------- | -------------------------------------------------------------------------------------------- |
 | `users`          | Accounts: name, email, password hash, role (employee/agent/admin), department, active flag   |
+| `departments`    | Departments (not used by the app yet; `users.department_id` links to them)                   |
 | `categories`     | Ticket categories (Hardware, Software, Network, Access, Email, Other)                         |
 | `priorities`     | Priority levels with their target resolution time in hours                                   |
 | `tickets`        | Tickets: requester, assignee, category, priority, status, resolution note, timestamps        |
