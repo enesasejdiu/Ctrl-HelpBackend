@@ -13,7 +13,7 @@ async function quietSeed() {
   }
 }
 
-afterAll(resetData); // leave the shared test database empty for the other test files
+afterEach(resetData); // leave the shared test database empty for the other test files (afterAll could run after the pool is closed)
 
 test('creates the departments, links users by department_id, and leaves one empty and one user without', async () => {
   expect(await quietSeed()).toBe(true);

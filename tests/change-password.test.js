@@ -1,81 +1,12 @@
-// Tests for /api/auth: self-registration is gone, login and /me report must_change_password, change-password,
-// and the rule that blocks a user with a temporary password until they change it.
+// Tests for POST /api/auth/change-password: the password rule, a wrong current password, clearing
+// must_change_password, sessions, and that generated temporary passwords always pass the rule.
 const bcrypt = require('bcryptjs');
 const pool = require('../src/db');
 const { newPassword } = require('../src/schemas/common');
 const { makeTemporaryPassword } = require('../src/temporaryPassword');
-const { api, resetData, createUser, loginAs } = require('./helpers');
-
-const auth = (token) => ({ Authorization: `Bearer ${token}` });
-async function dbUser(id) {
-  const [[row]] = await pool.query('SELECT * FROM users WHERE id = ?', [id]);
-  return row;
-}
+const { api, resetData, createUser, loginAs, auth, dbUser, dbSnapshot, expectError } = require('./helpers');
 
 beforeEach(resetData);
-
-describe('self-registration', () => {
-  test('POST /api/auth/register returns 404 and creates nothing', async () => {
-    const res = await api.post('/api/auth/register').send({
-      name: 'Someone',
-      email: 'someone@test.local',
-      password: 'password123',
-    });
-    expect(res.status).toBe(404);
-    expect(res.body.message).toMatch(/Route not found/);
-
-    const login = await api.post('/api/auth/login').send({ email: 'someone@test.local', password: 'password123' });
-    expect(login.status).toBe(401);
-  });
-});
-
-describe('must_change_password', () => {
-  test('login and /me return false for an account that has its own password', async () => {
-    const user = await createUser();
-    const login = await api.post('/api/auth/login').send({ email: user.email, password: user.password });
-    expect(login.status).toBe(200);
-    expect(login.body.user.must_change_password).toBe(false);
-    expect(login.body.user).not.toHaveProperty('password_hash');
-
-    const me = await api.get('/api/auth/me').set('Authorization', `Bearer ${login.body.token}`);
-    expect(me.body.must_change_password).toBe(false);
-  });
-
-  test.each([
-    ['a flagged user', true],
-    ['a normal user', false],
-  ])('login tells the client next to the token whether %s must change their password', async (_, flagged) => {
-    const user = await createUser({ mustChangePassword: flagged });
-    const login = await api.post('/api/auth/login').send({ email: user.email, password: user.password });
-    expect(login.status).toBe(200);
-    expect(login.body).toMatchObject({ token: expect.any(String), must_change_password: flagged });
-    expect(login.body.user.must_change_password).toBe(flagged);
-  });
-
-  test('a successful login sets last_login_at; a wrong password or a deactivated account does not', async () => {
-    const user = await createUser();
-    const inactive = await createUser({ isActive: false });
-    const lastLogin = async (id) => (await dbUser(id)).last_login_at;
-    expect(await lastLogin(user.id)).toBeNull();
-
-    expect((await api.post('/api/auth/login').send({ email: user.email, password: 'wrong-password1' })).status).toBe(401);
-    expect(await lastLogin(user.id)).toBeNull();
-    expect((await api.post('/api/auth/login').send({ email: inactive.email, password: inactive.password })).status).toBe(403);
-    expect(await lastLogin(inactive.id)).toBeNull();
-
-    const before = Date.now() - 2000; // the database clock rounds to whole seconds
-    expect((await api.post('/api/auth/login').send({ email: user.email, password: user.password })).status).toBe(200);
-    expect((await lastLogin(user.id)).getTime()).toBeGreaterThanOrEqual(before);
-  });
-
-  test('an HR user can log in and /me shows the hr role', async () => {
-    const hr = await createUser({ role: 'hr' });
-    const token = await loginAs(hr);
-    const me = await api.get('/api/auth/me').set('Authorization', `Bearer ${token}`);
-    expect(me.status).toBe(200);
-    expect(me.body).toMatchObject({ id: hr.id, role: 'hr', must_change_password: false });
-  });
-});
 
 describe('POST /api/auth/change-password', () => {
   const NEW_PASSWORD = 'brand-new-pass1';
@@ -205,76 +136,57 @@ describe('temporary passwords and the password rule', () => {
   });
 });
 
-describe('blocking until a temporary password is changed', () => {
-  const PASSWORD_CHANGE_REQUIRED = {
-    message: 'You must change your password before continuing',
-    code: 'PASSWORD_CHANGE_REQUIRED',
-  };
-  const get = (path, token) => api.get(path).set('Authorization', `Bearer ${token}`);
+describe('POST /api/auth/change-password: more rules', () => {
+  const change = (token, body) => api.post('/api/auth/change-password').set(auth(token)).send(body);
 
-  test('a flagged user can log in and use /me, but every other endpoint returns 403 PASSWORD_CHANGE_REQUIRED', async () => {
-    const user = await createUser({ role: 'admin', mustChangePassword: true });
-    const login = await api.post('/api/auth/login').send({ email: user.email, password: user.password });
-    expect(login.status).toBe(200);
-    expect(login.body.user.must_change_password).toBe(true);
-    const token = login.body.token;
-
-    expect((await get('/api/auth/me', token)).status).toBe(200);
-    expect((await get('/api/auth/me/', token)).status).toBe(200);
-    for (const path of ['/api/tickets', '/api/tickets?status=open', '/api/meta', '/api/users', '/api/stats']) {
-      const res = await get(path, token);
-      expect([path, res.status, res.body]).toEqual([path, 403, PASSWORD_CHANGE_REQUIRED]);
-    }
-    const create = await api
-      .post('/api/tickets')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ title: 'x', description: 'y', category_id: 1, priority_id: 1 });
-    expect(create.status).toBe(403);
-    expect(create.body.code).toBe('PASSWORD_CHANGE_REQUIRED');
-  });
-
-  test('after changing the password the same token works everywhere', async () => {
+  test.each([
+    ['abcd1234 (8 characters)', 'abcd1234', 'New password must be at least 10 characters'],
+    ['abcde1234 (9 characters)', 'abcde1234', 'New password must be at least 10 characters'],
+    ['abcdefghij (no digit)', 'abcdefghij', 'New password must contain at least one number'],
+    ['1234567890 (no letter)', '1234567890', 'New password must contain at least one letter'],
+  ])('a new password %s is refused and nothing changes', async (_, password, message) => {
     const user = await createUser({ mustChangePassword: true });
     const token = await loginAs(user);
-    expect((await get('/api/tickets', token)).status).toBe(403);
-
-    const res = await api
-      .post('/api/auth/change-password')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ currentPassword: user.password, newPassword: 'my-own-password9' });
-    expect(res.status).toBe(200);
-    expect((await get('/api/tickets', token)).status).toBe(200);
+    const before = await dbSnapshot();
+    const res = await change(token, { currentPassword: user.password, newPassword: password });
+    expectError(res, 400, undefined, message);
+    expect(await dbSnapshot()).toEqual(before);
   });
 
-  test('an account created by an admin is blocked until its temporary password is changed', async () => {
-    const admin = await createUser({ role: 'admin' });
-    const created = await api
-      .post('/api/users')
-      .set('Authorization', `Bearer ${await loginAs(admin)}`)
-      .send({ name: 'New Person', email: 'new.person@test.local', role: 'employee' });
-    const { temporaryPassword } = created.body;
-
-    const login = await api.post('/api/auth/login').send({ email: 'new.person@test.local', password: temporaryPassword });
-    expect((await get('/api/tickets', login.body.token)).body.code).toBe('PASSWORD_CHANGE_REQUIRED');
-
-    await api
-      .post('/api/auth/change-password')
-      .set('Authorization', `Bearer ${login.body.token}`)
-      .send({ currentPassword: temporaryPassword, newPassword: 'chosen-by-me1' });
-    expect((await get('/api/tickets', login.body.token)).status).toBe(200);
-  });
-
-  test('an unflagged user is never blocked', async () => {
-    const user = await createUser({ role: 'agent' });
+  test('only the current password sent (new one missing) is refused and nothing changes', async () => {
+    const user = await createUser();
     const token = await loginAs(user);
-    for (const path of ['/api/auth/me', '/api/tickets', '/api/meta', '/api/users/agents']) {
-      expect([path, (await get(path, token)).status]).toEqual([path, 200]);
-    }
+    const before = await dbSnapshot();
+    const res = await change(token, { currentPassword: user.password });
+    expectError(res, 400, undefined, 'New password is required');
+    expect(await dbSnapshot()).toEqual(before);
   });
 
-  test('other errors never leak a code (e.g. a 404 has only a message)', async () => {
-    const res = await api.get('/api/nope');
-    expect(res.status).toBe(404);
-    expect(Object.keys(res.body)).toEqual(['message']);
+  test('the same password again is refused and nothing changes', async () => {
+    const user = await createUser({ password: 'Same-password1', mustChangePassword: true });
+    const token = await loginAs(user);
+    const before = await dbSnapshot();
+    const res = await change(token, { currentPassword: 'Same-password1', newPassword: 'Same-password1' });
+    expectError(res, 400, undefined, 'New password must be different from the current one');
+    expect(await dbSnapshot()).toEqual(before);
+  });
+
+  test('a wrong current password is 400 INVALID_CURRENT_PASSWORD (not 401) and nothing changes', async () => {
+    const user = await createUser({ mustChangePassword: true });
+    const token = await loginAs(user);
+    const before = await dbSnapshot();
+    const res = await change(token, { currentPassword: 'Not-my-password1', newPassword: 'Brand-new-pass1' });
+    expectError(res, 400, 'INVALID_CURRENT_PASSWORD', 'Current password is wrong');
+    expect(await dbSnapshot()).toEqual(before);
+  });
+
+  // Logins are stateless JWTs with no revocation list, so the app can't end other sessions. When it can, remove .skip.
+  test.skip('SKIPPED (tokens are stateless JWTs and cannot be revoked): changing the password ends the other sessions', async () => {
+    const user = await createUser();
+    const current = await loginAs(user);
+    const other = await loginAs(user);
+    await change(current, { currentPassword: user.password, newPassword: 'Brand-new-pass1' });
+    expect((await api.get('/api/auth/me').set(auth(other))).status).toBe(401);
+    expect((await api.get('/api/auth/me').set(auth(current))).status).toBe(200);
   });
 });

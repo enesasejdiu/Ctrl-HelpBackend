@@ -63,4 +63,74 @@ async function loginAs(user) {
   return res.body.token;
 }
 
-module.exports = { api, resetData, createUser, loginAs, DEFAULT_PASSWORD };
+// The Authorization header for a token, e.g. api.get(path).set(auth(token))
+const auth = (token) => ({ Authorization: `Bearer ${token}` });
+
+async function dbUser(id) {
+  const [[row]] = await pool.query('SELECT * FROM users WHERE id = ?', [id]);
+  return row;
+}
+
+// Inserts a department straight into the database and returns its id. Names are unique per run unless given.
+let departmentCount = 0;
+async function createDepartment(name) {
+  departmentCount += 1;
+  const [result] = await pool.query('INSERT INTO departments (name) VALUES (?)', [name || `Test department ${departmentCount}`]);
+  return result.insertId;
+}
+
+// One user of every kind, logged in: admin, a second admin (for last-admin rules), hr, agent, employee, and a user who
+// still has a temporary password (flagged). Each entry is the createUser() result plus its `token`.
+async function createCallers() {
+  const callers = {
+    admin: await createUser({ role: 'admin' }),
+    admin2: await createUser({ role: 'admin' }),
+    hr: await createUser({ role: 'hr' }),
+    agent: await createUser({ role: 'agent' }),
+    employee: await createUser({ role: 'employee' }),
+    flagged: await createUser({ role: 'admin', mustChangePassword: true }),
+  };
+  for (const user of Object.values(callers)) user.token = await loginAs(user);
+  return callers;
+}
+
+// Asserts an error response in the API's format: { message, code? } (plus any extra fields, e.g. user_count)
+function expectError(res, status, code, message) {
+  expect({ status: res.status, code: res.body.code }).toEqual({ status, code });
+  expect(typeof res.body.message).toBe('string');
+  expect(res.body.message.length).toBeGreaterThan(0);
+  if (message !== undefined) expect(res.body.message).toEqual(message);
+}
+
+// Asserts that no password hash is anywhere in a response body (as a field, or as a bcrypt-looking value)
+function expectNoPasswordHash(body) {
+  const text = JSON.stringify(body ?? null);
+  expect(text).not.toMatch(/password_hash/i);
+  expect(text).not.toMatch(/\$2[aby]\$\d{2}\$/);
+}
+
+// Every row of the tables the API can change, for "nothing changed" assertions:
+// expect(await dbSnapshot()).toEqual(before)
+async function dbSnapshot() {
+  const snapshot = {};
+  for (const table of ['users', 'departments', 'tickets', 'comments', 'ticket_history']) {
+    const [rows] = await pool.query(`SELECT * FROM ${table} ORDER BY id`);
+    snapshot[table] = rows;
+  }
+  return snapshot;
+}
+
+module.exports = {
+  api,
+  resetData,
+  createUser,
+  loginAs,
+  DEFAULT_PASSWORD,
+  auth,
+  dbUser,
+  createDepartment,
+  createCallers,
+  expectError,
+  expectNoPasswordHash,
+  dbSnapshot,
+};
