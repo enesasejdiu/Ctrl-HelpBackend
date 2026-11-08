@@ -13,11 +13,17 @@ const { makeTemporaryPassword } = require('../temporaryPassword');
 const router = express.Router();
 
 // Columns safe to send to the client; password_hash is never selected
-const USER_COLUMNS = 'id, name, email, role, department, is_active, must_change_password, created_at';
+const USER_COLUMNS =
+  'id, name, email, role, department, department_id, job_title, is_active, must_change_password, created_at';
 
 // MySQL returns booleans as 0/1; send real true/false to the client
 function formatUser(row) {
   return { ...row, is_active: Boolean(row.is_active), must_change_password: Boolean(row.must_change_password) };
+}
+
+// A 400 for one field, in the same { message, errors } shape as validate() uses, for checks that need the database
+function fieldError(res, field, message) {
+  return res.status(400).json({ message, errors: [{ field, message }] });
 }
 
 router.use(requireAuth);
@@ -36,14 +42,29 @@ router.get('/', requireRole('admin', 'hr'), async (req, res) => {
   res.json(rows.map(formatUser));
 });
 
-// POST /api/users { name, email, role, department? } (admin and HR) → 201 { user, temporaryPassword }
+// POST /api/users { name, email, role, department?, department_id?, job_title? } (admin and HR)
+// → 201 { user, temporaryPassword }. HR may leave out role (it means employee); admins must send it.
 // The server makes a temporary password and returns it only in this response; only its hash is stored.
 router.post('/', requireRole('admin', 'hr'), validate(schemas.createUser), async (req, res) => {
-  const { name, email, role } = req.valid.body;
+  const { name, email } = req.valid.body;
+  const isHr = req.user.role === 'hr';
+  const role = req.valid.body.role ?? (isHr ? 'employee' : undefined);
   const department = req.valid.body.department || null;
+  const departmentId = req.valid.body.department_id ?? null;
+  const jobTitle = req.valid.body.job_title || null;
 
-  if (req.user.role === 'hr' && role !== 'employee') {
+  if (!role) {
+    return fieldError(res, 'role', 'Role is required');
+  }
+  if (isHr && role !== 'employee') {
     throw new HttpError(403, 'HR can only create employee accounts');
+  }
+
+  if (departmentId !== null) {
+    const [departments] = await pool.query('SELECT id FROM departments WHERE id = ?', [departmentId]);
+    if (departments.length === 0) {
+      return fieldError(res, 'department_id', 'Department not found');
+    }
   }
 
   const [existing] = await pool.query('SELECT id FROM users WHERE email = ?', [email]);
@@ -56,12 +77,15 @@ router.post('/', requireRole('admin', 'hr'), validate(schemas.createUser), async
   let result;
   try {
     [result] = await pool.query(
-      'INSERT INTO users (name, email, password_hash, role, department, must_change_password) VALUES (?, ?, ?, ?, ?, TRUE)',
-      [name, email, passwordHash, role, department]
+      `INSERT INTO users (name, email, password_hash, role, department, department_id, job_title, must_change_password)
+       VALUES (?, ?, ?, ?, ?, ?, ?, TRUE)`,
+      [name, email, passwordHash, role, department, departmentId, jobTitle]
     );
   } catch (err) {
     // Two requests for the same email at once: both pass the check above, and the UNIQUE index stops the second
     if (err.code === 'ER_DUP_ENTRY') throw new HttpError(409, 'An account with this email already exists');
+    // The department was deleted between the check above and the insert
+    if (err.code === 'ER_NO_REFERENCED_ROW_2') return fieldError(res, 'department_id', 'Department not found');
     throw err;
   }
 

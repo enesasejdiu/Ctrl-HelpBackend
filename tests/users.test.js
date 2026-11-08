@@ -19,6 +19,13 @@ async function dbUser(id) {
   const [[row]] = await pool.query('SELECT * FROM users WHERE id = ?', [id]);
   return row;
 }
+// resetData() leaves departments alone, so each one gets a name of its own
+let departmentCount = 0;
+async function createDepartment() {
+  departmentCount += 1;
+  const [result] = await pool.query('INSERT INTO departments (name) VALUES (?)', [`Department ${departmentCount}`]);
+  return result.insertId;
+}
 
 let admin, hr, adminToken, hrToken;
 
@@ -137,6 +144,66 @@ describe('POST /api/users', () => {
     const a = await api.post('/api/users').set(auth(adminToken)).send(newUserBody('employee'));
     const b = await api.post('/api/users').set(auth(adminToken)).send(newUserBody('employee'));
     expect(a.body.temporaryPassword).not.toBe(b.body.temporaryPassword);
+  });
+
+  test('HR leaving out the role creates an employee', async () => {
+    const { role, ...body } = newUserBody('employee');
+    expect(role).toBe('employee');
+    const res = await api.post('/api/users').set(auth(hrToken)).send(body);
+    expect(res.status).toBe(201);
+    expect(res.body.user.role).toBe('employee');
+  });
+
+  test('an admin leaving out the role gets 400 and nothing is saved', async () => {
+    const { role, ...body } = newUserBody('employee');
+    expect(role).toBe('employee');
+    const before = await userCount();
+    const res = await api.post('/api/users').set(auth(adminToken)).send(body);
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ message: 'Role is required', errors: [{ field: 'role', message: 'Role is required' }] });
+    expect(await userCount()).toBe(before);
+  });
+
+  test('saves department_id and job_title, and returns them', async () => {
+    const departmentId = await createDepartment();
+    const res = await api
+      .post('/api/users')
+      .set(auth(adminToken))
+      .send(newUserBody('employee', { department_id: departmentId, job_title: '  Accountant ' }));
+
+    expect(res.status).toBe(201);
+    expect(res.body.user).toMatchObject({ department_id: departmentId, job_title: 'Accountant' });
+    const row = await dbUser(res.body.user.id);
+    expect([row.department_id, row.job_title]).toEqual([departmentId, 'Accountant']);
+  });
+
+  test('department_id and job_title can be left out, and are then empty', async () => {
+    const res = await api.post('/api/users').set(auth(adminToken)).send(newUserBody('employee'));
+    expect(res.status).toBe(201);
+    expect(res.body.user).toMatchObject({ department_id: null, job_title: null });
+  });
+
+  test('a department_id that does not exist returns 400 and nothing is saved', async () => {
+    const before = await userCount();
+    const res = await api.post('/api/users').set(auth(adminToken)).send(newUserBody('employee', { department_id: 999999 }));
+    expect(res.status).toBe(400);
+    expect(res.body.errors).toEqual([{ field: 'department_id', message: 'Department not found' }]);
+    expect(await userCount()).toBe(before);
+  });
+
+  test.each([
+    ['department_id not a number', { department_id: 'IT' }, 'department_id', 'Department id must be a number'],
+    ['department_id zero', { department_id: 0 }, 'department_id', 'Department id must be a positive number'],
+    ['job_title too long', { job_title: 'x'.repeat(256) }, 'job_title', 'Job title must be 255 characters or less'],
+  ])('invalid body (%s) returns 400', async (_, change, field, message) => {
+    const res = await api.post('/api/users').set(auth(adminToken)).send(newUserBody('employee', change));
+    expect(res.status).toBe(400);
+    expect(res.body.errors).toContainEqual({ field, message });
+  });
+
+  test('the response never contains a password hash', async () => {
+    const res = await api.post('/api/users').set(auth(adminToken)).send(newUserBody('agent'));
+    expect(JSON.stringify(res.body)).not.toMatch(/password_hash|\$2[aby]\$/);
   });
 });
 

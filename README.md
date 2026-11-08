@@ -158,6 +158,44 @@ Until then **every other endpoint answers 403** (only `GET /api/auth/me` and the
 The frontend uses `code` to send the user to its "Set your password" page. A new password needs 10–72 characters with
 at least one letter and one number, and must differ from the current one.
 
+### Creating an account: `POST /api/users`
+
+Admins and HR only (anyone else gets 403, no token gets 401).
+
+| Field           | Required                                | Notes                                                        |
+| --------------- | --------------------------------------- | ------------------------------------------------------------ |
+| `name`          | yes                                     | Up to 100 characters                                         |
+| `email`         | yes                                     | Must be unique; stored trimmed and lowercased                |
+| `role`          | admins: yes. HR: no (means `employee`)  | `employee`, `agent`, `hr` or `admin`. HR may only use `employee` (403 otherwise) |
+| `department_id` | no                                      | Must be the id of a row in `departments`                     |
+| `job_title`     | no                                      | Up to 255 characters                                         |
+| `department`    | no                                      | The older free-text department, up to 100 characters         |
+
+Any other field (such as `password`) is refused. The server makes the temporary password: 14 random letters and digits
+from `crypto.randomInt`, hashed with bcrypt.
+
+```http
+POST /api/users
+Authorization: Bearer <admin or HR token>
+
+{ "name": "Teuta Krasniqi", "email": "teuta@ticketflow.local", "role": "employee", "department_id": 2, "job_title": "Accountant" }
+```
+
+```json
+201 Created
+{
+  "user": {
+    "id": 12, "name": "Teuta Krasniqi", "email": "teuta@ticketflow.local", "role": "employee",
+    "department": null, "department_id": 2, "job_title": "Accountant",
+    "is_active": true, "must_change_password": true, "created_at": "2026-11-08T15:40:12.000Z"
+  },
+  "temporaryPassword": "k7RmQ2xWp9aHtB"
+}
+```
+
+Errors: 409 if the email is taken (any letter case), and 400 `{ message, errors: [{ field, message }] }` for invalid
+fields, a missing role from an admin, or a `department_id` that doesn't exist.
+
 Role changes and deactivation take effect immediately: every request checks the user's current role and active
 status in the database.
 
@@ -220,7 +258,7 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | PATCH  | `/api/tickets/:id/assign`       | agent, admin        | Assign `{ assigned_to }` (`null` = unassign; agents can only assign themselves)                 |
 | GET    | `/api/users/agents`             | agent, admin        | Active agents and admins (for the "Assign to" dropdown)                                         |
 | GET    | `/api/users`                    | admin, hr           | All users                                                                                       |
-| POST   | `/api/users`                    | admin, hr           | Create an account `{ name, email, role, department? }` → `{ user, temporaryPassword }` (HR: employees only) |
+| POST   | `/api/users`                    | admin, hr           | Create an account `{ name, email, role, department_id?, job_title?, department? }` → `{ user, temporaryPassword }` (HR: employees only, role optional). See [Creating an account](#creating-an-account-post-apiusers) |
 | POST   | `/api/users/:id/reset-password` | admin, hr        | New temporary password → `{ user, temporaryPassword }`; sets `must_change_password` (not your own account; HR: employees only) |
 | PATCH  | `/api/users/:id`                | admin, hr           | Change `{ name?, email?, department?, role?, is_active? }` (at least one). Admin: anyone, own account only name/email/department. HR: employees only, never `role`. 409 if the email is taken |
 | GET    | `/api/stats`                    | admin               | Dashboard statistics: totals, by status/priority/category/agent, 8-week trend                   |

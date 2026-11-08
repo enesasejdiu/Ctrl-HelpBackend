@@ -2,9 +2,18 @@
 const { z } = require('zod');
 const { id, role, name, email, optionalText } = require('./common');
 
-// Strict, so a password or must_change_password in the body is refused: the server always makes the password
+// Strict, so a password or must_change_password in the body is refused: the server always makes the password.
+// role is optional here because HR may leave it out (it then means employee); the route requires it from admins.
+// department_id must also exist in departments, which the route checks.
 const createUser = {
-  body: z.strictObject({ name, email, role, department: optionalText('Department', 100) }),
+  body: z.strictObject({
+    name,
+    email,
+    role: role.optional(),
+    department: optionalText('Department', 100),
+    department_id: id('Department id').nullable().optional(),
+    job_title: optionalText('Job title', 255),
+  }),
 };
 
 const resetPassword = {

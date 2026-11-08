@@ -581,10 +581,10 @@
                 "users"
               ]
             },
-            "description": "Admin or HR. Creates an account and returns { user, temporaryPassword }. The temporary password is only shown in this response; the new user logs in with it and has must_change_password = true. Admins can use any role (employee, agent, hr, admin); HR can only create employees. Change the email to create another account.",
+            "description": "Admin or HR. Creates an account and returns { user, temporaryPassword }. The temporary password is only shown in this response; the new user logs in with it and has must_change_password = true. Admins must send a role (employee, agent, hr, admin); HR can only create employees and may leave role out. department_id (an existing department) and job_title are optional. Change the email to create another account.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"New Employee\",\n  \"email\": \"new.employee@ticketflow.local\",\n  \"role\": \"employee\",\n  \"department\": \"Marketing\"\n}",
+              "raw": "{\n  \"name\": \"New Employee\",\n  \"email\": \"new.employee@ticketflow.local\",\n  \"role\": \"employee\",\n  \"department\": \"Marketing\",\n  \"job_title\": \"Marketing Assistant\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
