@@ -33,7 +33,7 @@ async function createUser({
   isActive = true,
   name,
   email,
-  department = null,
+  departmentId = null,
   password = DEFAULT_PASSWORD,
   mustChangePassword = false,
 } = {}) {
@@ -42,14 +42,14 @@ async function createUser({
     name: name || `Test ${role} ${userCount}`,
     email: email || `${role}${userCount}.${Date.now()}@test.local`,
     role,
-    department,
+    department_id: departmentId,
     is_active: isActive,
   };
   // Cost 4 instead of the app's 10: the hash still works with bcrypt.compare, and tests stay fast
   const passwordHash = await bcrypt.hash(password, 4);
   const [result] = await pool.query(
-    'INSERT INTO users (name, email, password_hash, role, department, is_active, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [user.name, user.email, passwordHash, user.role, user.department, user.is_active, mustChangePassword]
+    'INSERT INTO users (name, email, password_hash, role, department_id, is_active, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [user.name, user.email, passwordHash, user.role, user.department_id, user.is_active, mustChangePassword]
   );
   return { id: result.insertId, ...user, password };
 }

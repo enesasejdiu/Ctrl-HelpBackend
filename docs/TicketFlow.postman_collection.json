@@ -588,7 +588,7 @@
             "description": "Admin or HR. Creates an account and returns { user, temporaryPassword }. The temporary password is only shown in this response; the new user logs in with it and has must_change_password = true. Admins must send a role (employee, agent, hr, admin); HR can only create employees and may leave role out. department_id (an existing department) and job_title are optional. Change the email to create another account.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"New Employee\",\n  \"email\": \"new.employee@ticketflow.local\",\n  \"role\": \"employee\",\n  \"department\": \"Marketing\",\n  \"job_title\": \"Marketing Assistant\"\n}",
+              "raw": "{\n  \"name\": \"New Employee\",\n  \"email\": \"new.employee@ticketflow.local\",\n  \"role\": \"employee\",\n  \"job_title\": \"Marketing Assistant\",\n  \"department_id\": 1\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -638,10 +638,10 @@
                 "{{userId}}"
               ]
             },
-            "description": "Send any of name, email, department, department_id, job_title, role, is_active (at least one); only those change, and null clears department, department_id and job_title. Admin: anyone, but not their own role or active status, and never the last active admin (409). HR: employee accounts only, and never role (403 even for the same value). 404 for an unknown user, 409 if the email is taken. The example keeps user 5 (Vjosa Hoxha) unchanged; try a new job_title or is_active false.",
+            "description": "Send any of name, email, department_id, job_title, role, is_active (at least one); only those change, and null clears department_id and job_title. Admin: anyone, but not their own role or active status, and never the last active admin (409). HR: employee accounts only, and never role (403 even for the same value). 404 for an unknown user, 409 if the email is taken. The example keeps user 5 (Vjosa Hoxha) unchanged; try a new job_title or is_active false.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"department\": \"Sales\",\n  \"job_title\": \"Sales Representative\",\n  \"is_active\": true\n}",
+              "raw": "{\n  \"job_title\": \"Sales Representative\",\n  \"is_active\": true,\n  \"department_id\": 1\n}",
               "options": {
                 "raw": {
                   "language": "json"
