@@ -163,7 +163,8 @@ How it works:
 
 - **Login still works** for a flagged user. The response carries the flag next to the token,
   `{ token, must_change_password, user }`, so the client knows to show its change-password screen right away. A
-  successful login also sets `last_login_at`; failed attempts don't.
+  successful login also sets `last_login_at`; failed attempts don't (they count towards a lockout, see
+  [Login limits](#login-limits-lockout-and-rate-limit)).
 - **One check, on every authenticated route.** `requireAuth` (in `src/middleware/auth.js`) runs on every route
   except `POST /api/auth/login` and `GET /api/health`. It loads the user from the database on each request, so the
   flag is always current: a reset blocks the user on their next request, even with a token from before the reset,
@@ -177,6 +178,41 @@ How it works:
 
 The frontend uses `code` to send the user to its "Set your password" page. A new password needs 10–72 characters with
 at least one letter and one number, and must differ from the current one.
+
+### Login limits: lockout and rate limit
+
+Two limits protect `POST /api/auth/login` against password guessing:
+
+- **Lockout, per account.** Every wrong password adds 1 to `users.failed_login_count`. The **5th wrong password in a
+  row** locks the account for **15 minutes** (`users.locked_until`, migration 006). While it's locked, every login gets
+  **423**, even with the right password, and the attempts don't change the count or the lock:
+
+  ```json
+  { "message": "Too many wrong passwords. Try again in 15 minutes.", "code": "ACCOUNT_LOCKED", "retryAfterMinutes": 15 }
+  ```
+
+  The minutes left are rounded up (at least 1, "1 minute" in the message), and the `Retry-After` header has the
+  seconds. The 5th wrong password itself already gets this 423 instead of another 401.
+- **How a lock ends.** It runs out by itself after 15 minutes. The next attempt then works normally; a wrong password
+  starts the count again at 1. A **successful login** sets the count back to 0 (so wrong passwords only add up between
+  successful logins). An **admin or HR password reset** (`POST /api/users/:id/reset-password`) also unlocks the
+  account, so the temporary password works at once.
+- **Unknown emails** get the same 401 `Wrong email or password` as a wrong password, every time, and are never
+  locked. (Note: a known email can still be told apart after 5 wrong passwords, by the 423.)
+- **Rate limit, per IP address.** At most **20 login requests per 15 minutes** from one address, right or wrong; then
+  **429** until the window has passed, with `Retry-After` and `RateLimit` headers:
+
+  ```json
+  { "message": "Too many login attempts. Wait a few minutes and try again.", "code": "RATE_LIMITED" }
+  ```
+
+  It's set in `src/middleware/rateLimit.js` (express-rate-limit). The counts are kept in memory, so restarting the
+  server clears them. It uses the address the request comes from; behind a reverse proxy, Express's `trust proxy`
+  setting would have to be configured first. It's off in the test suite (`NODE_ENV=test`), except in
+  `tests/login-rate-limit.test.js`.
+
+Failed logins and the lockout bookkeeping don't count as changes to the account: they leave `updated_at` alone, like a
+successful login.
 
 ### Changing your own password: `POST /api/auth/change-password`
 
@@ -397,7 +433,7 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | Method | Path                            | Who                 | What it does                                                                                    |
 | ------ | ------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------- |
 | GET    | `/api/health`                   | anyone              | Health check → `{ status: "ok" }`                                                               |
-| POST   | `/api/auth/login`               | anyone              | Log in `{ email, password }` → `{ token, must_change_password, user }`; sets `last_login_at`. With `must_change_password: true`, everything except `/api/auth/me` and change-password answers 403 `PASSWORD_CHANGE_REQUIRED` |
+| POST   | `/api/auth/login`               | anyone              | Log in `{ email, password }` → `{ token, must_change_password, user }`; sets `last_login_at`. With `must_change_password: true`, everything except `/api/auth/me` and change-password answers 403 `PASSWORD_CHANGE_REQUIRED`. 5 wrong passwords lock the account for 15 minutes (423 `ACCOUNT_LOCKED` with `retryAfterMinutes`); more than 20 requests per IP in 15 minutes get 429 `RATE_LIMITED`. See [Login limits](#login-limits-lockout-and-rate-limit) |
 | GET    | `/api/auth/me`                  | logged in           | The current user: `{ id, name, email, role, department_id, department_name, job_title, created_at, last_login_at, must_change_password }` (`null` when empty; never the password hash). Login returns the same user object |
 | POST   | `/api/auth/change-password`     | logged in           | Change your password `{ currentPassword, newPassword }` → `{ message, user }`; clears `must_change_password` (400 `INVALID_CURRENT_PASSWORD` if the current password is wrong). See [Changing your own password](#changing-your-own-password-post-apiauthchange-password) |
 | GET    | `/api/meta`                     | logged in           | Categories and priorities (for dropdowns)                                                       |
@@ -411,7 +447,7 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | GET    | `/api/users/agents`             | agent, admin        | Active agents and admins (for the "Assign to" dropdown)                                         |
 | GET    | `/api/users`                    | admin, hr           | All users                                                                                       |
 | POST   | `/api/users`                    | admin, hr           | Create an account `{ name, email, role, department_id?, job_title? }` → `{ user, temporaryPassword }` (HR: employees only, role optional). See [Creating an account](#creating-an-account-post-apiusers) |
-| POST   | `/api/users/:id/reset-password` | admin, hr        | No body. New temporary password → `{ user, temporaryPassword }`; sets `must_change_password` (not your own account: 403; HR: employees only). See [Resetting a password](#resetting-a-password-post-apiusersidreset-password) |
+| POST   | `/api/users/:id/reset-password` | admin, hr        | No body. New temporary password → `{ user, temporaryPassword }`; sets `must_change_password` and unlocks a locked account (not your own account: 403; HR: employees only). See [Resetting a password](#resetting-a-password-post-apiusersidreset-password) |
 | PATCH  | `/api/users/:id`                | admin, hr           | Change `{ name?, email?, department_id?, job_title?, role?, is_active? }` (at least one). Admin: anyone, but not their own role/active status, and never the last active admin. HR: employees only, never `role`. See [Editing an account](#editing-an-account-patch-apiusersid) |
 | GET    | `/api/stats`                    | admin               | Dashboard statistics: totals, by status/priority/category/agent, 8-week trend                   |
 | GET    | `/api/departments`              | logged in           | All departments, sorted by name, with `user_count` |
@@ -488,7 +524,7 @@ TASKS.md                  Development task list
 
 | Table            | Contents                                                                                     |
 | ---------------- | -------------------------------------------------------------------------------------------- |
-| `users`          | Accounts: name, email, password hash, role (employee/agent/hr/admin), department_id, job title, active flag. `department` is the old free-text value, no longer used |
+| `users`          | Accounts: name, email, password hash, role (employee/agent/hr/admin), department_id, job title, active flag, last login, wrong-password count and lock (`failed_login_count`, `locked_until`). `department` is the old free-text value, no longer used |
 | `departments`    | Departments people belong to; `users.department_id` links to them (see [Departments](#departments)) |
 | `categories`     | Ticket categories (Hardware, Software, Network, Access, Email, Other)                         |
 | `priorities`     | Priority levels with their target resolution time in hours                                   |

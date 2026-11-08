@@ -121,7 +121,8 @@ async function checkResetAllowed(req, res, next) {
 
 // POST /api/users/:id/reset-password (admin and HR), no body → 200 { user, temporaryPassword }
 // Replaces the password with a new temporary one (the old one stops working at once) and sets must_change_password,
-// so the user has to choose their own at the next login. Deactivated accounts can be reset too.
+// so the user has to choose their own at the next login. Deactivated accounts can be reset too. It also unlocks an
+// account locked by too many wrong passwords.
 // Sessions: tokens are stateless JWTs and can't be revoked, but requireAuth reloads the user on every request and
 // refuses everything except /auth/me and /auth/change-password while must_change_password is set, so a session from
 // before the reset can do nothing without the new temporary password.
@@ -136,9 +137,12 @@ router.post(
 
     const temporaryPassword = makeTemporaryPassword();
     const passwordHash = await bcrypt.hash(temporaryPassword, 10);
-    // One statement, so the new hash and the flag are saved together or not at all
+    // One statement, so the new hash and the flag are saved together or not at all. It also unlocks the account
+    // (wrong-password count and lock cleared), so the user can log in with the temporary password straight away.
     await pool.query(
-      'UPDATE users SET password_hash = ?, must_change_password = TRUE, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      `UPDATE users SET password_hash = ?, must_change_password = TRUE, failed_login_count = 0, locked_until = NULL,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
       [passwordHash, id]
     );
 

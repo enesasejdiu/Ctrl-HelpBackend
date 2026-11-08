@@ -8,6 +8,7 @@ const jwt = require('jsonwebtoken');
 const pool = require('../db');
 const { HttpError } = require('../middleware/errors');
 const { requireAuth } = require('../middleware/auth');
+const { loginRateLimit } = require('../middleware/rateLimit');
 const validate = require('../middleware/validate');
 const schemas = require('../schemas/auth');
 
@@ -23,11 +24,58 @@ function makeToken(user) {
 
 // What these routes load about a user: the public fields, plus the password hash and active flag for the checks.
 // The department comes from departments; the old free-text users.department is no longer read (see migrations/005).
-const AUTH_USER_SELECT = `
-  SELECT u.id, u.name, u.email, u.role, u.password_hash, u.is_active, u.must_change_password,
-         u.department_id, d.name AS department_name, u.job_title, u.created_at, u.last_login_at
-  FROM users u
-  LEFT JOIN departments d ON d.id = u.department_id`;
+const AUTH_USER_COLUMNS = `
+  u.id, u.name, u.email, u.role, u.password_hash, u.is_active, u.must_change_password,
+  u.department_id, d.name AS department_name, u.job_title, u.created_at, u.last_login_at`;
+const AUTH_USER_FROM = 'FROM users u LEFT JOIN departments d ON d.id = u.department_id';
+const AUTH_USER_SELECT = `SELECT ${AUTH_USER_COLUMNS} ${AUTH_USER_FROM}`;
+
+// Lockout: this many wrong passwords in a row lock the account for LOCK_MINUTES (see POST /login below)
+const MAX_FAILED_LOGINS = 5;
+const LOCK_MINUTES = 15;
+
+// The login query also reads the lockout state. lock_seconds_left is computed by the database, with the same clock that
+// set locked_until: NULL = not locked, > 0 = still locked, <= 0 = the lock has run out.
+const LOGIN_SELECT = `
+  SELECT ${AUTH_USER_COLUMNS}, u.failed_login_count, TIMESTAMPDIFF(SECOND, NOW(), u.locked_until) AS lock_seconds_left
+  ${AUTH_USER_FROM}`;
+
+// 423 for a locked account, with the minutes left (rounded up, at least 1) in the body and the seconds in Retry-After
+function accountLocked(res, secondsLeft) {
+  const minutes = Math.max(1, Math.ceil(secondsLeft / 60));
+  res.set('Retry-After', String(Math.max(1, secondsLeft)));
+  return new HttpError(
+    423,
+    `Too many wrong passwords. Try again in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}.`,
+    'ACCOUNT_LOCKED',
+    { retryAfterMinutes: minutes }
+  );
+}
+
+// Counts a wrong password. Returns the lock's length in seconds if this attempt locked the account, otherwise null.
+// The lockout columns are bookkeeping, not account changes, so these updates keep updated_at as it was.
+async function recordWrongPassword(user) {
+  const lockRanOut = user.lock_seconds_left !== null && user.lock_seconds_left <= 0;
+  if (lockRanOut) {
+    // A lock that has run out is cleared, and this wrong password starts the count again at 1
+    await pool.query('UPDATE users SET failed_login_count = 1, locked_until = NULL, updated_at = updated_at WHERE id = ?', [
+      user.id,
+    ]);
+    return null;
+  }
+  // Two steps, each with one assignment, so the result doesn't depend on whether the database applies a statement's
+  // assignments left to right (MySQL) or all at once (MariaDB's SIMULTANEOUS_ASSIGNMENT). The +1 is atomic, so
+  // simultaneous wrong attempts are all counted.
+  await pool.query('UPDATE users SET failed_login_count = failed_login_count + 1, updated_at = updated_at WHERE id = ?', [
+    user.id,
+  ]);
+  const [locked] = await pool.query(
+    `UPDATE users SET locked_until = NOW() + INTERVAL ? MINUTE, updated_at = updated_at
+     WHERE id = ? AND failed_login_count >= ? AND locked_until IS NULL`,
+    [LOCK_MINUTES, user.id, MAX_FAILED_LOGINS]
+  );
+  return locked.affectedRows > 0 ? LOCK_MINUTES * 60 : null;
+}
 
 // The only user shape ever sent to clients; password_hash is deliberately left out
 function publicUser(user) {
@@ -50,22 +98,41 @@ function publicUser(user) {
 // POST /api/auth/login → { token, must_change_password, user }
 // A user with a temporary password logs in normally; must_change_password tells the client to send them to the
 // change-password screen, and requireAuth blocks everything else until they do.
-router.post('/login', validate(schemas.login), async (req, res) => {
+// Limits: at most 20 requests per IP address per 15 minutes (429 RATE_LIMITED, middleware/rateLimit.js), and 5 wrong
+// passwords in a row lock the account for 15 minutes (423 ACCOUNT_LOCKED, even with the right password). The lock
+// ends by itself, after a successful login, or when an admin or HR resets the password.
+router.post('/login', loginRateLimit, validate(schemas.login), async (req, res) => {
   const { email, password } = req.valid.body;
 
-  const [rows] = await pool.query(`${AUTH_USER_SELECT} WHERE u.email = ?`, [email]);
+  const [rows] = await pool.query(`${LOGIN_SELECT} WHERE u.email = ?`, [email]);
   const user = rows[0];
 
   // Same message for unknown email and wrong password, so attackers can't probe which emails exist
-  if (!user || !(await bcrypt.compare(password, user.password_hash))) {
+  if (!user) {
+    throw new HttpError(401, 'Wrong email or password');
+  }
+  // Locked: refused before the password is even checked, so guessing is pointless until the lock runs out
+  if (user.lock_seconds_left > 0) {
+    throw accountLocked(res, user.lock_seconds_left);
+  }
+  if (!(await bcrypt.compare(password, user.password_hash))) {
+    const lockedFor = await recordWrongPassword(user);
+    // The wrong password that locks the account already says so, instead of one more "wrong password"
+    if (lockedFor) throw accountLocked(res, lockedFor);
     throw new HttpError(401, 'Wrong email or password');
   }
   if (!user.is_active) {
     throw new HttpError(403, 'This account is deactivated');
   }
 
-  // Only a successful login counts; the failed attempts above never get here
-  await pool.query('UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?', [user.id]);
+  // Only a successful login counts; the failed attempts above never get here. It also clears the wrong-password count
+  // and a lock that has run out. A login isn't a change to the account, so updated_at stays as it was.
+  await pool.query(
+    `UPDATE users SET last_login_at = CURRENT_TIMESTAMP, failed_login_count = 0, locked_until = NULL,
+       updated_at = updated_at
+     WHERE id = ?`,
+    [user.id]
+  );
   // Read back the stored value, so the user returned here matches what /me returns right after
   const [[{ last_login_at: lastLoginAt }]] = await pool.query('SELECT last_login_at FROM users WHERE id = ?', [user.id]);
 
