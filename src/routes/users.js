@@ -14,7 +14,8 @@ const router = express.Router();
 
 // Columns safe to send to the client; password_hash is never selected
 const USER_COLUMNS =
-  'id, name, email, role, department, department_id, job_title, is_active, must_change_password, created_at';
+  'id, name, email, role, department, department_id, job_title, is_active, must_change_password, last_login_at, ' +
+  'created_at, updated_at';
 
 // MySQL returns booleans as 0/1; send real true/false to the client
 function formatUser(row) {
@@ -120,32 +121,42 @@ router.post('/:id/reset-password', requireRole('admin', 'hr'), validate(schemas.
   res.json({ user: formatUser(rows[0]), temporaryPassword });
 });
 
-// PATCH /api/users/:id { name?, email?, department?, role?, is_active? } → the updated user
-// Admin: anyone, including their own name/email/department (but not their own role or active status).
-// HR: employee accounts only, and never a role.
-router.patch('/:id', requireRole('admin', 'hr'), validate(schemas.updateUser), async (req, res) => {
+// Step 1 of PATCH: the user must exist (404 comes before any problem with the body), and the caller must be allowed to
+// change them. HR may only change employees, and may not send a role at all, whatever its value.
+async function loadEditableUser(req, res, next) {
   const { id } = req.valid.params;
-  const { name, email, department, role, is_active: isActive } = req.valid.body;
-
-  // Stops an admin from deactivating themselves or removing their own admin role
-  if (id === req.user.id && (role !== undefined || isActive !== undefined)) {
-    throw new HttpError(400, 'You cannot change your own role or active status');
-  }
-
-  const isHr = req.user.role === 'hr';
-  if (isHr && role !== undefined) {
-    throw new HttpError(403, 'HR cannot change roles');
-  }
-
   const [existing] = await pool.query('SELECT id, name, role, is_active FROM users WHERE id = ?', [id]);
   if (existing.length === 0) {
     throw new HttpError(404, 'User not found');
   }
-  const user = existing[0];
 
+  const isHr = req.user.role === 'hr';
   // HR looks after employee accounts; staff and other HR/admin accounts stay with the admins
-  if (isHr && user.role !== 'employee') {
+  if (isHr && existing[0].role !== 'employee') {
     throw new HttpError(403, 'HR can only change employee accounts');
+  }
+  // Checked on the raw body, before validation, so even an invalid role from HR is a 403
+  if (isHr && req.body && Object.hasOwn(req.body, 'role')) {
+    throw new HttpError(403, 'HR cannot change roles');
+  }
+
+  req.target = existing[0];
+  next();
+}
+
+// PATCH /api/users/:id { name?, email?, department?, department_id?, job_title?, role?, is_active? } → the updated user
+// Only the fields sent change. Admin: anyone, including their own details (but not their own role or active status),
+// and never the last active admin's role or active status. HR: employee accounts only, and never a role.
+// Step 2, once the body is valid
+async function editUser(req, res) {
+  const { id } = req.valid.params;
+  const { name, email, department, department_id: departmentId, job_title: jobTitle, role } = req.valid.body;
+  const isActive = req.valid.body.is_active;
+  const user = req.target;
+
+  // Stops an admin from deactivating themselves or removing their own admin role (and locking themselves out)
+  if (id === req.user.id && (role !== undefined || isActive !== undefined)) {
+    throw new HttpError(403, 'You cannot change your own role or active status');
   }
 
   // Emails are unique: check before writing, so the answer is a clear 409 rather than a database error
@@ -156,8 +167,16 @@ router.patch('/:id', requireRole('admin', 'hr'), validate(schemas.updateUser), a
     }
   }
 
-  // Only update the fields that were sent
-  const sets = [];
+  if (departmentId !== undefined && departmentId !== null) {
+    const [departments] = await pool.query('SELECT id FROM departments WHERE id = ?', [departmentId]);
+    if (departments.length === 0) {
+      return fieldError(res, 'department_id', 'Department not found');
+    }
+  }
+
+  // Only update the fields that were sent. updated_at is set explicitly, because MySQL's ON UPDATE only fires when a
+  // value actually changes, and an edit that saves the same values is still an edit.
+  const sets = ['updated_at = CURRENT_TIMESTAMP'];
   const params = [];
   if (name !== undefined) {
     sets.push('name = ?');
@@ -170,6 +189,14 @@ router.patch('/:id', requireRole('admin', 'hr'), validate(schemas.updateUser), a
   if (department !== undefined) {
     sets.push('department = ?');
     params.push(department || null); // an empty department is stored as "none"
+  }
+  if (departmentId !== undefined) {
+    sets.push('department_id = ?');
+    params.push(departmentId);
+  }
+  if (jobTitle !== undefined) {
+    sets.push('job_title = ?');
+    params.push(jobTitle || null); // an empty job title is stored as "none"
   }
   if (role !== undefined) {
     sets.push('role = ?');
@@ -186,11 +213,26 @@ router.patch('/:id', requireRole('admin', 'hr'), validate(schemas.updateUser), a
   const newRole = role ?? user.role;
   const newActive = isActive ?? Boolean(user.is_active);
   const stopsBeingStaff = isStaff(user) && !(isStaff({ role: newRole }) && newActive);
+  const stopsBeingActiveAdmin = user.role === 'admin' && Boolean(user.is_active) && !(newRole === 'admin' && newActive);
 
-  // A transaction so the user change and the ticket release happen together or not at all
+  // A transaction so the checks below, the user change and the ticket release happen together or not at all
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
+
+    // Never leave the system without an active admin. FOR UPDATE locks the admin rows until this commits, so two
+    // admins demoting each other at the same moment are handled one after the other, and the second one sees the
+    // first one's change
+    if (stopsBeingActiveAdmin) {
+      const [admins] = await conn.query(
+        "SELECT id FROM users WHERE role = 'admin' AND is_active = TRUE AND id <> ? FOR UPDATE",
+        [id]
+      );
+      if (admins.length === 0) {
+        throw new HttpError(409, 'This is the last active admin. Make someone else an admin first');
+      }
+    }
+
     await conn.query(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, [...params, id]);
 
     if (stopsBeingStaff) {
@@ -220,6 +262,8 @@ router.patch('/:id', requireRole('admin', 'hr'), validate(schemas.updateUser), a
     await conn.rollback();
     // Two requests taking the same email at once: both pass the check above, and the UNIQUE index stops the second
     if (err.code === 'ER_DUP_ENTRY') throw new HttpError(409, 'An account with this email already exists');
+    // The department was deleted between the check above and the update
+    if (err.code === 'ER_NO_REFERENCED_ROW_2') return fieldError(res, 'department_id', 'Department not found');
     throw err;
   } finally {
     conn.release();
@@ -227,6 +271,15 @@ router.patch('/:id', requireRole('admin', 'hr'), validate(schemas.updateUser), a
 
   const [rows] = await pool.query(`SELECT ${USER_COLUMNS} FROM users WHERE id = ?`, [id]);
   res.json(formatUser(rows[0]));
-});
+}
+
+router.patch(
+  '/:id',
+  requireRole('admin', 'hr'),
+  validate(schemas.updateUserParams),
+  loadEditableUser,
+  validate(schemas.updateUser),
+  editUser
+);
 
 module.exports = router;

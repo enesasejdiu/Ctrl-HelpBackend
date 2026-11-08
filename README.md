@@ -196,6 +196,41 @@ Authorization: Bearer <admin or HR token>
 Errors: 409 if the email is taken (any letter case), and 400 `{ message, errors: [{ field, message }] }` for invalid
 fields, a missing role from an admin, or a `department_id` that doesn't exist.
 
+### Editing an account: `PATCH /api/users/:id`
+
+Admins and HR only. Send at least one of `name`, `email`, `department`, `department_id`, `job_title`, `role`,
+`is_active`; only those change. `null` clears `department`, `department_id` and `job_title`. Any other field
+(`password`, `must_change_password`, `last_login_at`, `created_at`, ...) is refused by name.
+
+The checks run in this order, and a request that fails one changes nothing:
+
+1. 401 without a valid token, 403 for roles other than admin and HR, 400 if the id isn't a number
+2. 404 if the user doesn't exist (even when the body is also wrong)
+3. HR: 403 for any account that isn't an employee (including their own), and 403 if the body has a `role` at all
+4. 400 for invalid fields or an empty body
+5. 403 when admins change their own `role` or `is_active` (they can edit their own name, email and department)
+6. 409 if the email belongs to another account (any letter case). Keeping your own email is fine
+7. 400 if `department_id` doesn't exist
+8. 409 if the change would leave no active admin. The admin rows are locked during the update, so two admins
+   demoting each other at the same moment can't both succeed
+
+```http
+PATCH /api/users/12
+Authorization: Bearer <admin or HR token>
+
+{ "job_title": "Senior Accountant", "department_id": null }
+```
+
+```json
+200 OK
+{
+  "id": 12, "name": "Teuta Krasniqi", "email": "teuta@ticketflow.local", "role": "employee",
+  "department": null, "department_id": null, "job_title": "Senior Accountant", "is_active": true,
+  "must_change_password": false, "last_login_at": null,
+  "created_at": "2026-11-08T15:40:12.000Z", "updated_at": "2026-11-08T16:02:45.000Z"
+}
+```
+
 Role changes and deactivation take effect immediately: every request checks the user's current role and active
 status in the database.
 
@@ -260,7 +295,7 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | GET    | `/api/users`                    | admin, hr           | All users                                                                                       |
 | POST   | `/api/users`                    | admin, hr           | Create an account `{ name, email, role, department_id?, job_title?, department? }` → `{ user, temporaryPassword }` (HR: employees only, role optional). See [Creating an account](#creating-an-account-post-apiusers) |
 | POST   | `/api/users/:id/reset-password` | admin, hr        | New temporary password → `{ user, temporaryPassword }`; sets `must_change_password` (not your own account; HR: employees only) |
-| PATCH  | `/api/users/:id`                | admin, hr           | Change `{ name?, email?, department?, role?, is_active? }` (at least one). Admin: anyone, own account only name/email/department. HR: employees only, never `role`. 409 if the email is taken |
+| PATCH  | `/api/users/:id`                | admin, hr           | Change `{ name?, email?, department?, department_id?, job_title?, role?, is_active? }` (at least one). Admin: anyone, but not their own role/active status, and never the last active admin. HR: employees only, never `role`. See [Editing an account](#editing-an-account-patch-apiusersid) |
 | GET    | `/api/stats`                    | admin               | Dashboard statistics: totals, by status/priority/category/agent, 8-week trend                   |
 
 A Postman collection with every request is in [`docs/TicketFlow.postman_collection.json`](docs/TicketFlow.postman_collection.json).

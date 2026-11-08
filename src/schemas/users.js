@@ -20,20 +20,27 @@ const resetPassword = {
   params: z.object({ id: id('User id') }),
 };
 
-// Every field is optional, but at least one must be sent. Unknown fields (e.g. password) are refused.
-const updateUser = {
+// PATCH /api/users/:id is checked in two steps: the id first, then (once the user is known to exist and the caller
+// may change them) the body. Every body field is optional, but at least one must be sent. Unknown fields (password,
+// must_change_password, created_at, ...) are refused by name. null clears department, department_id and job_title.
+const updateUserParams = {
   params: z.object({ id: id('User id') }),
+};
+
+const updateUser = {
   body: z
     .strictObject({
       name: name.optional(),
       email: email.optional(),
       department: optionalText('Department', 100),
+      department_id: id('Department id').nullable().optional(),
+      job_title: optionalText('Job title', 255),
       role: role.optional(),
       is_active: z.boolean({ error: 'is_active must be true or false' }).optional(),
     })
     .refine((body) => Object.values(body).some((value) => value !== undefined), {
-      error: 'Send at least one of name, email, department, role or is_active to change',
+      error: 'Send at least one of name, email, department, department_id, job_title, role or is_active to change',
     }),
 };
 
-module.exports = { createUser, resetPassword, updateUser };
+module.exports = { createUser, resetPassword, updateUserParams, updateUser };
