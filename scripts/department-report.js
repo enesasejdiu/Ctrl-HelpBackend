@@ -49,9 +49,10 @@ async function report(dbName = process.env.DB_NAME) {
   try {
     await connection.query('START TRANSACTION READ ONLY');
     const [raw] = await connection.query(
-      `SELECT department AS value, COUNT(*) AS users,
+      // MIN(): every row in a BINARY group has the same value; MySQL's ONLY_FULL_GROUP_BY refuses a bare column here
+      `SELECT MIN(department) AS value, COUNT(*) AS users,
               SUM(department_id IS NOT NULL) AS already_linked
-       FROM users GROUP BY BINARY department ORDER BY department`
+       FROM users GROUP BY BINARY department ORDER BY value`
     );
     const [existing] = await connection.query('SELECT id, name FROM departments ORDER BY name');
     const [[totals]] = await connection.query(
