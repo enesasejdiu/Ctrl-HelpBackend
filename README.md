@@ -467,11 +467,18 @@ tests/
   globalTeardown.js       Drops it after all tests
   setupEnv.js             Points the app at the test database before it loads
   setupAfterEnv.js        Closes the MySQL pool after each test file
-  helpers.js              api, resetData, createUser, loginAs
+  helpers.js              api, resetData, createUser, loginAs, createDepartment, createCallers, expectError,
+                          expectNoPasswordHash, dbSnapshot (every table, for "nothing changed" checks)
   testDb.js               Test database name rules and safety guard
   smoke.test.js           Smoke test proving the setup works
+  matrix.test.js          Permission matrix: every endpoint × caller; refusals leave the database unchanged
+  users.test.js           Creating, listing and editing users
+  reset-password.test.js  Admin/HR password resets
+  change-password.test.js Changing your own password and the password rule
+  auth-enforcement.test.js  Login, no self-signup, and the temporary-password block on every route
   departments.test.js     Departments, including deleting while a user is being assigned
-  routes.test.js          Every route needs a login and blocks users with a temporary password
+  migrations.test.js      Schema, up/down/up, and migration 005 on messy data
+  seed.test.js            The demo seed, run twice
 jest.config.js            Jest settings
 .env.example              Example configuration (copy to .env)
 TASKS.md                  Development task list
