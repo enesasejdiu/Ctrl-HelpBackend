@@ -4,7 +4,9 @@ const jwt = require('jsonwebtoken');
 const pool = require('../db');
 const { HttpError } = require('./errors');
 
-// The only requests a user with a temporary password may make: see who they are, and change the password
+// The only requests a user with a temporary password may make: see who they are, and change the password.
+// Exact "METHOD /path" matches only (a trailing slash counts as the same path); no prefixes or wildcards.
+// There is no logout or token refresh endpoint: logging out only forgets the token in the browser.
 const ALLOWED_BEFORE_PASSWORD_CHANGE = ['GET /api/auth/me', 'POST /api/auth/change-password'];
 
 // Verifies the token, then loads the user's CURRENT name, role and active status from the database,
@@ -63,4 +65,4 @@ function isStaff(user) {
   return user.role === 'agent' || user.role === 'admin';
 }
 
-module.exports = { requireAuth, requireRole, isStaff };
+module.exports = { requireAuth, requireRole, isStaff, ALLOWED_BEFORE_PASSWORD_CHANGE };

@@ -155,6 +155,22 @@ Until then **every other endpoint answers 403** (only `GET /api/auth/me` and the
 { "message": "You must change your password before continuing", "code": "PASSWORD_CHANGE_REQUIRED" }
 ```
 
+How it works:
+
+- **Login still works** for a flagged user. The response carries the flag next to the token,
+  `{ token, must_change_password, user }`, so the client knows to show its change-password screen right away. A
+  successful login also sets `last_login_at`; failed attempts don't.
+- **One check, on every authenticated route.** `requireAuth` (in `src/middleware/auth.js`) runs on every route
+  except `POST /api/auth/login` and `GET /api/health`. It loads the user from the database on each request, so the
+  flag is always current: a reset blocks the user on their next request, even with a token from before the reset,
+  and changing the password unblocks the same token at once. A missing or invalid token is still a 401, checked
+  first.
+- **The allowlist** is `ALLOWED_BEFORE_PASSWORD_CHANGE` in the same file: exactly `GET /api/auth/me` and
+  `POST /api/auth/change-password`. Matching is exact method and path; a trailing slash counts as the same path. There
+  is no logout or token refresh endpoint.
+- **Routers** are mounted from the one list in `src/routes/index.js`. `tests/routes.test.js` walks every route in that
+  list and fails if one doesn't need a login or doesn't block a flagged user.
+
 The frontend uses `code` to send the user to its "Set your password" page. A new password needs 10–72 characters with
 at least one letter and one number, and must differ from the current one.
 
@@ -327,7 +343,7 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | Method | Path                            | Who                 | What it does                                                                                    |
 | ------ | ------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------- |
 | GET    | `/api/health`                   | anyone              | Health check → `{ status: "ok" }`                                                               |
-| POST   | `/api/auth/login`               | anyone              | Log in `{ email, password }` → `{ token, user }` (`user.must_change_password` is true for a temporary password) |
+| POST   | `/api/auth/login`               | anyone              | Log in `{ email, password }` → `{ token, must_change_password, user }`; sets `last_login_at`. With `must_change_password: true`, everything except `/api/auth/me` and change-password answers 403 `PASSWORD_CHANGE_REQUIRED` |
 | GET    | `/api/auth/me`                  | logged in           | The current user                                                                                |
 | POST   | `/api/auth/change-password`     | logged in           | Change your password `{ currentPassword, newPassword }` → `{ message, user }`; clears `must_change_password` (400 `INVALID_CURRENT_PASSWORD` if the current password is wrong). See [Changing your own password](#changing-your-own-password-post-apiauthchange-password) |
 | GET    | `/api/meta`                     | logged in           | Categories and priorities (for dropdowns)                                                       |
@@ -378,7 +394,8 @@ src/
     common.js             Shared pieces: id, email, name, password, status, role
     auth.js, tickets.js, comments.js, users.js   What each endpoint accepts
   routes/
-    auth.js               /api/auth: login, me
+    index.js              The list of routers and their paths (app.js mounts these)
+    auth.js               /api/auth: login, me, change password
     meta.js               /api/meta: categories and priorities
     tickets.js            /api/tickets: list, create, view, comments, status, priority, assign
     users.js              /api/users: agent list, creating accounts, user management
@@ -391,6 +408,7 @@ tests/
   helpers.js              api, resetData, createUser, loginAs
   testDb.js               Test database name rules and safety guard
   smoke.test.js           Smoke test proving the setup works
+  routes.test.js          Every route needs a login and blocks users with a temporary password
 jest.config.js            Jest settings
 .env.example              Example configuration (copy to .env)
 TASKS.md                  Development task list

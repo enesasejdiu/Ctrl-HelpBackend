@@ -34,7 +34,9 @@ function publicUser(user) {
   };
 }
 
-// POST /api/auth/login
+// POST /api/auth/login → { token, must_change_password, user }
+// A user with a temporary password logs in normally; must_change_password tells the client to send them to the
+// change-password screen, and requireAuth blocks everything else until they do.
 router.post('/login', validate(schemas.login), async (req, res) => {
   const { email, password } = req.valid.body;
 
@@ -49,7 +51,11 @@ router.post('/login', validate(schemas.login), async (req, res) => {
     throw new HttpError(403, 'This account is deactivated');
   }
 
-  res.json({ token: makeToken(user), user: publicUser(user) });
+  // Only a successful login counts; the failed attempts above never get here
+  await pool.query('UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?', [user.id]);
+
+  const loggedIn = publicUser(user);
+  res.json({ token: makeToken(user), must_change_password: loggedIn.must_change_password, user: loggedIn });
 });
 
 // GET /api/auth/me: the logged-in user's profile (the frontend calls this on page load to restore the session)

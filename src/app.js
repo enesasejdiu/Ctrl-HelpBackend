@@ -4,11 +4,7 @@ const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
 const { notFound, errorHandler } = require('./middleware/errors');
-const authRoutes = require('./routes/auth');
-const metaRoutes = require('./routes/meta');
-const ticketRoutes = require('./routes/tickets');
-const userRoutes = require('./routes/users');
-const statsRoutes = require('./routes/stats');
+const apiRoutes = require('./routes');
 
 const app = express();
 
@@ -22,12 +18,11 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-// API routes
-app.use('/api/auth', authRoutes);
-app.use('/api/meta', metaRoutes);
-app.use('/api/tickets', ticketRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/stats', statsRoutes);
+// API routes, from the one list in routes/index.js. Each router runs requireAuth (except POST /api/auth/login), which
+// also blocks users who still have a temporary password.
+for (const [path, router] of apiRoutes) {
+  app.use(path, router);
+}
 
 // Error handling: must stay at the very end, after all routes
 app.use(notFound); // unknown routes -> 404

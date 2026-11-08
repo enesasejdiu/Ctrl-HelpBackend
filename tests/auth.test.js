@@ -41,6 +41,33 @@ describe('must_change_password', () => {
     expect(me.body.must_change_password).toBe(false);
   });
 
+  test.each([
+    ['a flagged user', true],
+    ['a normal user', false],
+  ])('login tells the client next to the token whether %s must change their password', async (_, flagged) => {
+    const user = await createUser({ mustChangePassword: flagged });
+    const login = await api.post('/api/auth/login').send({ email: user.email, password: user.password });
+    expect(login.status).toBe(200);
+    expect(login.body).toMatchObject({ token: expect.any(String), must_change_password: flagged });
+    expect(login.body.user.must_change_password).toBe(flagged);
+  });
+
+  test('a successful login sets last_login_at; a wrong password or a deactivated account does not', async () => {
+    const user = await createUser();
+    const inactive = await createUser({ isActive: false });
+    const lastLogin = async (id) => (await dbUser(id)).last_login_at;
+    expect(await lastLogin(user.id)).toBeNull();
+
+    expect((await api.post('/api/auth/login').send({ email: user.email, password: 'wrong-password1' })).status).toBe(401);
+    expect(await lastLogin(user.id)).toBeNull();
+    expect((await api.post('/api/auth/login').send({ email: inactive.email, password: inactive.password })).status).toBe(403);
+    expect(await lastLogin(inactive.id)).toBeNull();
+
+    const before = Date.now() - 2000; // the database clock rounds to whole seconds
+    expect((await api.post('/api/auth/login').send({ email: user.email, password: user.password })).status).toBe(200);
+    expect((await lastLogin(user.id)).getTime()).toBeGreaterThanOrEqual(before);
+  });
+
   test('an HR user can log in and /me shows the hr role', async () => {
     const hr = await createUser({ role: 'hr' });
     const token = await loginAs(hr);
