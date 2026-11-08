@@ -19,7 +19,7 @@ const {
 } = require('./helpers');
 
 // Routes anyone may call without logging in
-const PUBLIC = ['POST /api/auth/login', 'GET /api/health'];
+const PUBLIC = ['POST /api/auth/login', 'POST /api/auth/logout', 'GET /api/health'];
 // What a user with a temporary password may still do. Pinned here so widening the list is a deliberate change.
 const ALLOWED = ['GET /api/auth/me', 'POST /api/auth/change-password'];
 

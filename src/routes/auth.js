@@ -1,6 +1,7 @@
-// Authentication routes: login, "who am I" and change password.
-// Mounted at /api/auth. A successful login returns { token, user }; the client sends the token back
-// as "Authorization: Bearer <token>" on later requests.
+// Authentication routes: login, logout, "who am I" and change password.
+// Mounted at /api/auth. A successful login sets the session cookies (tf_session with the token, httpOnly, and tf_csrf
+// for the CSRF header; see src/session.js) and still returns { token, user }, so clients that send the token as
+// "Authorization: Bearer <token>" keep working until they switch to the cookie.
 // There is no self-registration: admins and HR create accounts with POST /api/users.
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -9,6 +10,7 @@ const pool = require('../db');
 const { HttpError } = require('../middleware/errors');
 const { requireAuth } = require('../middleware/auth');
 const { loginRateLimit } = require('../middleware/rateLimit');
+const { SESSION_HOURS, setSessionCookies, clearSessionCookies } = require('../session');
 const validate = require('../middleware/validate');
 const schemas = require('../schemas/auth');
 
@@ -16,9 +18,10 @@ const router = express.Router();
 
 // Signed token identifying the user. requireAuth only trusts the id from it and reloads name/role from the DB;
 // name and role are included so the frontend can show them without an extra request.
+// Valid for 8 hours, the same as the session cookie that carries it.
 function makeToken(user) {
   return jwt.sign({ id: user.id, name: user.name, role: user.role }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRES_IN || '1d',
+    expiresIn: `${SESSION_HOURS}h`,
   });
 }
 
@@ -137,7 +140,18 @@ router.post('/login', loginRateLimit, validate(schemas.login), async (req, res) 
   const [[{ last_login_at: lastLoginAt }]] = await pool.query('SELECT last_login_at FROM users WHERE id = ?', [user.id]);
 
   const loggedIn = publicUser({ ...user, last_login_at: lastLoginAt });
-  res.json({ token: makeToken(user), must_change_password: loggedIn.must_change_password, user: loggedIn });
+  const token = makeToken(user);
+  setSessionCookies(res, token);
+  res.json({ token, must_change_password: loggedIn.must_change_password, user: loggedIn });
+});
+
+// POST /api/auth/logout → 204. Clears both session cookies. Needs no session (an expired one is fine too), so it can't
+// fail. The token itself stays valid until it expires (there is no revocation list), but the browser no longer has it.
+// No CSRF check: the worst another site could do is log you out, and sameSite "lax" already keeps the cookies off
+// cross-site POSTs.
+router.post('/logout', (req, res) => {
+  clearSessionCookies(res);
+  res.status(204).end();
 });
 
 // GET /api/auth/me: the logged-in user's profile (the frontend calls this on page load to restore the session)
