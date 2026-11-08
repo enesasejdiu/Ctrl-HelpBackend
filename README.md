@@ -9,7 +9,8 @@ This repository is the REST API. The frontend lives in a separate repository: **
 
 - **Node.js** + **Express 5**: REST API
 - **MySQL 8** with **mysql2**: database (connection pool, `?` placeholders for every query)
-- **jsonwebtoken**: login tokens (JWT, sent as `Authorization: Bearer <token>`)
+- **jsonwebtoken**: login tokens (JWT, carried in an httpOnly cookie; see [Sessions](#sessions-cookies-and-csrf))
+- **cookie-parser**: reads the session and CSRF cookies
 - **bcryptjs**: password hashing
 - **helmet**, **cors**: security headers and allowing the frontend origin
 - **dotenv**: configuration from `.env`
@@ -166,18 +167,54 @@ How it works:
   successful login also sets `last_login_at`; failed attempts don't (they count towards a lockout, see
   [Login limits](#login-limits-lockout-and-rate-limit)).
 - **One check, on every authenticated route.** `requireAuth` (in `src/middleware/auth.js`) runs on every route
-  except `POST /api/auth/login` and `GET /api/health`. It loads the user from the database on each request, so the
+  except `POST /api/auth/login`, `POST /api/auth/logout` and `GET /api/health`. It loads the user from the database on each request, so the
   flag is always current: a reset blocks the user on their next request, even with a token from before the reset,
   and changing the password unblocks the same token at once. A missing or invalid token is still a 401, checked
   first.
 - **The allowlist** is `ALLOWED_BEFORE_PASSWORD_CHANGE` in the same file: exactly `GET /api/auth/me` and
   `POST /api/auth/change-password`. Matching is exact method and path; a trailing slash counts as the same path. There
-  is no logout or token refresh endpoint.
+  is no token refresh endpoint.
 - **Routers** are mounted from the one list in `src/routes/index.js`. `tests/routes.test.js` walks every route in that
   list and fails if one doesn't need a login or doesn't block a flagged user.
 
 The frontend uses `code` to send the user to its "Set your password" page. A new password needs 10–72 characters with
 at least one letter and one number, and must differ from the current one.
+
+### Sessions: cookies and CSRF
+
+A successful `POST /api/auth/login` sets two cookies:
+
+| Cookie       | Holds                     | httpOnly | SameSite | Secure          | Path | Lifetime |
+| ------------ | ------------------------- | -------- | -------- | --------------- | ---- | -------- |
+| `tf_session` | the JWT                   | yes      | Lax      | in production   | `/`  | 8 hours  |
+| `tf_csrf`    | a random value (64 hex)   | **no**   | Lax      | in production   | `/`  | 8 hours  |
+
+The JWT itself is also valid for 8 hours. The browser sends the cookies by itself, so a client sends requests with
+credentials (`fetch(..., { credentials: 'include' })`, axios `withCredentials: true`) and never touches the token.
+Page scripts can't read `tf_session`, so a script injected into the page can't steal the session.
+
+**CSRF (double-submit cookie).** A POST, PATCH, PUT or DELETE that is authenticated by the cookie must also send the
+header `X-CSRF-Token` with the value of the `tf_csrf` cookie. Otherwise it gets:
+
+```json
+{ "message": "Missing or invalid CSRF token. Reload the page and try again.", "code": "CSRF_INVALID" }
+```
+
+(403). Another site can make the browser send the cookies, but it can't read `tf_csrf` to copy it into the header.
+GET requests don't need the header, and neither do login and logout.
+
+**Logout.** `POST /api/auth/logout` clears both cookies and answers 204. It needs no session, so it also works with
+an expired one. The token stays valid until it expires (there is no revocation list), but the browser no longer has it.
+
+**CORS.** Only `CLIENT_URL` is allowed, with credentials. It's never `*`: without `CLIENT_URL`, no other origin is
+allowed at all.
+
+**The Bearer header is temporary.** Login still returns `{ token, user }`, and `Authorization: Bearer <token>` is
+still accepted, so the current frontend keeps working. Bearer requests skip the CSRF check (another site can't make
+a browser add that header). When a request has both, the **header is used**: clients that keep cookies but send the
+token themselves (Postman, Playwright's API helper) would otherwise be authenticated by the cookie from their last
+login, possibly another user. An invalid token is a 401 either way; there's no trying the other one. This is step 1 of 3: step 2 moves the frontend to the cookie, and step 3 removes
+the header and the token from the login response.
 
 ### Login limits: lockout and rate limit
 
@@ -230,8 +267,7 @@ fields.
 - **Other errors:** 400 for a new password that breaks the rule or matches the current one, a missing field or an
   extra field. 401 without a valid token.
 - **Sessions:** logins are stateless JWTs that can't be revoked, so other sessions keep working until they expire
-  (`JWT_EXPIRES_IN`). The token used for the change stays valid. There is no logout endpoint: logging out only
-  forgets the token in the browser.
+  (8 hours). The token used for the change stays valid.
 
 ### Creating an account: `POST /api/users`
 
@@ -327,7 +363,7 @@ Deactivated accounts can be reset too.
 }
 ```
 
-**Sessions.** Logins are stateless JWTs (valid for `JWT_EXPIRES_IN`, 1 day by default) with no revocation list.
+**Sessions.** Logins are stateless JWTs (valid for 8 hours) with no revocation list.
 Even so, a session from before the reset can do nothing: every request reloads the user, and while
 `must_change_password` is set only `GET /api/auth/me` and `POST /api/auth/change-password` work, and the latter needs
 the new temporary password. Once the user has chosen a new password, though, older tokens work again until they
@@ -412,7 +448,9 @@ A ticket is **overdue** when it is not resolved/closed and is older than its pri
 
 ## API endpoints
 
-All endpoints except health and login need `Authorization: Bearer <token>`.
+All endpoints except health, login and logout need a session: the `tf_session` cookie, or for now
+`Authorization: Bearer <token>`. Cookie-authenticated POST/PATCH/PUT/DELETE requests also need `X-CSRF-Token`. See
+[Sessions](#sessions-cookies-and-csrf).
 Errors are always JSON with a `message` that can be shown to the user: `{ "message": "..." }`.
 
 Invalid input gets status 400, and `errors` lists every problem by field. `message` is the first of them:
@@ -433,7 +471,8 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | Method | Path                            | Who                 | What it does                                                                                    |
 | ------ | ------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------- |
 | GET    | `/api/health`                   | anyone              | Health check → `{ status: "ok" }`                                                               |
-| POST   | `/api/auth/login`               | anyone              | Log in `{ email, password }` → `{ token, must_change_password, user }`; sets `last_login_at`. With `must_change_password: true`, everything except `/api/auth/me` and change-password answers 403 `PASSWORD_CHANGE_REQUIRED`. 5 wrong passwords lock the account for 15 minutes (423 `ACCOUNT_LOCKED` with `retryAfterMinutes`); more than 20 requests per IP in 15 minutes get 429 `RATE_LIMITED`. See [Login limits](#login-limits-lockout-and-rate-limit) |
+| POST   | `/api/auth/login`               | anyone              | Log in `{ email, password }` → `{ token, must_change_password, user }`, and sets the `tf_session` and `tf_csrf` cookies (see [Sessions](#sessions-cookies-and-csrf)); sets `last_login_at`. With `must_change_password: true`, everything except `/api/auth/me` and change-password answers 403 `PASSWORD_CHANGE_REQUIRED`. 5 wrong passwords lock the account for 15 minutes (423 `ACCOUNT_LOCKED` with `retryAfterMinutes`); more than 20 requests per IP in 15 minutes get 429 `RATE_LIMITED`. See [Login limits](#login-limits-lockout-and-rate-limit) |
+| POST   | `/api/auth/logout`              | anyone              | Clears the session cookies → 204 (works without a session) |
 | GET    | `/api/auth/me`                  | logged in           | The current user: `{ id, name, email, role, department_id, department_name, job_title, created_at, last_login_at, must_change_password }` (`null` when empty; never the password hash). Login returns the same user object |
 | POST   | `/api/auth/change-password`     | logged in           | Change your password `{ currentPassword, newPassword }` → `{ message, user }`; clears `must_change_password` (400 `INVALID_CURRENT_PASSWORD` if the current password is wrong). See [Changing your own password](#changing-your-own-password-post-apiauthchange-password) |
 | GET    | `/api/meta`                     | logged in           | Categories and priorities (for dropdowns)                                                       |

@@ -106,3 +106,4 @@ requireAuth checks the current role and active status in the database on every r
 - [x] Admin/HR reset a user's password
 - [x] Admin/HR edit name, email and department (backend)
 - [x] /me returns job title, member since and last login; login records last_login_at
+- [x] httpOnly cookie sessions with CSRF (step 1/3 done: backend accepts cookie and header)
