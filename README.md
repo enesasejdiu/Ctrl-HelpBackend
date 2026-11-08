@@ -158,6 +158,25 @@ Until then **every other endpoint answers 403** (only `GET /api/auth/me` and the
 The frontend uses `code` to send the user to its "Set your password" page. A new password needs 10–72 characters with
 at least one letter and one number, and must differ from the current one.
 
+### Changing your own password: `POST /api/auth/change-password`
+
+Any logged-in user, for their own account (the token says whose). Body: `{ currentPassword, newPassword }`, no other
+fields.
+
+- **The password rule** lives in one place, `newPassword` in `src/schemas/common.js`, and every check uses it. A new
+  password needs at least 10 characters, a letter and a digit, and at most 72 characters (bcrypt ignores anything
+  after 72 bytes). Each failed rule has its own message. Temporary passwords always pass it, and a test checks
+  10,000 of them.
+- **On success:** 200 `{ "message": "Password changed", "user": { ... } }`. The new bcrypt hash,
+  `must_change_password = false` and `updated_at` are saved in one statement.
+- **Wrong current password:** 400 `{ "message": "Current password is wrong", "code": "INVALID_CURRENT_PASSWORD" }`.
+  This is 400, not 401, so clients don't mistake it for an expired session. Nothing changes, and the session stays.
+- **Other errors:** 400 for a new password that breaks the rule or matches the current one, a missing field or an
+  extra field. 401 without a valid token.
+- **Sessions:** logins are stateless JWTs that can't be revoked, so other sessions keep working until they expire
+  (`JWT_EXPIRES_IN`). The token used for the change stays valid. There is no logout endpoint: logging out only
+  forgets the token in the browser.
+
 ### Creating an account: `POST /api/users`
 
 Admins and HR only (anyone else gets 403, no token gets 401).
@@ -310,7 +329,7 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | GET    | `/api/health`                   | anyone              | Health check → `{ status: "ok" }`                                                               |
 | POST   | `/api/auth/login`               | anyone              | Log in `{ email, password }` → `{ token, user }` (`user.must_change_password` is true for a temporary password) |
 | GET    | `/api/auth/me`                  | logged in           | The current user                                                                                |
-| POST   | `/api/auth/change-password`     | logged in           | Change your password `{ currentPassword, newPassword }` → `{ user }`; clears `must_change_password` (401 if the current password is wrong) |
+| POST   | `/api/auth/change-password`     | logged in           | Change your password `{ currentPassword, newPassword }` → `{ message, user }`; clears `must_change_password` (400 `INVALID_CURRENT_PASSWORD` if the current password is wrong). See [Changing your own password](#changing-your-own-password-post-apiauthchange-password) |
 | GET    | `/api/meta`                     | logged in           | Categories and priorities (for dropdowns)                                                       |
 | GET    | `/api/tickets`                  | logged in           | List tickets (employees: own only). Filters: `status`, `priority`, `category`, `assigned=me\|unassigned`, `q`, `overdue=1` |
 | POST   | `/api/tickets`                  | logged in           | Create a ticket `{ title, description, category_id, priority_id }`                              |

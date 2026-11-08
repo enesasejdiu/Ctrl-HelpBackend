@@ -1,6 +1,16 @@
 // Tests for /api/auth: self-registration is gone, login and /me report must_change_password, change-password,
 // and the rule that blocks a user with a temporary password until they change it.
+const bcrypt = require('bcryptjs');
+const pool = require('../src/db');
+const { newPassword } = require('../src/schemas/common');
+const { makeTemporaryPassword } = require('../src/temporaryPassword');
 const { api, resetData, createUser, loginAs } = require('./helpers');
+
+const auth = (token) => ({ Authorization: `Bearer ${token}` });
+async function dbUser(id) {
+  const [[row]] = await pool.query('SELECT * FROM users WHERE id = ?', [id]);
+  return row;
+}
 
 beforeEach(resetData);
 
@@ -50,13 +60,17 @@ describe('POST /api/auth/change-password', () => {
     expect(res.status).toBe(401);
   });
 
-  test('a wrong current password returns 401 and changes nothing', async () => {
-    const user = await createUser();
-    const res = await change(await loginAs(user), { currentPassword: 'not-my-password', newPassword: NEW_PASSWORD });
-    expect(res.status).toBe(401);
-    expect(res.body.message).toBe('Current password is wrong');
-    // The old password still works
-    expect((await api.post('/api/auth/login').send({ email: user.email, password: user.password })).status).toBe(200);
+  test('a wrong current password returns 400 INVALID_CURRENT_PASSWORD, changes nothing, and keeps the session', async () => {
+    const user = await createUser({ mustChangePassword: true });
+    const token = await loginAs(user);
+    const before = await dbUser(user.id);
+
+    const res = await change(token, { currentPassword: 'not-my-password', newPassword: NEW_PASSWORD });
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ message: 'Current password is wrong', code: 'INVALID_CURRENT_PASSWORD' });
+
+    expect(await dbUser(user.id)).toEqual(before);
+    expect((await api.get('/api/auth/me').set(auth(token))).status).toBe(200);
   });
 
   test.each([
@@ -101,6 +115,66 @@ describe('POST /api/auth/change-password', () => {
     const newLogin = await api.post('/api/auth/login').send({ email: user.email, password: NEW_PASSWORD });
     expect(newLogin.status).toBe(200);
     expect(newLogin.body.user.must_change_password).toBe(false);
+  });
+
+  test('success says so, stores only a bcrypt hash, clears the flag in the database and moves updated_at', async () => {
+    const user = await createUser({ mustChangePassword: true });
+    await pool.query('UPDATE users SET updated_at = ? WHERE id = ?', ['2020-01-01 00:00:00', user.id]);
+    const res = await change(await loginAs(user), { currentPassword: user.password, newPassword: NEW_PASSWORD });
+
+    expect(res.status).toBe(200);
+    expect(res.body.message).toBe('Password changed');
+    expect(JSON.stringify(res.body)).not.toMatch(/password_hash|\$2[aby]\$/);
+    const row = await dbUser(user.id);
+    expect(row.password_hash).toMatch(/^\$2[aby]\$10\$/);
+    expect(await bcrypt.compare(NEW_PASSWORD, row.password_hash)).toBe(true);
+    expect(row.must_change_password).toBe(0);
+    expect(row.updated_at.getFullYear()).toBeGreaterThan(2020);
+  });
+
+  // The exact cases from the password rule: 10+ characters, at least one letter and one digit
+  test.each([
+    ['9 characters', 'abcde1234', 400, 'New password must be at least 10 characters'],
+    ['10 letters, no digit', 'abcdefghij', 400, 'New password must contain at least one number'],
+    ['10 digits, no letter', '0123456789', 400, 'New password must contain at least one letter'],
+    ['abcde12345', 'abcde12345', 200, undefined],
+    ['72 characters', `a1${'x'.repeat(70)}`, 200, undefined],
+  ])('new password: %s → %i', async (_, newPassword, status, message) => {
+    const user = await createUser();
+    const res = await change(await loginAs(user), { currentPassword: user.password, newPassword });
+    expect(res.status).toBe(status);
+    if (message) expect(res.body.errors).toContainEqual({ field: 'newPassword', message });
+  });
+
+  test('the token used for the change keeps working afterwards', async () => {
+    const user = await createUser({ mustChangePassword: true });
+    const token = await loginAs(user);
+    await change(token, { currentPassword: user.password, newPassword: NEW_PASSWORD });
+    expect((await api.get('/api/tickets').set(auth(token))).status).toBe(200);
+  });
+
+  test('neither password is ever written to the console', async () => {
+    const user = await createUser();
+    const token = await loginAs(user);
+    const spies = ['log', 'info', 'warn', 'error', 'debug'].map((level) => jest.spyOn(console, level).mockImplementation(() => {}));
+    try {
+      await change(token, { currentPassword: 'wrong-password1', newPassword: NEW_PASSWORD }); // the failing path too
+      await change(token, { currentPassword: user.password, newPassword: NEW_PASSWORD });
+      const written = spies.flatMap((spy) => spy.mock.calls.flat().map(String)).join('\n');
+      for (const secret of [user.password, NEW_PASSWORD, 'wrong-password1']) expect(written).not.toContain(secret);
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+    }
+  });
+});
+
+describe('temporary passwords and the password rule', () => {
+  test('10,000 generated temporary passwords all pass the rule users must follow', () => {
+    for (let i = 0; i < 10000; i += 1) {
+      const password = makeTemporaryPassword();
+      const result = newPassword.safeParse(password);
+      if (!result.success) throw new Error(`"${password}" fails the rule: ${result.error.issues[0].message}`);
+    }
   });
 });
 

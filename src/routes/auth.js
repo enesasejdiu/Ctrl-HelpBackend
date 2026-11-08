@@ -62,25 +62,30 @@ router.get('/me', requireAuth, async (req, res) => {
   res.json(publicUser(rows[0]));
 });
 
-// POST /api/auth/change-password { currentPassword, newPassword } → { user }
-// Also the way out of a temporary password: requireAuth lets a flagged user reach this route, and it clears the flag.
+// POST /api/auth/change-password { currentPassword, newPassword } → { message, user }
+// Your own account only (the token says whose). Also the way out of a temporary password: requireAuth lets a flagged
+// user reach this route, and it clears the flag.
+// Sessions: tokens are stateless JWTs that can't be revoked, so other sessions keep working until they expire; the
+// token used for this request stays valid.
 router.post('/change-password', requireAuth, validate(schemas.changePassword), async (req, res) => {
   const { currentPassword, newPassword } = req.valid.body;
   const [[user]] = await pool.query('SELECT * FROM users WHERE id = ?', [req.user.id]);
 
+  // 400, not 401: the session is fine, only the typed password is wrong. A 401 would look like an expired login.
   if (!(await bcrypt.compare(currentPassword, user.password_hash))) {
-    throw new HttpError(401, 'Current password is wrong');
+    throw new HttpError(400, 'Current password is wrong', 'INVALID_CURRENT_PASSWORD');
   }
   if (newPassword === currentPassword) {
     throw new HttpError(400, 'New password must be different from the current one');
   }
 
   const passwordHash = await bcrypt.hash(newPassword, 10);
-  await pool.query('UPDATE users SET password_hash = ?, must_change_password = FALSE WHERE id = ?', [
-    passwordHash,
-    user.id,
-  ]);
-  res.json({ user: publicUser({ ...user, must_change_password: false }) });
+  // One statement, so the new hash and the cleared flag are saved together or not at all
+  await pool.query(
+    'UPDATE users SET password_hash = ?, must_change_password = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+    [passwordHash, user.id]
+  );
+  res.json({ message: 'Password changed', user: publicUser({ ...user, must_change_password: false }) });
 });
 
 module.exports = router;
