@@ -105,3 +105,4 @@ requireAuth checks the current role and active status in the database on every r
 - [x] Change password endpoint; users with a temporary password are blocked until they change it
 - [x] Admin/HR reset a user's password
 - [x] Admin/HR edit name, email and department (backend)
+- [x] /me returns job title, member since and last login; login records last_login_at
