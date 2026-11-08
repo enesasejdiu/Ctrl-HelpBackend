@@ -44,7 +44,7 @@ function requireRole(...roles) {
   };
 }
 
-// Staff = anyone who works tickets (agents and admins)
+// Staff = anyone who works tickets (agents and admins). HR is not staff: for tickets, HR is an employee.
 function isStaff(user) {
   return user.role === 'agent' || user.role === 'admin';
 }

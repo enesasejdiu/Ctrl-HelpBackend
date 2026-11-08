@@ -207,42 +207,6 @@
           ]
         },
         {
-          "name": "Register",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/auth/register",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "auth",
-                "register"
-              ]
-            },
-            "description": "Creates an employee account (a \"role\" field is ignored). Change the email to register again.",
-            "auth": {
-              "type": "noauth"
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"name\": \"New Employee\",\n  \"email\": \"new.employee@ticketflow.local\",\n  \"password\": \"password123\",\n  \"department\": \"Marketing\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": []
-        },
-        {
           "name": "Me",
           "request": {
             "method": "GET",
@@ -566,6 +530,38 @@
           "response": []
         },
         {
+          "name": "Create user",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/users",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "users"
+              ]
+            },
+            "description": "Admin or HR. Creates an account and returns { user, temporaryPassword }. The temporary password is only shown in this response; the new user logs in with it and has must_change_password = true. Admins can use any role (employee, agent, hr, admin); HR can only create employees. Change the email to create another account.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"New Employee\",\n  \"email\": \"new.employee@ticketflow.local\",\n  \"role\": \"employee\",\n  \"department\": \"Marketing\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
           "name": "Update user",
           "request": {
             "method": "PATCH",
@@ -585,7 +581,7 @@
                 "{{userId}}"
               ]
             },
-            "description": "Admin only. Send role and/or is_active. Not allowed on your own account. The example keeps user 5 (Vjosa Hoxha) unchanged; try role \"agent\" or is_active false.",
+            "description": "Admin: send role and/or is_active. HR: only is_active, and only for employees. Not allowed on your own account. The example keeps user 5 (Vjosa Hoxha) unchanged; try role \"agent\" or is_active false.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"role\": \"employee\",\n  \"is_active\": true\n}",

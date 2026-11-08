@@ -1,6 +1,7 @@
-// Authentication routes: register, login and "who am I".
-// Mounted at /api/auth. Successful register/login return { token, user }; the client sends the token back
+// Authentication routes: login and "who am I".
+// Mounted at /api/auth. A successful login returns { token, user }; the client sends the token back
 // as "Authorization: Bearer <token>" on later requests.
+// There is no self-registration: admins and HR create accounts with POST /api/users.
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -28,29 +29,10 @@ function publicUser(user) {
     email: user.email,
     role: user.role,
     department: user.department,
+    // True for an account created by an admin or HR, until the user sets their own password
+    must_change_password: Boolean(user.must_change_password),
   };
 }
-
-// POST /api/auth/register: self-registration always creates an employee
-router.post('/register', validate(schemas.register), async (req, res) => {
-  const { name, email, password } = req.valid.body;
-  const department = req.valid.body.department || null;
-
-  const [existing] = await pool.query('SELECT id FROM users WHERE email = ?', [email]);
-  if (existing.length > 0) {
-    throw new HttpError(409, 'An account with this email already exists');
-  }
-
-  const passwordHash = await bcrypt.hash(password, 10);
-  // role is hard-coded, and the schema refuses a "role" field in the request body
-  const [result] = await pool.query(
-    'INSERT INTO users (name, email, password_hash, role, department) VALUES (?, ?, ?, ?, ?)',
-    [name, email, passwordHash, 'employee', department]
-  );
-
-  const user = { id: result.insertId, name, email, role: 'employee', department };
-  res.status(201).json({ token: makeToken(user), user: publicUser(user) });
-});
 
 // POST /api/auth/login
 router.post('/login', validate(schemas.login), async (req, res) => {
