@@ -496,8 +496,8 @@ describe('POST /api/users/:id/reset-password', () => {
       .post('/api/auth/change-password')
       .set(auth(oldToken))
       .send({ currentPassword: target.password, newPassword: 'Attacker1234' });
-    expect(change.status).toBe(401);
-    expect(change.body.message).toBe('Current password is wrong');
+    expect(change.status).toBe(400);
+    expect(change.body.code).toBe('INVALID_CURRENT_PASSWORD');
     for (const path of ['/api/tickets', '/api/meta']) {
       expect((await api.get(path).set(auth(oldToken))).status).toBe(403);
     }

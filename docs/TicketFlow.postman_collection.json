@@ -244,7 +244,7 @@
                 "change-password"
               ]
             },
-            "description": "Changes the logged-in user's password and clears must_change_password. While must_change_password is true (an account created or reset with a temporary password), every other request except Me answers 403 with code PASSWORD_CHANGE_REQUIRED. The new password needs 10+ characters with a letter and a number, and must differ from the current one. Running this changes the demo account's password.",
+            "description": "Changes your own password; also clears must_change_password after a temporary password. Body: currentPassword and newPassword (10-72 characters, a letter and a digit). Returns { message: \"Password changed\", user }. A wrong current password returns 400 with code INVALID_CURRENT_PASSWORD (not 401, the session is fine). Other sessions are not ended: tokens are stateless.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"currentPassword\": \"password123\",\n  \"newPassword\": \"my-new-password1\"\n}",

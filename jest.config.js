@@ -9,5 +9,8 @@ module.exports = {
   setupFilesAfterEnv: ['<rootDir>/tests/setupAfterEnv.js'], // closes the MySQL pool after each file
   // One test database for the whole run, so test files run one after another, never at the same time
   maxWorkers: 1,
+  // Many tests hash several passwords with bcrypt (deliberately slow). 5s, Jest's default, was too tight on a busy
+  // machine (e.g. with a dev server rebuilding), so a slow but correct test isn't reported as a failure
+  testTimeout: 15000,
   collectCoverageFrom: ['src/**/*.js'],
 };
