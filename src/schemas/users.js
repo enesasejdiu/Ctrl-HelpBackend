@@ -20,6 +20,11 @@ const resetPassword = {
   params: z.object({ id: id('User id') }),
 };
 
+// The reset takes no body: the server always makes the password, so any field (e.g. a chosen password) is refused
+const resetPasswordBody = {
+  body: z.strictObject({}),
+};
+
 // PATCH /api/users/:id is checked in two steps: the id first, then (once the user is known to exist and the caller
 // may change them) the body. Every body field is optional, but at least one must be sent. Unknown fields (password,
 // must_change_password, created_at, ...) are refused by name. null clears department, department_id and job_title.
@@ -43,4 +48,4 @@ const updateUser = {
     }),
 };
 
-module.exports = { createUser, resetPassword, updateUserParams, updateUser };
+module.exports = { createUser, resetPassword, resetPasswordBody, updateUserParams, updateUser };
