@@ -634,10 +634,10 @@
                 "{{userId}}"
               ]
             },
-            "description": "Admin: send role and/or is_active. HR: only is_active, and only for employees. Not allowed on your own account. The example keeps user 5 (Vjosa Hoxha) unchanged; try role \"agent\" or is_active false.",
+            "description": "Send any of name, email, department, role, is_active (at least one); only those change. Admin: anyone; on your own account only name, email and department. HR: employee accounts only, and never role. 409 if the email is taken. The example keeps user 5 (Vjosa Hoxha) unchanged; try a new department or is_active false.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"role\": \"employee\",\n  \"is_active\": true\n}",
+              "raw": "{\n  \"department\": \"Sales\",\n  \"is_active\": true\n}",
               "options": {
                 "raw": {
                   "language": "json"

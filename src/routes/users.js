@@ -96,14 +96,16 @@ router.post('/:id/reset-password', requireRole('admin', 'hr'), validate(schemas.
   res.json({ user: formatUser(rows[0]), temporaryPassword });
 });
 
-// PATCH /api/users/:id { role?, is_active? } (admin; HR only is_active, and only for employees)
+// PATCH /api/users/:id { name?, email?, department?, role?, is_active? } → the updated user
+// Admin: anyone, including their own name/email/department (but not their own role or active status).
+// HR: employee accounts only, and never a role.
 router.patch('/:id', requireRole('admin', 'hr'), validate(schemas.updateUser), async (req, res) => {
   const { id } = req.valid.params;
-  const { role, is_active: isActive } = req.valid.body;
+  const { name, email, department, role, is_active: isActive } = req.valid.body;
 
   // Stops an admin from deactivating themselves or removing their own admin role
-  if (id === req.user.id) {
-    throw new HttpError(400, 'You cannot change your own account here');
+  if (id === req.user.id && (role !== undefined || isActive !== undefined)) {
+    throw new HttpError(400, 'You cannot change your own role or active status');
   }
 
   const isHr = req.user.role === 'hr';
@@ -122,9 +124,29 @@ router.patch('/:id', requireRole('admin', 'hr'), validate(schemas.updateUser), a
     throw new HttpError(403, 'HR can only change employee accounts');
   }
 
+  // Emails are unique: check before writing, so the answer is a clear 409 rather than a database error
+  if (email !== undefined) {
+    const [taken] = await pool.query('SELECT id FROM users WHERE email = ? AND id <> ?', [email, id]);
+    if (taken.length > 0) {
+      throw new HttpError(409, 'An account with this email already exists');
+    }
+  }
+
   // Only update the fields that were sent
   const sets = [];
   const params = [];
+  if (name !== undefined) {
+    sets.push('name = ?');
+    params.push(name);
+  }
+  if (email !== undefined) {
+    sets.push('email = ?');
+    params.push(email);
+  }
+  if (department !== undefined) {
+    sets.push('department = ?');
+    params.push(department || null); // an empty department is stored as "none"
+  }
   if (role !== undefined) {
     sets.push('role = ?');
     params.push(role);
@@ -172,6 +194,8 @@ router.patch('/:id', requireRole('admin', 'hr'), validate(schemas.updateUser), a
     await conn.commit();
   } catch (err) {
     await conn.rollback();
+    // Two requests taking the same email at once: both pass the check above, and the UNIQUE index stops the second
+    if (err.code === 'ER_DUP_ENTRY') throw new HttpError(409, 'An account with this email already exists');
     throw err;
   } finally {
     conn.release();

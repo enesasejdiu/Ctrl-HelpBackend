@@ -375,3 +375,110 @@ describe('POST /api/users/:id/reset-password', () => {
     expect(a.body.temporaryPassword).not.toBe(b.body.temporaryPassword);
   });
 });
+
+describe('PATCH /api/users/:id edits name, email and department', () => {
+  const patch = (id, token, body) => api.patch(`/api/users/${id}`).set(auth(token)).send(body);
+
+  test.each([
+    ['name', { name: '  Renamed Person  ' }, { name: 'Renamed Person' }],
+    ['email', { email: '  New.Address@Test.Local ' }, { email: 'new.address@test.local' }],
+    ['department', { department: ' Logistics ' }, { department: 'Logistics' }],
+    ['department to none', { department: null }, { department: null }],
+    ['department to empty', { department: '   ' }, { department: null }],
+  ])('admin edits %s', async (_, body, expected) => {
+    const target = await createUser({ role: 'agent', department: 'IT' });
+    const res = await patch(target.id, adminToken, body);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ id: target.id, ...expected });
+    expect(res.body).not.toHaveProperty('password_hash');
+    const row = await dbUser(target.id);
+    for (const [key, value] of Object.entries(expected)) expect(row[key]).toBe(value);
+  });
+
+  test('admin edits several fields at once, and the user logs in with the new email', async () => {
+    const target = await createUser();
+    const res = await patch(target.id, adminToken, { name: 'Both Changed', email: 'both@test.local', department: 'Ops' });
+    expect(res.status).toBe(200);
+    const login = await api.post('/api/auth/login').send({ email: 'both@test.local', password: target.password });
+    expect(login.status).toBe(200);
+    expect(login.body.user).toMatchObject({ name: 'Both Changed', department: 'Ops' });
+  });
+
+  test('admin edits their own details, but not their own role or active status', async () => {
+    const own = await patch(admin.id, adminToken, { name: 'Head Admin', department: 'Management' });
+    expect(own.status).toBe(200);
+    expect(own.body).toMatchObject({ name: 'Head Admin', department: 'Management', role: 'admin' });
+
+    for (const body of [{ role: 'agent' }, { is_active: false }, { name: 'X', role: 'employee' }]) {
+      const res = await patch(admin.id, adminToken, body);
+      expect(res.status).toBe(400);
+      expect(res.body.message).toBe('You cannot change your own role or active status');
+    }
+    expect((await dbUser(admin.id)).name).toBe('Head Admin');
+  });
+
+  test("HR edits an employee's details", async () => {
+    const employee = await createUser();
+    const res = await patch(employee.id, hrToken, { name: 'Edited By HR', email: 'edited.by.hr@test.local', department: 'Sales' });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ name: 'Edited By HR', email: 'edited.by.hr@test.local', department: 'Sales' });
+  });
+
+  test.each(['agent', 'admin', 'hr'])("HR editing a(n) %s's details gets 403 and nothing changes", async (role) => {
+    const other = await createUser({ role, name: 'Original Name' });
+    const res = await patch(other.id, hrToken, { name: 'Hacked' });
+    expect(res.status).toBe(403);
+    expect(res.body.message).toBe('HR can only change employee accounts');
+    expect((await dbUser(other.id)).name).toBe('Original Name');
+  });
+
+  test('HR sending a role together with details gets 403 and nothing changes', async () => {
+    const employee = await createUser({ name: 'Original Name' });
+    const res = await patch(employee.id, hrToken, { name: 'New Name', role: 'employee' });
+    expect(res.status).toBe(403);
+    expect(res.body.message).toBe('HR cannot change roles');
+    expect((await dbUser(employee.id)).name).toBe('Original Name');
+  });
+
+  test("HR can't edit their own details (HR only edits employees)", async () => {
+    const res = await patch(hr.id, hrToken, { name: 'Me Myself' });
+    expect(res.status).toBe(403);
+  });
+
+  test('an email used by someone else returns 409, also with different case and spaces', async () => {
+    await createUser({ email: 'taken@test.local' });
+    const target = await createUser({ email: 'mine@test.local' });
+    for (const email of ['taken@test.local', '  TAKEN@Test.Local ']) {
+      const res = await patch(target.id, adminToken, { email });
+      expect(res.status).toBe(409);
+      expect(res.body.message).toBe('An account with this email already exists');
+    }
+    expect((await dbUser(target.id)).email).toBe('mine@test.local');
+  });
+
+  test('keeping your current email (any case) is not a conflict', async () => {
+    const target = await createUser({ email: 'same@test.local' });
+    const res = await patch(target.id, adminToken, { email: 'SAME@test.local' });
+    expect(res.status).toBe(200);
+    expect(res.body.email).toBe('same@test.local');
+  });
+
+  test.each([
+    ['invalid email', { email: 'not-an-email' }, 'email', 'Enter a valid email'],
+    ['empty name', { name: '   ' }, 'name', 'Name is required'],
+    ['too long department', { department: 'x'.repeat(101) }, 'department', 'Department must be 100 characters or less'],
+    ['unknown field', { password: 'sneaky123' }, 'password', 'password is not allowed'],
+  ])('%s returns 400', async (_, body, field, message) => {
+    const target = await createUser();
+    const res = await patch(target.id, adminToken, body);
+    expect(res.status).toBe(400);
+    expect(res.body.errors).toContainEqual({ field, message });
+  });
+
+  test('an empty body returns 400', async () => {
+    const target = await createUser();
+    const res = await patch(target.id, adminToken, {});
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe('Send at least one of name, email, department, role or is_active to change');
+  });
+});

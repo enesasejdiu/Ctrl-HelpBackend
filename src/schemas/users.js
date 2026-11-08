@@ -11,15 +11,19 @@ const resetPassword = {
   params: z.object({ id: id('User id') }),
 };
 
+// Every field is optional, but at least one must be sent. Unknown fields (e.g. password) are refused.
 const updateUser = {
   params: z.object({ id: id('User id') }),
   body: z
     .strictObject({
+      name: name.optional(),
+      email: email.optional(),
+      department: optionalText('Department', 100),
       role: role.optional(),
       is_active: z.boolean({ error: 'is_active must be true or false' }).optional(),
     })
-    .refine((body) => body.role !== undefined || body.is_active !== undefined, {
-      error: 'Send a role and/or is_active to change',
+    .refine((body) => Object.values(body).some((value) => value !== undefined), {
+      error: 'Send at least one of name, email, department, role or is_active to change',
     }),
 };
 

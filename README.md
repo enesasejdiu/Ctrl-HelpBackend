@@ -140,8 +140,8 @@ All demo accounts use the password **`password123`**.
   resolved ticket, or reopen a resolved/closed one.
 - **Agent**: sees all tickets, takes tickets (assigns them to themselves), changes status and priority, and writes
   public comments and internal notes. Cannot assign tickets to other people.
-- **HR**: creates employee accounts and activates/deactivates employees. Cannot change roles or touch staff, HR or
-  admin accounts. For tickets, HR is an employee: own tickets only, no internal notes, no statistics.
+- **HR**: creates employee accounts, edits their name, email and department, resets their passwords, and
+  activates/deactivates them. Cannot change roles or touch staff, HR or admin accounts. For tickets, HR is an employee: own tickets only, no internal notes, no statistics.
 - **Admin**: everything an agent can do, plus assign tickets to any active agent/admin, create accounts with any
   role, manage users (change roles, activate/deactivate), and view the statistics.
 
@@ -222,7 +222,7 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | GET    | `/api/users`                    | admin, hr           | All users                                                                                       |
 | POST   | `/api/users`                    | admin, hr           | Create an account `{ name, email, role, department? }` → `{ user, temporaryPassword }` (HR: employees only) |
 | POST   | `/api/users/:id/reset-password` | admin, hr        | New temporary password → `{ user, temporaryPassword }`; sets `must_change_password` (not your own account; HR: employees only) |
-| PATCH  | `/api/users/:id`                | admin, hr           | Change `{ role?, is_active? }` (not your own account; HR: only `is_active`, only for employees) |
+| PATCH  | `/api/users/:id`                | admin, hr           | Change `{ name?, email?, department?, role?, is_active? }` (at least one). Admin: anyone, own account only name/email/department. HR: employees only, never `role`. 409 if the email is taken |
 | GET    | `/api/stats`                    | admin               | Dashboard statistics: totals, by status/priority/category/agent, 8-week trend                   |
 
 A Postman collection with every request is in [`docs/TicketFlow.postman_collection.json`](docs/TicketFlow.postman_collection.json).
