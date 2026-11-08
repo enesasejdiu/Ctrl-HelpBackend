@@ -297,6 +297,38 @@ expire. Ending them for good would need a per-user token version or "valid after
 Role changes and deactivation take effect immediately: every request checks the user's current role and active
 status in the database.
 
+## Departments
+
+Anyone logged in can list departments; admins and HR create, rename and delete them.
+
+- **Names** are trimmed, with runs of spaces inside collapsed to one, and must be 1–100 characters. They are unique
+  regardless of letter case: "Sales" and "sales" clash. The table's collation (`utf8mb4_unicode_ci`) makes the
+  `UNIQUE` index on `name` case-insensitive, so the database guarantees this too. The same collation also treats
+  accents as equal ("Café" and "Cafe" clash). A clash is 409 `DEPARTMENT_NAME_TAKEN`. Invalid names, a missing name
+  and extra fields are 400 in the usual `{ message, errors }` format.
+- **Renaming** to exactly the current name is a 200 that changes nothing. Changing only the letter case is a real
+  rename.
+- **Deleting** only works for a department nobody is in. Otherwise it's 409:
+
+  ```json
+  { "message": "Move the users out of this department before deleting it", "code": "DEPARTMENT_NOT_EMPTY", "user_count": 2 }
+  ```
+
+  The check and the delete run in one transaction that locks the department row. A user being put into the department
+  at the same moment is either counted (if their change came first) or refused with "Department not found" (if it
+  came second). Without the lock, the `ON DELETE SET NULL` foreign key would silently take them out of it.
+- An unknown id is 404 on rename and delete, checked before the body.
+
+```json
+GET /api/departments → 200
+[
+  { "id": 2, "name": "Finance", "user_count": 0, "created_at": "2026-11-08T17:10:00.000Z", "updated_at": "2026-11-08T17:10:00.000Z" },
+  { "id": 1, "name": "IT", "user_count": 3, "created_at": "2026-11-08T17:09:12.000Z", "updated_at": "2026-11-08T17:09:12.000Z" }
+]
+```
+
+`POST /api/departments { "name": "  Human   Resources " }` → 201 with `{ "id": 3, "name": "Human Resources", "user_count": 0, ... }`.
+
 ## Ticket status flow
 
 ```
@@ -360,6 +392,10 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | POST   | `/api/users/:id/reset-password` | admin, hr        | No body. New temporary password → `{ user, temporaryPassword }`; sets `must_change_password` (not your own account: 403; HR: employees only). See [Resetting a password](#resetting-a-password-post-apiusersidreset-password) |
 | PATCH  | `/api/users/:id`                | admin, hr           | Change `{ name?, email?, department?, department_id?, job_title?, role?, is_active? }` (at least one). Admin: anyone, but not their own role/active status, and never the last active admin. HR: employees only, never `role`. See [Editing an account](#editing-an-account-patch-apiusersid) |
 | GET    | `/api/stats`                    | admin               | Dashboard statistics: totals, by status/priority/category/agent, 8-week trend                   |
+| GET    | `/api/departments`              | logged in           | All departments, sorted by name, with `user_count` |
+| POST   | `/api/departments`              | admin, hr           | Create `{ name }` → 201 the department (409 `DEPARTMENT_NAME_TAKEN`) |
+| PATCH  | `/api/departments/:id`          | admin, hr           | Rename `{ name }` → the department (409 `DEPARTMENT_NAME_TAKEN`) |
+| DELETE | `/api/departments/:id`          | admin, hr           | Delete an empty department → 204 (409 `DEPARTMENT_NOT_EMPTY` with `user_count`). See [Departments](#departments) |
 
 A Postman collection with every request is in [`docs/TicketFlow.postman_collection.json`](docs/TicketFlow.postman_collection.json).
 Import it, run one of the **Login** requests (it saves the token automatically), then try the other requests.
@@ -400,6 +436,7 @@ src/
     tickets.js            /api/tickets: list, create, view, comments, status, priority, assign
     users.js              /api/users: agent list, creating accounts, user management
     stats.js              /api/stats: dashboard statistics
+    departments.js        /api/departments: list, create, rename, delete
 tests/
   globalSetup.js          Creates the throwaway test database before all tests
   globalTeardown.js       Drops it after all tests
@@ -408,6 +445,7 @@ tests/
   helpers.js              api, resetData, createUser, loginAs
   testDb.js               Test database name rules and safety guard
   smoke.test.js           Smoke test proving the setup works
+  departments.test.js     Departments, including deleting while a user is being assigned
   routes.test.js          Every route needs a login and blocks users with a temporary password
 jest.config.js            Jest settings
 .env.example              Example configuration (copy to .env)
@@ -419,7 +457,7 @@ TASKS.md                  Development task list
 | Table            | Contents                                                                                     |
 | ---------------- | -------------------------------------------------------------------------------------------- |
 | `users`          | Accounts: name, email, password hash, role (employee/agent/admin), department, active flag   |
-| `departments`    | Departments (not used by the app yet; `users.department_id` links to them)                   |
+| `departments`    | Departments people belong to; `users.department_id` links to them (see [Departments](#departments)) |
 | `categories`     | Ticket categories (Hardware, Software, Network, Access, Email, Other)                         |
 | `priorities`     | Priority levels with their target resolution time in hours                                   |
 | `tickets`        | Tickets: requester, assignee, category, priority, status, resolution note, timestamps        |

@@ -30,6 +30,10 @@
     {
       "key": "userId",
       "value": "5"
+    },
+    {
+      "key": "departmentId",
+      "value": "1"
     }
   ],
   "item": [
@@ -644,6 +648,113 @@
                 }
               }
             }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Departments",
+      "item": [
+        {
+          "name": "List departments",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/departments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "departments"
+              ]
+            },
+            "description": "Any logged-in user. Sorted by name, each with user_count."
+          },
+          "response": []
+        },
+        {
+          "name": "Create department",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/departments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "departments"
+              ]
+            },
+            "description": "Admin or HR. The name is trimmed and inner spaces collapsed; 1-100 characters. 409 DEPARTMENT_NAME_TAKEN if the name exists in any letter case.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Marketing\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Rename department",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/departments/{{departmentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "departments",
+                "{{departmentId}}"
+              ]
+            },
+            "description": "Admin or HR. Rename only. The same name is a no-op; 409 DEPARTMENT_NAME_TAKEN if another department has it.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Marketing and Sales\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete department",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/departments/{{departmentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "departments",
+                "{{departmentId}}"
+              ]
+            },
+            "description": "Admin or HR. Only an empty department: 204, or 409 DEPARTMENT_NOT_EMPTY with user_count."
           },
           "response": []
         }

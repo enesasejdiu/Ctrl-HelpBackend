@@ -7,4 +7,5 @@ module.exports = [
   ['/api/tickets', require('./tickets')],
   ['/api/users', require('./users')],
   ['/api/stats', require('./stats')],
+  ['/api/departments', require('./departments')],
 ];
