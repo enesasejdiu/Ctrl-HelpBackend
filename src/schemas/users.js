@@ -7,6 +7,10 @@ const createUser = {
   body: z.strictObject({ name, email, role, department: optionalText('Department', 100) }),
 };
 
+const resetPassword = {
+  params: z.object({ id: id('User id') }),
+};
+
 const updateUser = {
   params: z.object({ id: id('User id') }),
   body: z
@@ -19,4 +23,4 @@ const updateUser = {
     }),
 };
 
-module.exports = { createUser, updateUser };
+module.exports = { createUser, resetPassword, updateUser };

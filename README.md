@@ -140,7 +140,8 @@ All demo accounts use the password **`password123`**.
 
 There is no self-registration. An admin or HR creates each account with `POST /api/users`; the response contains a
 **temporary password**, shown only that once (only its hash is stored). Pass it on to the new user, who logs in with
-it. Their `must_change_password` is `true` until they set their own password with `POST /api/auth/change-password`.
+it. `POST /api/users/:id/reset-password` gives an existing account a new temporary password the same way (for a
+forgotten password); the old one stops working at once. Their `must_change_password` is `true` until they set their own password with `POST /api/auth/change-password`.
 Until then **every other endpoint answers 403** (only `GET /api/auth/me` and the change-password request work):
 
 ```json
@@ -213,6 +214,7 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | GET    | `/api/users/agents`             | agent, admin        | Active agents and admins (for the "Assign to" dropdown)                                         |
 | GET    | `/api/users`                    | admin, hr           | All users                                                                                       |
 | POST   | `/api/users`                    | admin, hr           | Create an account `{ name, email, role, department? }` → `{ user, temporaryPassword }` (HR: employees only) |
+| POST   | `/api/users/:id/reset-password` | admin, hr        | New temporary password → `{ user, temporaryPassword }`; sets `must_change_password` (not your own account; HR: employees only) |
 | PATCH  | `/api/users/:id`                | admin, hr           | Change `{ role?, is_active? }` (not your own account; HR: only `is_active`, only for employees) |
 | GET    | `/api/stats`                    | admin               | Dashboard statistics: totals, by status/priority/category/agent, 8-week trend                   |
 
@@ -238,6 +240,7 @@ src/
   app.js                  Express app: middleware, routes, error handling
   db.js                   MySQL connection pool
   overdue.js              The shared "is this ticket overdue?" SQL rule
+  temporaryPassword.js    Random temporary passwords for created and reset accounts
   middleware/
     auth.js               requireAuth, requireRole, isStaff
     errors.js             HttpError, 404 handler, central error handler

@@ -1,7 +1,6 @@
 // User management routes.
 // Mounted at /api/users. Agents/admins can list who can be assigned tickets.
 // Admins and HR create, list and change accounts. HR only creates and changes employees, and never changes roles.
-const crypto = require('crypto');
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const pool = require('../db');
@@ -9,6 +8,7 @@ const { HttpError } = require('../middleware/errors');
 const { requireAuth, requireRole, isStaff } = require('../middleware/auth');
 const validate = require('../middleware/validate');
 const schemas = require('../schemas/users');
+const { makeTemporaryPassword } = require('../temporaryPassword');
 
 const router = express.Router();
 
@@ -18,23 +18,6 @@ const USER_COLUMNS = 'id, name, email, role, department, is_active, must_change_
 // MySQL returns booleans as 0/1; send real true/false to the client
 function formatUser(row) {
   return { ...row, is_active: Boolean(row.is_active), must_change_password: Boolean(row.must_change_password) };
-}
-
-// Letters and digits, minus look-alikes (0/O, 1/l/I), so the password can be read out or copied from a note
-const PASSWORD_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
-const TEMP_PASSWORD_LENGTH = 14;
-
-// A random temporary password with at least one letter and one digit.
-// crypto.randomInt is cryptographically secure, unlike Math.random.
-function makeTemporaryPassword() {
-  for (;;) {
-    const password = Array.from(
-      { length: TEMP_PASSWORD_LENGTH },
-      () => PASSWORD_CHARS[crypto.randomInt(PASSWORD_CHARS.length)]
-    ).join('');
-    // Draws without a letter or without a digit are very rare; just draw again
-    if (/[a-zA-Z]/.test(password) && /\d/.test(password)) return password;
-  }
 }
 
 router.use(requireAuth);
@@ -84,6 +67,33 @@ router.post('/', requireRole('admin', 'hr'), validate(schemas.createUser), async
 
   const [rows] = await pool.query(`SELECT ${USER_COLUMNS} FROM users WHERE id = ?`, [result.insertId]);
   res.status(201).json({ user: formatUser(rows[0]), temporaryPassword });
+});
+
+// POST /api/users/:id/reset-password (admin and HR) → 200 { user, temporaryPassword }
+// Replaces the password with a new temporary one (the old one stops working at once) and sets must_change_password,
+// so the user has to choose their own at the next login. Deactivated accounts can be reset too.
+router.post('/:id/reset-password', requireRole('admin', 'hr'), validate(schemas.resetPassword), async (req, res) => {
+  const { id } = req.valid.params;
+
+  // Your own password needs your current one, so it goes through POST /api/auth/change-password instead
+  if (id === req.user.id) {
+    throw new HttpError(400, 'Use Change password for your own account');
+  }
+
+  const [existing] = await pool.query('SELECT id, role FROM users WHERE id = ?', [id]);
+  if (existing.length === 0) {
+    throw new HttpError(404, 'User not found');
+  }
+  if (req.user.role === 'hr' && existing[0].role !== 'employee') {
+    throw new HttpError(403, 'HR can only reset passwords of employee accounts');
+  }
+
+  const temporaryPassword = makeTemporaryPassword();
+  const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+  await pool.query('UPDATE users SET password_hash = ?, must_change_password = TRUE WHERE id = ?', [passwordHash, id]);
+
+  const [rows] = await pool.query(`SELECT ${USER_COLUMNS} FROM users WHERE id = ?`, [id]);
+  res.json({ user: formatUser(rows[0]), temporaryPassword });
 });
 
 // PATCH /api/users/:id { role?, is_active? } (admin; HR only is_active, and only for employees)

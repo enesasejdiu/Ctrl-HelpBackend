@@ -103,3 +103,4 @@ requireAuth checks the current role and active status in the database on every r
 - [x] Jest + Supertest with an automatic test database
 - [x] HR role; Admin/HR create users with a temporary password; self-registration removed (backend)
 - [x] Change password endpoint; users with a temporary password are blocked until they change it
+- [x] Admin/HR reset a user's password
