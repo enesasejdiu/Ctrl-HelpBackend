@@ -86,6 +86,15 @@ describe('schema', () => {
     expect(await column('users', 'last_login_at')).toMatchObject({ type: 'timestamp', nullable: 'YES' });
   });
 
+  test('users.failed_login_count is a NOT NULL int, default 0; locked_until a nullable datetime (migration 006)', async () => {
+    const count = await column('users', 'failed_login_count');
+    // MySQL 8+ reports "int", MariaDB "int(11)"
+    expect(count.type).toMatch(/^int(\(11\))?$/);
+    expect(count).toMatchObject({ nullable: 'NO' });
+    expect(String(count.dflt)).toBe('0');
+    expect(await column('users', 'locked_until')).toMatchObject({ type: 'datetime', nullable: 'YES' });
+  });
+
   test('users.must_change_password is NOT NULL with default false', async () => {
     const row = await column('users', 'must_change_password');
     expect(row).toMatchObject({ type: 'tinyint(1)', nullable: 'NO' });
@@ -99,8 +108,8 @@ describe('schema', () => {
 });
 
 describe('up → down → up', () => {
-  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 005, 004 and 003
-  test('rolling back 005, 004 and 003, then migrating again, gives back the same schema', async () => {
+  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 006 down to 003
+  test('rolling back 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
     const { db, dbName } = await newDatabase();
     const schema = async () => {
       const tables = {};
@@ -115,14 +124,14 @@ describe('up → down → up', () => {
     const applied = async () => (await db.query('SELECT filename FROM schema_migrations ORDER BY filename'))[0].map((r) => r.filename);
 
     const before = await schema();
-    for (let i = 0; i < 3; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }));
+    for (let i = 0; i < 4; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }));
     expect(await applied()).toEqual(['001_initial.sql', '002_hr_role_and_password_change.sql']);
     const [departments] = await db.query("SHOW TABLES LIKE 'departments'");
     expect(departments).toHaveLength(0);
 
     await quietly(() => migrate({ dbName, backupFirst: false }));
     expect(await schema()).toEqual(before);
-    expect((await applied()).at(-1)).toBe(FILE);
+    expect((await applied()).at(-1)).toBe('006_login_lockout.sql');
   });
 
   test('a migration without a rollback file is refused, not half-undone', async () => {
