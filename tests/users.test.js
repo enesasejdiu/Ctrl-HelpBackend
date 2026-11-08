@@ -258,9 +258,10 @@ describe('PATCH /api/users/:id as HR', () => {
     expect((await dbUser(employee.id)).role).toBe('employee');
   });
 
-  test('HR cannot change their own account', async () => {
+  test('HR cannot change their own account (HR only changes employees)', async () => {
     const res = await api.patch(`/api/users/${hr.id}`).set(auth(hrToken)).send({ is_active: false });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(403);
+    expect(res.body.message).toBe('HR can only change employee accounts');
   });
 });
 
@@ -478,7 +479,7 @@ describe('PATCH /api/users/:id edits name, email and department', () => {
 
     for (const body of [{ role: 'agent' }, { is_active: false }, { name: 'X', role: 'employee' }]) {
       const res = await patch(admin.id, adminToken, body);
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(403);
       expect(res.body.message).toBe('You cannot change your own role or active status');
     }
     expect((await dbUser(admin.id)).name).toBe('Head Admin');
@@ -546,6 +547,168 @@ describe('PATCH /api/users/:id edits name, email and department', () => {
     const target = await createUser();
     const res = await patch(target.id, adminToken, {});
     expect(res.status).toBe(400);
-    expect(res.body.message).toBe('Send at least one of name, email, department, role or is_active to change');
+    expect(res.body.message).toBe(
+      'Send at least one of name, email, department, department_id, job_title, role or is_active to change'
+    );
+  });
+});
+
+describe('PATCH /api/users/:id: department_id, job_title, order of checks, timestamps', () => {
+  const patch = (id, token, body) => api.patch(`/api/users/${id}`).set(auth(token)).send(body);
+
+  test.each(['employee', 'hr', 'admin'])('admin edits every field of a(n) %s', async (role) => {
+    const target = await createUser({ role });
+    const departmentId = await createDepartment();
+    const body = {
+      name: 'All Fields',
+      email: `all.fields.${role}@test.local`,
+      department: 'Ops',
+      department_id: departmentId,
+      job_title: 'Team Lead',
+    };
+    const res = await patch(target.id, adminToken, body);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ id: target.id, role, ...body });
+  });
+
+  test('HR edits department_id and job_title of an employee', async () => {
+    const employee = await createUser();
+    const departmentId = await createDepartment();
+    const res = await patch(employee.id, hrToken, { department_id: departmentId, job_title: 'Clerk' });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ department_id: departmentId, job_title: 'Clerk' });
+  });
+
+  test('null clears department_id and job_title', async () => {
+    const employee = await createUser();
+    await patch(employee.id, adminToken, { department_id: await createDepartment(), job_title: 'Clerk' });
+
+    const res = await patch(employee.id, adminToken, { department_id: null, job_title: null });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ department_id: null, job_title: null });
+    const row = await dbUser(employee.id);
+    expect([row.department_id, row.job_title]).toEqual([null, null]);
+  });
+
+  test('a partial update leaves every other field as it was', async () => {
+    const departmentId = await createDepartment();
+    const target = await createUser({ name: 'Keep Me', department: 'IT' });
+    await patch(target.id, adminToken, { department_id: departmentId, job_title: 'Engineer' });
+    const before = await dbUser(target.id);
+
+    const res = await patch(target.id, adminToken, { job_title: 'Senior Engineer' });
+    expect(res.status).toBe(200);
+    const after = await dbUser(target.id);
+    const { job_title: _old, updated_at: _a, ...restBefore } = before;
+    const { job_title: changed, updated_at: _b, ...restAfter } = after;
+    expect(changed).toBe('Senior Engineer');
+    expect(restAfter).toEqual(restBefore);
+  });
+
+  test('a department_id that does not exist returns 400 and nothing changes', async () => {
+    const target = await createUser({ name: 'Unchanged' });
+    const res = await patch(target.id, adminToken, { name: 'Changed', department_id: 999999 });
+    expect(res.status).toBe(400);
+    expect(res.body.errors).toEqual([{ field: 'department_id', message: 'Department not found' }]);
+    expect((await dbUser(target.id)).name).toBe('Unchanged');
+  });
+
+  test.each([
+    ['must_change_password', { must_change_password: false }],
+    ['last_login_at', { last_login_at: '2026-01-01T00:00:00Z' }],
+    ['created_at', { created_at: '2020-01-01T00:00:00Z' }],
+    ['id', { id: 1 }],
+    ['password_hash', { password_hash: 'x' }],
+  ])('sending %s returns 400 naming the field', async (field, body) => {
+    const target = await createUser();
+    const res = await patch(target.id, adminToken, body);
+    expect(res.status).toBe(400);
+    expect(res.body.errors).toContainEqual({ field, message: `${field} is not allowed` });
+  });
+
+  test('an unknown user returns 404, even when the body is invalid', async () => {
+    const res = await patch(999999, adminToken, { email: 'not-an-email', password: 'x' });
+    expect(res.status).toBe(404);
+    expect(res.body.message).toBe('User not found');
+  });
+
+  test('HR sending an invalid role still gets 403, not a validation error', async () => {
+    const employee = await createUser();
+    const res = await patch(employee.id, hrToken, { role: 'superuser' });
+    expect(res.status).toBe(403);
+    expect(res.body.message).toBe('HR cannot change roles');
+  });
+
+  test('an employee gets 403 and no token gets 401', async () => {
+    const target = await createUser();
+    const employeeToken = await loginAs(await createUser());
+    expect((await patch(target.id, employeeToken, { name: 'Nope' })).status).toBe(403);
+    expect((await api.patch(`/api/users/${target.id}`).send({ name: 'Nope' })).status).toBe(401);
+    expect((await dbUser(target.id)).name).not.toBe('Nope');
+  });
+
+  test('returns last_login_at and updated_at, moves updated_at forward, and never the password hash', async () => {
+    const target = await createUser();
+    await pool.query('UPDATE users SET updated_at = ? WHERE id = ?', ['2020-01-01 00:00:00', target.id]);
+
+    const res = await patch(target.id, adminToken, { name: target.name }); // same value: still an edit
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('last_login_at', null);
+    expect(new Date(res.body.updated_at).getFullYear()).toBeGreaterThan(2020);
+    expect(JSON.stringify(res.body)).not.toMatch(/password_hash|\$2[aby]\$/);
+  });
+});
+
+describe('PATCH /api/users/:id never removes the last active admin', () => {
+  const patch = (id, token, body) => api.patch(`/api/users/${id}`).set(auth(token)).send(body);
+
+  test('an admin changes another admin to another role', async () => {
+    const other = await createUser({ role: 'admin' });
+    const res = await patch(other.id, adminToken, { role: 'agent' });
+    expect(res.status).toBe(200);
+    expect(res.body.role).toBe('agent');
+  });
+
+  // With the API's other rules (no changing your own role, HR never touches admins) the only way to reach zero admins
+  // is two admins demoting each other at the same moment. The test holds a lock on the users table so both requests
+  // are waiting at once, then lets them go: the second must see the first one's change and get 409.
+  test.each([
+    ['role', { role: 'agent' }],
+    ['active status', { is_active: false }],
+  ])('two admins removing each other (%s) at the same moment: one succeeds, the other gets 409', async (_, body) => {
+    await pool.query("UPDATE users SET role = 'employee' WHERE role = 'admin'"); // only the two below are admins
+    const a = await createUser({ role: 'admin' });
+    const b = await createUser({ role: 'admin' });
+    const [tokenA, tokenB] = [await loginAs(a), await loginAs(b)];
+
+    const blocker = await pool.getConnection();
+    let results;
+    try {
+      await blocker.beginTransaction();
+      await blocker.query("SELECT id FROM users WHERE role = 'admin' FOR UPDATE");
+
+      const requests = Promise.all([patch(b.id, tokenA, body), patch(a.id, tokenB, body)]);
+      // Wait until both requests are queued behind the lock
+      for (let i = 0; i < 100; i += 1) {
+        const [[{ waiting }]] = await blocker.query(
+          "SELECT COUNT(*) AS waiting FROM information_schema.INNODB_TRX WHERE trx_state = 'LOCK WAIT'"
+        );
+        if (waiting >= 2) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      await blocker.commit();
+      results = await requests;
+    } finally {
+      blocker.release();
+    }
+
+    expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+    expect(results.find((r) => r.status === 409).body.message).toBe(
+      'This is the last active admin. Make someone else an admin first'
+    );
+    const [[{ admins }]] = await pool.query(
+      "SELECT COUNT(*) AS admins FROM users WHERE role = 'admin' AND is_active = TRUE"
+    );
+    expect(admins).toBe(1);
   });
 });

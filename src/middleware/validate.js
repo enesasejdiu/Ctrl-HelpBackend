@@ -3,6 +3,7 @@
 // On failure it answers 400 with { message, errors: [{ field, message }] }; message is the first problem, ready to show.
 // On success the parsed, cleaned values are in req.valid.params / .query / .body, and routes read them from there.
 // They can't go back on req.query, because Express 5 makes it read-only.
+// A route can validate in steps (e.g. params first, body after a database check); each step adds to req.valid.
 
 // Turns zod's issues into { field, message } pairs
 function toErrors(part, issues) {
@@ -35,7 +36,7 @@ function validate(schemas) {
     if (errors.length > 0) {
       return res.status(400).json({ message: errors[0].message, errors });
     }
-    req.valid = valid;
+    req.valid = { ...req.valid, ...valid };
     next();
   };
 }
