@@ -2,6 +2,7 @@
 // last_login_at, and a user with a temporary password is blocked everywhere except the allowlist. The route sweep
 // walks every route the app mounts (src/routes/index.js), so a new route that skips requireAuth fails here.
 const app = require('../src/app');
+const pool = require('../src/db');
 const apiRoutes = require('../src/routes');
 const { ALLOWED_BEFORE_PASSWORD_CHANGE } = require('../src/middleware/auth');
 const {
@@ -127,6 +128,37 @@ describe('must_change_password', () => {
     const before = Date.now() - 2000; // the database clock rounds to whole seconds
     expect((await api.post('/api/auth/login').send({ email: user.email, password: user.password })).status).toBe(200);
     expect((await lastLogin(user.id)).getTime()).toBeGreaterThanOrEqual(before);
+  });
+
+  test('/me returns job_title, created_at and last_login_at, and never the password hash', async () => {
+    const user = await createUser({ jobTitle: 'Accountant' });
+    const login = await api.post('/api/auth/login').send({ email: user.email, password: user.password });
+    const me = await api.get('/api/auth/me').set('Authorization', `Bearer ${login.body.token}`);
+    expect(me.status).toBe(200);
+
+    const stored = await dbUser(user.id);
+    expect(me.body).toMatchObject({
+      job_title: 'Accountant',
+      created_at: stored.created_at.toISOString(),
+      last_login_at: stored.last_login_at.toISOString(),
+    });
+    expectNoPasswordHash(me.body);
+    // The user returned by login carries the login it just recorded, the same as /me
+    expect(login.body.user).toMatchObject({ job_title: 'Accountant', created_at: me.body.created_at, last_login_at: me.body.last_login_at });
+    expectNoPasswordHash(login.body.user);
+  });
+
+  test('/me returns null for an empty job title and a user who has never logged in', async () => {
+    const user = await createUser();
+    const token = await loginAs(user);
+    // Clear the login loginAs just recorded, as for an account that has a token but no recorded login
+    await pool.query('UPDATE users SET last_login_at = NULL WHERE id = ?', [user.id]);
+
+    const me = await api.get('/api/auth/me').set('Authorization', `Bearer ${token}`);
+    expect(me.status).toBe(200);
+    expect(me.body).toHaveProperty('job_title', null);
+    expect(me.body).toHaveProperty('last_login_at', null);
+    expect(me.body.created_at).toEqual(expect.any(String));
   });
 
   test('an HR user can log in and /me shows the hr role', async () => {

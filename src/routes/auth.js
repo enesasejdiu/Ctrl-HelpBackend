@@ -25,7 +25,7 @@ function makeToken(user) {
 // The department comes from departments; the old free-text users.department is no longer read (see migrations/005).
 const AUTH_USER_SELECT = `
   SELECT u.id, u.name, u.email, u.role, u.password_hash, u.is_active, u.must_change_password,
-         u.department_id, d.name AS department_name
+         u.department_id, d.name AS department_name, u.job_title, u.created_at, u.last_login_at
   FROM users u
   LEFT JOIN departments d ON d.id = u.department_id`;
 
@@ -38,6 +38,10 @@ function publicUser(user) {
     role: user.role,
     department_id: user.department_id,
     department_name: user.department_name,
+    // null when not set (no job title yet, never logged in)
+    job_title: user.job_title,
+    created_at: user.created_at,
+    last_login_at: user.last_login_at,
     // True for an account created by an admin or HR, until the user sets their own password
     must_change_password: Boolean(user.must_change_password),
   };
@@ -62,8 +66,10 @@ router.post('/login', validate(schemas.login), async (req, res) => {
 
   // Only a successful login counts; the failed attempts above never get here
   await pool.query('UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?', [user.id]);
+  // Read back the stored value, so the user returned here matches what /me returns right after
+  const [[{ last_login_at: lastLoginAt }]] = await pool.query('SELECT last_login_at FROM users WHERE id = ?', [user.id]);
 
-  const loggedIn = publicUser(user);
+  const loggedIn = publicUser({ ...user, last_login_at: lastLoginAt });
   res.json({ token: makeToken(user), must_change_password: loggedIn.must_change_password, user: loggedIn });
 });
 
