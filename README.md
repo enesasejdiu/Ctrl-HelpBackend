@@ -97,6 +97,24 @@ npm run db:backup
 npm run db:seed -- --force
 ```
 
+## Running tests
+
+```bash
+npm test               # run all tests once
+npm run test:watch     # re-run on every file change
+npm run test:coverage  # also prints a coverage table (HTML report in coverage/)
+```
+
+MySQL must be running (the same server and login as in `.env`).
+
+The tests **never touch the real `ticketflow` database**. Each run creates its own throwaway database named
+`ticketflow_test_<timestamp>`, applies all migrations to it (the same code as `npm run db:migrate`) and adds the
+categories and priorities. When the run ends it is dropped automatically, also when tests fail. The tests refuse to
+start if the database name doesn't begin with `ticketflow_test_`.
+
+Tests live in `tests/**/*.test.js`. `tests/helpers.js` has `api` (a supertest client for the app), `resetData()`,
+`createUser()` and `loginAs()`.
+
 ## Demo accounts
 
 All demo accounts use the password **`password123`**.
@@ -199,6 +217,7 @@ scripts/
   migrate.js              Creates the database and applies new migrations (npm run db:migrate)
   seed.js                 Wipes all tables and inserts demo data (npm run db:seed)
   backup-db.js            Writes a SQL backup to backups/ (npm run db:backup)
+  reference-data.js       The categories and priorities (used by seed.js and the tests)
 src/
   server.js               Entry point: loads .env and starts the server
   app.js                  Express app: middleware, routes, error handling
@@ -217,6 +236,15 @@ src/
     tickets.js            /api/tickets: list, create, view, comments, status, priority, assign
     users.js              /api/users: agent list and user management
     stats.js              /api/stats: dashboard statistics
+tests/
+  globalSetup.js          Creates the throwaway test database before all tests
+  globalTeardown.js       Drops it after all tests
+  setupEnv.js             Points the app at the test database before it loads
+  setupAfterEnv.js        Closes the MySQL pool after each test file
+  helpers.js              api, resetData, createUser, loginAs
+  testDb.js               Test database name rules and safety guard
+  smoke.test.js           Smoke test proving the setup works
+jest.config.js            Jest settings
 .env.example              Example configuration (copy to .env)
 TASKS.md                  Development task list
 ```
