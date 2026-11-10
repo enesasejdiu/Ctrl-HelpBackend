@@ -1,5 +1,7 @@
 # TicketFlow Backend
 
+![Backend CI](https://github.com/enesasejdiu/Ctrl-HelpBackend/actions/workflows/ci.yml/badge.svg)
+
 TicketFlow is an IT helpdesk / ticketing system. Employees report IT problems as tickets, agents pick them up,
 work on them and resolve them, and admins manage users and follow the team's performance on a statistics dashboard.
 
@@ -53,6 +55,11 @@ The API runs on **http://localhost:5050**. Check it with http://localhost:5050/a
 | `npm run db:department-report`  | Read-only: the free-text department values migration 005 will turn into departments |
 | `npm run db:verify-departments` | Read-only: checks that migration 005 linked every user correctly                    |
 | `npm run db:backup`             | Back up the database to `backups/`                                                  |
+| `npm test`                      | Run all tests once (see [Running tests](#running-tests))                            |
+| `npm run test:coverage`         | Run the tests with a coverage report                                                |
+| `npm run lint`                  | Check the code with ESLint (fails on any error or warning)                          |
+| `npm run format`                | Format every file with Prettier                                                     |
+| `npm run format:check`          | Check that every file is formatted (what CI runs)                                   |
 
 ## Updating and migrations
 
@@ -124,6 +131,21 @@ start if the database name doesn't begin with `ticketflow_test_`.
 
 Tests live in `tests/**/*.test.js`. `tests/helpers.js` has `api` (a supertest client for the app), `resetData()`,
 `createUser()` and `loginAs()`.
+
+## Code style and continuous integration
+
+**Style.** Prettier formats the code with the same settings as the frontend (`.prettierrc.json`: no semicolons,
+single quotes, 120 characters per line). ESLint (`eslint.config.js`) checks the code with its recommended rules, and
+leaves the layout to Prettier. Before pushing, run `npm run format` and `npm run lint`.
+
+**CI.** [GitHub Actions](.github/workflows/ci.yml) ("Backend CI") runs on every push to `main` and every pull request.
+It runs 4 jobs, one for each of **MySQL 8.4** and **MariaDB 11** on **Node 20** and **22**. Each job starts that
+database in a container and runs `npm ci`, `npm run format:check`, `npm run lint` and `npm run test:coverage`.
+MySQL 8.4 keeps its default `ONLY_FULL_GROUP_BY` mode, so queries that MariaDB would allow but MySQL refuses are
+caught. The coverage report is kept as a download on the run for 7 days. A newer push to the same branch cancels
+the older run.
+
+**Merge a pull request only when all 4 jobs are green.**
 
 ## Demo accounts
 
