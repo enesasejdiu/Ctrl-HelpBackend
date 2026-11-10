@@ -306,3 +306,34 @@ describe('POST /api/users/:id/resend-invite', () => {
     expect(await tokenRows(user.id)).toHaveLength(1)
   })
 })
+
+describe('audit log', () => {
+  const entries = async (userId) =>
+    (
+      await pool.query('SELECT action, actor_id, details FROM audit_log WHERE target_user_id = ? ORDER BY id', [userId])
+    )[0]
+
+  test('creating, resending and using a link are logged, never with the link or its token', async () => {
+    const { user, token: first } = await invite()
+    await api.post(`/api/users/${user.id}/resend-invite`).set(auth(admin.token)).expect(200)
+    const second = await inviteTokenFor(user.email)
+    await setPassword(second).expect(200)
+
+    const logged = await entries(user.id)
+    expect(logged.map((e) => [e.action, e.actor_id])).toEqual([
+      ['user_created', admin.id],
+      ['invite_resent', admin.id],
+      ['password_set_with_link', user.id],
+    ])
+    const text = JSON.stringify(logged)
+    expect(text).not.toContain(first)
+    expect(text).not.toContain(second)
+    expect(text).not.toMatch(/set-password?token=/)
+  })
+
+  test('a refused link logs nothing', async () => {
+    const { user } = await invite()
+    await setPassword('x'.repeat(43)).expect(400)
+    expect((await entries(user.id)).map((e) => e.action)).toEqual(['user_created'])
+  })
+})

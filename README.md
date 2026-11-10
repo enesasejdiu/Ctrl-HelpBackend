@@ -610,6 +610,116 @@ Staff can set any status. Every change to status, priority or assignee is saved 
 A ticket is **overdue** when it is not resolved/closed and is older than its priority's target time
 (Low 120h, Medium 72h, High 24h, Critical 4h).
 
+## Audit log
+
+Security events are recorded in the `audit_log` table (migration 009) and shown to **admins** by two endpoints.
+Other roles get 403, and requests without a session get 401. Every entry records who did it (`actor`), whose account
+it concerns (`target`), what happened (`action` and `details`), when (`created_at`) and from where (`ip`). No entry
+ever contains a password, password hash, temporary password, token or session id.
+
+### `GET /api/audit`
+
+```http
+GET /api/audit?user=12&action=login_failure&from=2026-11-01&to=2026-11-10&page=1&pageSize=25
+```
+
+| Parameter  | Meaning                                                                                        | Default |
+| ---------- | ---------------------------------------------------------------------------------------------- | ------- |
+| `user`     | A user id. Matches entries where this user is the actor **or** the target                      | none    |
+| `action`   | One action name from `GET /api/audit/actions`                                                  | none    |
+| `from`     | A date, `YYYY-MM-DD`: entries from the start of that day (inclusive)                           | none    |
+| `to`       | A date, `YYYY-MM-DD`: entries up to the end of that day (inclusive). Must not be before `from` | none    |
+| `page`     | Page number, 1 or more. A page past the end returns `entries: []`                              | `1`     |
+| `pageSize` | Entries per page, 1 to 100                                                                     | `25`    |
+
+All parameters are optional and combine with AND. An empty one (`?action=`) is the same as leaving it out. Dates
+use the server's time zone, the same clock that sets `created_at`. Entries are sorted **newest first**.
+
+```json
+200 OK
+{
+  "entries": [
+    {
+      "id": 1042,
+      "created_at": "2026-11-10T16:02:45.000Z",
+      "action": "role_changed",
+      "actor": { "id": 1, "name": "Admin User" },
+      "target": { "id": 12, "name": "Teuta Krasniqi" },
+      "details": { "from": "employee", "to": "agent" },
+      "ip": "203.0.113.7"
+    },
+    {
+      "id": 1041,
+      "created_at": "2026-11-10T15:58:10.000Z",
+      "action": "login_failure",
+      "actor": null,
+      "target": null,
+      "details": { "email": "nobody@example.com", "reason": "unknown_email" },
+      "ip": "203.0.113.9"
+    }
+  ],
+  "total": 2,
+  "page": 1,
+  "pageSize": 25
+}
+```
+
+- `total` is the number of entries matching the filters (all pages), for "page X of Y".
+- `actor` and `target` are `{ id, name }` or `null`: `null` when there is none (a failed login with an unknown
+  email has neither) or the user has since been deleted.
+- `details` is an object or `null`; its fields depend on the action (table below).
+- `created_at` is an ISO 8601 timestamp, like every other date in the API. `ip` may be `null`.
+
+Invalid parameters get 400 in the usual format, `{ "message": "...", "errors": [{ "field", "message" }] }`, for
+example `Unknown action; GET /api/audit/actions lists them`, `Page size must be at most 100`,
+`From must be a date like 2026-11-10`, `From is not a real date` or `From must be on or before To`.
+
+### `GET /api/audit/actions`
+
+Returns every action name as a JSON array of strings, in a sensible order for the filter dropdown:
+
+```json
+[
+  "login_success",
+  "login_failure",
+  "account_locked",
+  "logout",
+  "logout_all",
+  "password_changed",
+  "password_reset",
+  "password_set_with_link",
+  "user_created",
+  "invite_resent",
+  "user_updated",
+  "role_changed",
+  "user_activated",
+  "user_deactivated"
+]
+```
+
+### Actions
+
+| Action                   | When                                                                                   | `actor`    | `target`                      | `details`                                                                                   |
+| ------------------------ | -------------------------------------------------------------------------------------- | ---------- | ----------------------------- | ------------------------------------------------------------------------------------------- |
+| `login_success`          | A successful login                                                                     | the user   | the user                      | `{ email }`                                                                                 |
+| `login_failure`          | A refused login (the password is never stored)                                         | `null`     | the user, if the email exists | `{ email, reason }`, reason: `unknown_email`, `wrong_password`, `locked` or `deactivated`   |
+| `account_locked`         | The wrong password that locked the account (it also logs a `login_failure`)            | `null`     | the user                      | `{ email, minutes }`                                                                        |
+| `logout`                 | `POST /api/auth/logout` ended a session (a repeated logout isn't logged)               | the user   | the user                      | `null`                                                                                      |
+| `logout_all`             | `POST /api/auth/logout-all`                                                            | the user   | the user                      | `{ sessions_ended }`                                                                        |
+| `password_changed`       | The user changed their own password                                                    | the user   | the user                      | `{ other_sessions_ended }`                                                                  |
+| `password_reset`         | An admin or HR reset the password (the temporary one is never stored)                  | admin / HR | the user                      | `{ sessions_ended }`                                                                        |
+| `password_set_with_link` | The user set their password with the emailed link (the link is never stored)           | the user   | the user                      |                                                                                             |
+| `user_created`           | An admin or HR created the account (a set-password link is emailed; never stored here) | admin / HR | the new user                  | `{ email, role, department_id }`                                                            |
+| `invite_resent`          | An admin or HR sent a new set-password link (`POST /api/users/:id/resend-invite`)      | admin / HR | the user                      |                                                                                             |
+| `user_updated`           | An admin or HR edited name, email, department or job title                             | admin / HR | the user                      | `{ fields }`: the names of the fields sent, e.g. `["name", "job_title"]` (not their values) |
+| `role_changed`           | The role changed to a different one                                                    | admin      | the user                      | `{ from, to }`                                                                              |
+| `user_activated`         | The account was activated again                                                        | admin / HR | the user                      | `null`                                                                                      |
+| `user_deactivated`       | The account was deactivated                                                            | admin / HR | the user                      | `null`                                                                                      |
+
+A role or active-status change is logged as its own event, not as `user_updated`. Saving the role or status a user
+already has logs nothing, and neither does a refused request. Account changes are logged in the same transaction
+as the change itself.
+
 ## API endpoints
 
 All endpoints except health, login, logout and the two set-password ones need a session: the `tf_session` cookie (an `Authorization` header is
@@ -661,6 +771,8 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | POST   | `/api/departments`                | admin, hr    | Create `{ name }` → 201 the department (409 `DEPARTMENT_NAME_TAKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | PATCH  | `/api/departments/:id`            | admin, hr    | Rename `{ name }` → the department (409 `DEPARTMENT_NAME_TAKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | DELETE | `/api/departments/:id`            | admin, hr    | Delete an empty department → 204 (409 `DEPARTMENT_NOT_EMPTY` with `user_count`). See [Departments](#departments)                                                                                                                                                                                                                                                                                                                                                                                                              |
+| GET    | `/api/audit`                      | admin        | The audit log, newest first, filtered and paged → `{ entries, total, page, pageSize }`. See [Audit log](#audit-log)                                                                                                                                                                                                                                                                                                                                                                                                           |
+| GET    | `/api/audit/actions`              | admin        | Every audit action name (for the filter dropdown). See [Audit log](#audit-log)                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 A Postman collection with every request is in [`docs/TicketFlow.postman_collection.json`](docs/TicketFlow.postman_collection.json).
 Import it, run one of the **Login** requests (Postman keeps the session cookies, and the collection sends `tf_csrf` as
@@ -750,5 +862,6 @@ TASKS.md                  Development task list
 | `comments`              | Comments on tickets; `is_internal` marks staff-only notes                                                                                                                                                                                                                                                       |
 | `ticket_history`        | Audit trail: who changed which field (status, priority, assignee) from what to what, and when                                                                                                                                                                                                                   |
 | `sessions`              | One row per login (migration 008): `user_id`, `created_at`, `expires_at`, `revoked_at`, `last_seen_at`, `ip`, `user_agent`. The token's `sid` is the row id. Rows are deleted 7 days after they end                                                                                                             |
+| `audit_log`             | Security events (migration 009): `created_at`, `actor_id`, `action`, `target_user_id`, `details` (JSON), `ip`. Never a secret. See [Audit log](#audit-log)                                                                                                                                                      |
 | `password_setup_tokens` | Set-password links for new accounts: the SHA-256 hash of each token (never the token), `expires_at` (72 hours), `used_at`. See [Email](#email)                                                                                                                                                                  |
 | `schema_migrations`     | Which migrations this database has run, and when                                                                                                                                                                                                                                                                |

@@ -13,6 +13,7 @@ const { loginRateLimit, setPasswordRateLimit } = require('../middleware/rateLimi
 const { lookUpToken } = require('../passwordSetup')
 const { SESSION_HOURS, SESSION_COOKIE, setSessionCookies, clearSessionCookies } = require('../session')
 const { createSession, revokeSession, revokeUserSessions } = require('../sessionStore')
+const { recordAudit } = require('../audit')
 const validate = require('../middleware/validate')
 const schemas = require('../schemas/auth')
 
@@ -118,21 +119,36 @@ router.post('/login', loginRateLimit, validate(schemas.login), async (req, res) 
   const [rows] = await pool.query(`${LOGIN_SELECT} WHERE u.email = ?`, [email])
   const user = rows[0]
 
+  // Every refused login is logged with the email as typed and why, never the password
+  const failed = (reason) =>
+    recordAudit('login_failure', { targetUserId: user?.id ?? null, details: { email, reason }, req })
+
   // Same message for unknown email and wrong password, so attackers can't probe which emails exist
   if (!user) {
+    await failed('unknown_email')
     throw new HttpError(401, 'Wrong email or password')
   }
   // Locked: refused before the password is even checked, so guessing is pointless until the lock runs out
   if (user.lock_seconds_left > 0) {
+    await failed('locked')
     throw accountLocked(res, user.lock_seconds_left)
   }
   if (!(await bcrypt.compare(password, user.password_hash))) {
     const lockedFor = await recordWrongPassword(user)
+    await failed('wrong_password')
     // The wrong password that locks the account already says so, instead of one more "wrong password"
-    if (lockedFor) throw accountLocked(res, lockedFor)
+    if (lockedFor) {
+      await recordAudit('account_locked', {
+        targetUserId: user.id,
+        details: { email, minutes: lockedFor / 60 },
+        req,
+      })
+      throw accountLocked(res, lockedFor)
+    }
     throw new HttpError(401, 'Wrong email or password')
   }
   if (!user.is_active) {
+    await failed('deactivated')
     throw new HttpError(403, 'This account is deactivated')
   }
 
@@ -149,17 +165,18 @@ router.post('/login', loginRateLimit, validate(schemas.login), async (req, res) 
 
   const loggedIn = publicUser({ ...user, last_login_at: lastLoginAt })
   const sid = await createSession(user.id, req)
+  await recordAudit('login_success', { actorId: user.id, targetUserId: user.id, details: { email }, req })
   setSessionCookies(res, makeToken(user, sid))
   res.json({ user: loggedIn })
 })
 
-// The session id from the request's cookie, if the token is genuine (signed by us). Expired tokens count too, so their
-// row can still be revoked. A forged or garbled cookie gives null.
-function sessionIdFromCookie(req) {
+// The token from the request's cookie, if it is genuine (signed by us): { id, sid, ... }. Expired tokens count too, so
+// their row can still be revoked. A forged or garbled cookie gives null.
+function tokenFromCookie(req) {
   const token = req.cookies?.[SESSION_COOKIE]
   if (!token) return null
   try {
-    return jwt.verify(token, process.env.JWT_SECRET, { ignoreExpiration: true }).sid || null
+    return jwt.verify(token, process.env.JWT_SECRET, { ignoreExpiration: true })
   } catch {
     return null
   }
@@ -171,8 +188,11 @@ function sessionIdFromCookie(req) {
 // No CSRF check: the worst another site could do is log you out, and sameSite "lax" already keeps the cookies off
 // cross-site POSTs.
 router.post('/logout', async (req, res) => {
-  const sid = sessionIdFromCookie(req)
-  if (sid) await revokeSession(sid)
+  const token = tokenFromCookie(req)
+  // Logged only when it really ended a session (not for a second logout, or without one)
+  if (token?.sid && (await revokeSession(token.sid))) {
+    await recordAudit('logout', { actorId: token.id, targetUserId: token.id, req })
+  }
   clearSessionCookies(res)
   res.status(204).end()
 })
@@ -180,7 +200,13 @@ router.post('/logout', async (req, res) => {
 // POST /api/auth/logout-all → 204 (logged in). "Log out everywhere": ends every session of this user, in every browser
 // and device, this one included, and clears this browser's cookies.
 router.post('/logout-all', requireAuth, async (req, res) => {
-  await revokeUserSessions(req.user.id)
+  const ended = await revokeUserSessions(req.user.id)
+  await recordAudit('logout_all', {
+    actorId: req.user.id,
+    targetUserId: req.user.id,
+    details: { sessions_ended: ended },
+    req,
+  })
   clearSessionCookies(res)
   res.status(204).end()
 })
@@ -222,7 +248,14 @@ router.post('/change-password', requireAuth, validate(schemas.changePassword), a
       'UPDATE users SET password_hash = ?, must_change_password = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
       [passwordHash, user.id],
     )
-    await revokeUserSessions(user.id, { keepSid: req.sessionId, db: conn })
+    const ended = await revokeUserSessions(user.id, { keepSid: req.sessionId, db: conn })
+    await recordAudit('password_changed', {
+      actorId: user.id,
+      targetUserId: user.id,
+      details: { other_sessions_ended: ended },
+      req,
+      db: conn,
+    })
     await conn.commit()
   } catch (err) {
     await conn.rollback()
@@ -287,6 +320,7 @@ router.post('/set-password', setPasswordRateLimit, validate(schemas.setPassword)
     await conn.query('UPDATE password_setup_tokens SET used_at = ? WHERE id = ?', [new Date(Date.now()), row.id])
     await conn.query('DELETE FROM password_setup_tokens WHERE user_id = ? AND used_at IS NULL', [row.user_id])
     await revokeUserSessions(row.user_id, { db: conn })
+    await recordAudit('password_set_with_link', { actorId: row.user_id, targetUserId: row.user_id, req, db: conn })
     await conn.commit()
   } catch (err) {
     await conn.rollback()

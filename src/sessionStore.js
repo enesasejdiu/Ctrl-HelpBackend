@@ -46,17 +46,20 @@ async function findActiveSession(sid, db = pool) {
   return { user_id: session.user_id, active: Boolean(session.active) }
 }
 
-// Ends one session (logout). Fine if it is already ended or gone.
+// Ends one session (logout). Fine if it is already ended or gone. Returns true if it was still active.
 async function revokeSession(sid, db = pool) {
-  await db.query('UPDATE sessions SET revoked_at = NOW() WHERE id = ? AND revoked_at IS NULL', [sid])
+  const [result] = await db.query('UPDATE sessions SET revoked_at = NOW() WHERE id = ? AND revoked_at IS NULL', [sid])
+  return result.affectedRows > 0
 }
 
 // Ends every session of a user, except `keepSid` if given (a password change keeps the session that made it)
+// Returns how many sessions it ended.
 async function revokeUserSessions(userId, { keepSid = null, db = pool } = {}) {
-  await db.query('UPDATE sessions SET revoked_at = NOW() WHERE user_id = ? AND revoked_at IS NULL AND id <> ?', [
-    userId,
-    keepSid ?? '',
-  ])
+  const [result] = await db.query(
+    'UPDATE sessions SET revoked_at = NOW() WHERE user_id = ? AND revoked_at IS NULL AND id <> ?',
+    [userId, keepSid ?? ''],
+  )
+  return result.affectedRows
 }
 
 // Deletes sessions that expired or were revoked more than KEEP_ENDED_DAYS ago. Returns how many were deleted.

@@ -282,6 +282,7 @@ async function seed({ force = process.argv.includes('--force') } = {}) {
   try {
     await connection.query('SET FOREIGN_KEY_CHECKS = 0')
     for (const table of [
+      'audit_log',
       'sessions',
       'ticket_history',
       'comments',

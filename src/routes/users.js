@@ -13,6 +13,7 @@ const { makeTemporaryPassword } = require('../temporaryPassword')
 const { issueToken, unusablePasswordHash } = require('../passwordSetup')
 const notify = require('../mail/notifications')
 const { revokeUserSessions } = require('../sessionStore')
+const { recordAudit } = require('../audit')
 
 const router = express.Router()
 
@@ -100,6 +101,14 @@ router.post('/', requireRole('admin', 'hr'), validate(schemas.createUser), async
     )
     userId = result.insertId
     invite = await issueToken(conn, userId)
+    // Saved with the account; never the link or its token
+    await recordAudit('user_created', {
+      actorId: req.user.id,
+      targetUserId: userId,
+      details: { email, role, department_id: departmentId },
+      req,
+      db: conn,
+    })
     await conn.commit()
   } catch (err) {
     await conn.rollback()
@@ -144,6 +153,7 @@ router.post('/:id/resend-invite', requireRole('admin', 'hr'), validate(schemas.r
     await conn.beginTransaction()
     await conn.query('SELECT id FROM users WHERE id = ? FOR UPDATE', [id])
     invite = await issueToken(conn, id)
+    await recordAudit('invite_resent', { actorId: req.user.id, targetUserId: id, req, db: conn })
     await conn.commit()
   } catch (err) {
     await conn.rollback()
@@ -204,7 +214,15 @@ router.post(
          WHERE id = ?`,
         [passwordHash, id],
       )
-      await revokeUserSessions(id, { db: conn })
+      const ended = await revokeUserSessions(id, { db: conn })
+      // The new temporary password is never logged
+      await recordAudit('password_reset', {
+        actorId: req.user.id,
+        targetUserId: id,
+        details: { sessions_ended: ended },
+        req,
+        db: conn,
+      })
       await conn.commit()
     } catch (err) {
       await conn.rollback()
@@ -338,6 +356,19 @@ async function editUser(req, res) {
     // A role change or deactivation ends all of the user's sessions (rows revoked; session_version is raised above too)
 
     if (roleChanges || deactivates) await revokeUserSessions(id, { db: conn })
+
+    // Audit log, in the same transaction: which detail fields were sent (names only, not their values), and the role
+    // and active-status changes as their own events. Nothing is logged for a refused change (it rolls back).
+    const editedFields = ['name', 'email', 'department_id', 'job_title'].filter(
+      (field) => req.valid.body[field] !== undefined,
+    )
+    const audit = (action, details) =>
+      recordAudit(action, { actorId: req.user.id, targetUserId: id, details, req, db: conn })
+    if (editedFields.length > 0) await audit('user_updated', { fields: editedFields })
+    if (roleChanges) await audit('role_changed', { from: user.role, to: role })
+    if (isActive !== undefined && isActive !== Boolean(user.is_active)) {
+      await audit(isActive ? 'user_activated' : 'user_deactivated', null)
+    }
 
     if (stopsBeingStaff) {
       const [tickets] = await conn.query(

@@ -121,6 +121,7 @@ requireAuth checks the current role and active status in the database on every r
 - [x] Request size limit (100 KB), strict CORS, and production security headers (helmet, HSTS, trust proxy)
 - [x] Dependabot (weekly npm and GitHub Actions updates) and npm audit of production dependencies in CI
 - [x] Short sessions: 8-hour token, logout ends the session on the server, log out everywhere
+- [x] Audit log of security events (logins, lockouts, logouts, password changes and resets, account changes) with GET /api/audit for admins
 - [x] Password change/reset, deactivation and role change end other sessions
 - [x] Backend CI: Prettier, ESLint and tests on MySQL 8.4 and MariaDB 11
 - [x] Email notifications (nodemailer): set-password link for new users, new ticket → IT, assigned, comments, resolved
