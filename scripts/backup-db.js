@@ -131,6 +131,8 @@ async function backup() {
 
 // Run directly by npm run db:backup; scripts/migrate.js imports backup() instead
 if (require.main === module) {
+  // Stop with a clear message before connecting if a DB_* setting is missing or malformed (src/config.js)
+  require('../src/config').checkConfig('database')
   backup().catch((err) => {
     console.error('Backup failed:', err.message)
     process.exitCode = 1

@@ -89,6 +89,8 @@ async function verify(db, mapping = mappingFromMigration()) {
 }
 
 if (require.main === module) {
+  // Stop with a clear message before connecting if a DB_* setting is missing or malformed (src/config.js)
+  require('../src/config').checkConfig('database')
   ;(async () => {
     const db = await mysql.createConnection({
       host: process.env.DB_HOST,
