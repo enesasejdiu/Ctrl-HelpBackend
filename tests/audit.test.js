@@ -3,7 +3,7 @@
 // at a time.
 const pool = require('../src/db')
 const { AUDIT_ACTIONS, withoutSecrets } = require('../src/audit')
-const { api, resetData, createUser, loginAs, auth, expectError } = require('./helpers')
+const { api, resetData, createUser, loginAs, auth, expectError, inviteTokenFor } = require('./helpers')
 
 beforeEach(resetData)
 
@@ -120,7 +120,7 @@ describe('recording every event', () => {
     expect(JSON.stringify(entry)).not.toContain(res.body.temporaryPassword)
   })
 
-  test('user created: by whom, with email, role and department; the temporary password is never stored', async () => {
+  test('user created: by whom, with email, role and department; the set-password link is never stored', async () => {
     const hr = await createUser({ role: 'hr' })
     const res = await api
       .post('/api/users')
@@ -132,7 +132,8 @@ describe('recording every event', () => {
       target_user_id: res.body.user.id,
       details: { email: 'new.person@test.local', role: 'employee', department_id: null },
     })
-    expect(JSON.stringify(entry)).not.toContain(res.body.temporaryPassword)
+    const linkToken = await inviteTokenFor('new.person@test.local')
+    expect(JSON.stringify(entry)).not.toContain(linkToken)
   })
 
   test('user edited: which fields, not their values', async () => {
@@ -202,10 +203,13 @@ describe('never a secret', () => {
       .set(auth(userSession))
       .send({ currentPassword: user.password, newPassword: 'Brand-new-pass1' })
     const reset = await api.post(`/api/users/${user.id}/reset-password`).set(auth(adminSession)).send()
-    const created = await api
+    await api
       .post('/api/users')
       .set(auth(adminSession))
       .send({ name: 'Someone', email: 'someone@test.local', role: 'agent' })
+    // The new account sets its password with the emailed link
+    const linkToken = await inviteTokenFor('someone@test.local')
+    await api.post('/api/auth/set-password').send({ token: linkToken, new_password: 'Linked-pass-42' })
     await api.post('/api/auth/logout').set(auth(adminSession))
 
     const [hashes] = await pool.query('SELECT password_hash FROM users')
@@ -217,7 +221,8 @@ describe('never a secret', () => {
       'wrong-password1',
       'Brand-new-pass1',
       reset.body.temporaryPassword,
-      created.body.temporaryPassword,
+      linkToken,
+      'Linked-pass-42',
       adminSession,
       userSession,
       ...hashes.map((h) => h.password_hash),
@@ -382,7 +387,9 @@ describe('GET /api/audit/actions', () => {
       'logout_all',
       'password_changed',
       'password_reset',
+      'password_set_with_link',
       'user_created',
+      'invite_resent',
       'user_updated',
       'role_changed',
       'user_activated',

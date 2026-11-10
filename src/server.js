@@ -17,6 +17,9 @@ app.listen(PORT, (err) => {
     process.exit(1)
   }
   console.log(`TicketFlow API running at http://localhost:${PORT}`)
+  // Checks the SMTP connection once (production and development with SMTP_HOST). Only warns if it fails: the API
+  // keeps working, emails just may not arrive.
+  require('./mail/mailer').getMailer().verify()
 })
 
 // Deletes sessions that ended more than 7 days ago: now, then once a day (see src/sessionStore.js)

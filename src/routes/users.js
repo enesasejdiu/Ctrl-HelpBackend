@@ -1,6 +1,7 @@
 // User management routes.
 // Mounted at /api/users. Agents/admins can list who can be assigned tickets.
 // Admins and HR create, list and change accounts. HR only creates and changes employees, and never changes roles.
+// A new account gets an emailed set-password link (src/passwordSetup.js), not a password shown to its creator.
 const express = require('express')
 const bcrypt = require('bcryptjs')
 const pool = require('../db')
@@ -9,6 +10,8 @@ const { requireAuth, requireRole, isStaff } = require('../middleware/auth')
 const validate = require('../middleware/validate')
 const schemas = require('../schemas/users')
 const { makeTemporaryPassword } = require('../temporaryPassword')
+const { issueToken, unusablePasswordHash } = require('../passwordSetup')
+const notify = require('../mail/notifications')
 const { revokeUserSessions } = require('../sessionStore')
 const { recordAudit } = require('../audit')
 
@@ -54,8 +57,11 @@ router.get('/', requireRole('admin', 'hr'), async (req, res) => {
 })
 
 // POST /api/users { name, email, role, department_id?, job_title? } (admin and HR)
-// → 201 { user, temporaryPassword }. HR may leave out role (it means employee); admins must send it.
-// The server makes a temporary password and returns it only in this response; only its hash is stored.
+// → 201 { user, inviteExpiresAt }. HR may leave out role (it means employee); admins must send it.
+// No password is returned or shown to anyone: the account starts with a password nobody knows (so it can't be logged
+// into), and the new user gets an email with a set-password link that works once, for 72 hours. The user row and the
+// link's token are saved together; the email goes out after that, in the background, and a failed email doesn't undo
+// the account (send a new link with POST /api/users/:id/resend-invite).
 router.post('/', requireRole('admin', 'hr'), validate(schemas.createUser), async (req, res) => {
   const { name, email } = req.valid.body
   const isHr = req.user.role === 'hr'
@@ -82,31 +88,82 @@ router.post('/', requireRole('admin', 'hr'), validate(schemas.createUser), async
     throw new HttpError(409, 'An account with this email already exists')
   }
 
-  const temporaryPassword = makeTemporaryPassword()
-  const passwordHash = await bcrypt.hash(temporaryPassword, 10)
-  let result
+  const passwordHash = await unusablePasswordHash()
+  const conn = await pool.getConnection()
+  let userId
+  let invite
   try {
-    ;[result] = await pool.query(
+    await conn.beginTransaction()
+    const [result] = await conn.query(
       `INSERT INTO users (name, email, password_hash, role, department_id, job_title, must_change_password)
        VALUES (?, ?, ?, ?, ?, ?, TRUE)`,
       [name, email, passwordHash, role, departmentId, jobTitle],
     )
+    userId = result.insertId
+    invite = await issueToken(conn, userId)
+    // Saved with the account; never the link or its token
+    await recordAudit('user_created', {
+      actorId: req.user.id,
+      targetUserId: userId,
+      details: { email, role, department_id: departmentId },
+      req,
+      db: conn,
+    })
+    await conn.commit()
   } catch (err) {
+    await conn.rollback()
     // Two requests for the same email at once: both pass the check above, and the UNIQUE index stops the second
     if (err.code === 'ER_DUP_ENTRY') throw new HttpError(409, 'An account with this email already exists')
     // The department was deleted between the check above and the insert
     if (err.code === 'ER_NO_REFERENCED_ROW_2') return fieldError(res, 'department_id', 'Department not found')
     throw err
+  } finally {
+    conn.release()
   }
 
-  // The temporary password is never logged
-  await recordAudit('user_created', {
-    actorId: req.user.id,
-    targetUserId: result.insertId,
-    details: { email, role, department_id: departmentId },
-    req,
-  })
-  res.status(201).json({ user: await findUser(result.insertId), temporaryPassword })
+  // Only after the commit, and not awaited
+  notify.userInvited({ userId, token: invite.token, actorId: req.user.id })
+  res.status(201).json({ user: await findUser(userId), inviteExpiresAt: invite.expiresAt })
+})
+
+// POST /api/users/:id/resend-invite (admin and HR; HR only for employees), no body → 200 { user, inviteExpiresAt }
+// A new set-password link, e.g. when the first one expired or the email got lost. The old link stops working.
+// Only for accounts that haven't set their own password yet (must_change_password); for anyone else it is a 409, and
+// a forgotten password goes through reset-password instead. Deactivated accounts get no link (409).
+router.post('/:id/resend-invite', requireRole('admin', 'hr'), validate(schemas.resendInvite), async (req, res) => {
+  const { id } = req.valid.params
+  const [[target]] = await pool.query('SELECT id, role, is_active, must_change_password FROM users WHERE id = ?', [id])
+  if (!target) {
+    throw new HttpError(404, 'User not found')
+  }
+  if (req.user.role === 'hr' && target.role !== 'employee') {
+    throw new HttpError(403, 'HR can only send invitations to employee accounts')
+  }
+  if (!target.is_active) {
+    throw new HttpError(409, 'This account is deactivated. Reactivate it first', 'ACCOUNT_DEACTIVATED')
+  }
+  if (!target.must_change_password) {
+    throw new HttpError(409, 'This user has already set a password. Use Reset password instead', 'PASSWORD_ALREADY_SET')
+  }
+
+  // Locks the user row, so two resends at the same moment run one after the other and only the newest link works
+  const conn = await pool.getConnection()
+  let invite
+  try {
+    await conn.beginTransaction()
+    await conn.query('SELECT id FROM users WHERE id = ? FOR UPDATE', [id])
+    invite = await issueToken(conn, id)
+    await recordAudit('invite_resent', { actorId: req.user.id, targetUserId: id, req, db: conn })
+    await conn.commit()
+  } catch (err) {
+    await conn.rollback()
+    throw err
+  } finally {
+    conn.release()
+  }
+
+  notify.userInvited({ userId: id, token: invite.token, actorId: req.user.id })
+  res.json({ user: await findUser(id), inviteExpiresAt: invite.expiresAt })
 })
 
 // Step 1 of a reset: who may reset whom. Runs before the body is looked at.
