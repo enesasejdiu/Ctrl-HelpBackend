@@ -8,4 +8,5 @@ module.exports = [
   ['/api/users', require('./users')],
   ['/api/stats', require('./stats')],
   ['/api/departments', require('./departments')],
+  ['/api/audit', require('./audit')],
 ]

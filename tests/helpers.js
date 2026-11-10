@@ -11,7 +11,7 @@ const api = request(app)
 const DEFAULT_PASSWORD = 'password123'
 let userCount = 0
 
-// Empties sessions, users, departments, tickets, comments and ticket_history. Categories, priorities and
+// Empties audit_log, sessions, users, departments, tickets, comments and ticket_history. Categories, priorities and
 // schema_migrations stay.
 async function resetData() {
   assertTestDbName(process.env.DB_NAME) // second safety net: never empty a real database
@@ -19,7 +19,7 @@ async function resetData() {
   const connection = await pool.getConnection()
   try {
     await connection.query('SET FOREIGN_KEY_CHECKS = 0')
-    for (const table of ['sessions', 'ticket_history', 'comments', 'tickets', 'users', 'departments']) {
+    for (const table of ['audit_log', 'sessions', 'ticket_history', 'comments', 'tickets', 'users', 'departments']) {
       await connection.query(`TRUNCATE TABLE ${table}`)
     }
   } finally {
