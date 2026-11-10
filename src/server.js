@@ -6,6 +6,7 @@ require('dotenv').config()
 const config = require('./config').checkConfig('server')
 
 const app = require('./app')
+const { startSessionCleanup } = require('./sessionStore')
 
 const PORT = config.PORT
 
@@ -17,3 +18,6 @@ app.listen(PORT, (err) => {
   }
   console.log(`TicketFlow API running at http://localhost:${PORT}`)
 })
+
+// Deletes sessions that ended more than 7 days ago: now, then once a day (see src/sessionStore.js)
+startSessionCleanup()

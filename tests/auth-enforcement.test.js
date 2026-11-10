@@ -212,7 +212,7 @@ describe('blocking until a temporary password is changed', () => {
     expect(create.body.code).toBe('PASSWORD_CHANGE_REQUIRED')
   })
 
-  test('after changing the password the fresh token from the response works everywhere', async () => {
+  test('after changing the password the same session works everywhere', async () => {
     const user = await createUser({ mustChangePassword: true })
     const token = await loginAs(user)
     expect((await get('/api/tickets', token)).status).toBe(403)
@@ -222,7 +222,7 @@ describe('blocking until a temporary password is changed', () => {
       .set(auth(token))
       .send({ currentPassword: user.password, newPassword: 'my-own-password9' })
     expect(res.status).toBe(200)
-    expect((await get('/api/tickets', sessionOf(res))).status).toBe(200)
+    expect((await get('/api/tickets', token)).status).toBe(200)
   })
 
   test('an account created by an admin is blocked until its temporary password is changed', async () => {
@@ -242,7 +242,9 @@ describe('blocking until a temporary password is changed', () => {
       .post('/api/auth/change-password')
       .set(auth(sessionOf(login)))
       .send({ currentPassword: temporaryPassword, newPassword: 'chosen-by-me1' })
-    expect((await get('/api/tickets', sessionOf(changed))).status).toBe(200)
+    expect(changed.status).toBe(200)
+    // The same session continues, now unblocked
+    expect((await get('/api/tickets', sessionOf(login))).status).toBe(200)
   })
 
   test('an unflagged user is never blocked', async () => {
@@ -314,10 +316,13 @@ describe('every route', () => {
   })
 
   test('a user without a temporary password is never told to change it', async () => {
-    const token = await loginAs(await createUser({ role: 'admin' }))
+    const admin = await createUser({ role: 'admin' })
     for (const route of protectedRoutes) {
-      const res = await call(route, token)
+      // A fresh session per route: some routes end the session (POST /api/auth/logout-all), and every later route
+      // would then only see a 401 and test nothing
+      const res = await call(route, await loginAs(admin))
       expect([route, res.body.code]).not.toEqual([route, 'PASSWORD_CHANGE_REQUIRED'])
+      expect([route, res.status]).not.toEqual([route, 401])
     }
   })
 })

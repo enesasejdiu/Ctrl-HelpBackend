@@ -118,8 +118,8 @@ describe('schema', () => {
 })
 
 describe('up → down → up', () => {
-  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 007 down to 003
-  test('rolling back 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
+  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 008 down to 003
+  test('rolling back 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
     const { db, dbName } = await newDatabase()
     const schema = async () => {
       const tables = {}
@@ -135,14 +135,14 @@ describe('up → down → up', () => {
       (await db.query('SELECT filename FROM schema_migrations ORDER BY filename'))[0].map((r) => r.filename)
 
     const before = await schema()
-    for (let i = 0; i < 5; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
+    for (let i = 0; i < 6; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
     expect(await applied()).toEqual(['001_initial.sql', '002_hr_role_and_password_change.sql'])
     const [departments] = await db.query("SHOW TABLES LIKE 'departments'")
     expect(departments).toHaveLength(0)
 
     await quietly(() => migrate({ dbName, backupFirst: false }))
     expect(await schema()).toEqual(before)
-    expect((await applied()).at(-1)).toBe('007_session_version.sql')
+    expect((await applied()).at(-1)).toBe('008_sessions.sql')
   })
 
   test('a migration without a rollback file is refused, not half-undone', async () => {
