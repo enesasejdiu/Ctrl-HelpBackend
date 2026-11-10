@@ -20,7 +20,7 @@ This repository is the REST API. The frontend lives in a separate repository: **
 
 ## Requirements
 
-- Node.js 18 or newer
+- Node.js 22 or newer (`engines` in package.json; CI tests Node 22 and 24)
 - MySQL 8 running locally, **or** XAMPP (MariaDB 10.4 or newer). Both work with the same code and scripts.
 
 ## Setup
@@ -139,7 +139,7 @@ single quotes, 120 characters per line). ESLint (`eslint.config.js`) checks the 
 leaves the layout to Prettier. Before pushing, run `npm run format` and `npm run lint`.
 
 **CI.** [GitHub Actions](.github/workflows/ci.yml) ("Backend CI") runs on every push to `main` and every pull request.
-It runs 4 jobs, one for each of **MySQL 8.4** and **MariaDB 11** on **Node 20** and **22**. Each job starts that
+It runs 4 jobs, one for each of **MySQL 8.4** and **MariaDB 11** on **Node 22** and **24**. Each job starts that
 database in a container and runs `npm ci`, `npm run format:check`, `npm run lint` and `npm run test:coverage`.
 MySQL 8.4 keeps its default `ONLY_FULL_GROUP_BY` mode, so queries that MariaDB would allow but MySQL refuses are
 caught. The coverage report is kept as a download on the run for 7 days. A newer push to the same branch cancels
