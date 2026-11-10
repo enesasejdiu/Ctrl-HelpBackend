@@ -16,10 +16,18 @@ const {
   expectNoPasswordHash,
   auth,
   sessionOf,
+  inviteTokenFor,
 } = require('./helpers')
 
 // Routes anyone may call without logging in
-const PUBLIC = ['POST /api/auth/login', 'POST /api/auth/logout', 'GET /api/health']
+// (the set-password routes are for people who have no password yet: the emailed link's token is their proof)
+const PUBLIC = [
+  'POST /api/auth/login',
+  'POST /api/auth/logout',
+  'GET /api/health',
+  'GET /api/auth/set-password/validate',
+  'POST /api/auth/set-password',
+]
 // What a user with a temporary password may still do. Pinned here so widening the list is a deliberate change.
 const ALLOWED = ['GET /api/auth/me', 'POST /api/auth/change-password']
 
@@ -225,24 +233,25 @@ describe('blocking until a temporary password is changed', () => {
     expect((await get('/api/tickets', sessionOf(res))).status).toBe(200)
   })
 
-  test('an account created by an admin is blocked until its temporary password is changed', async () => {
+  test('an account created by an admin has no usable password until the emailed link sets one', async () => {
     const admin = await createUser({ role: 'admin' })
     const created = await api
       .post('/api/users')
       .set(auth(await loginAs(admin)))
       .send({ name: 'New Person', email: 'new.person@test.local', role: 'employee' })
-    const { temporaryPassword } = created.body
+    expect(created.status).toBe(201)
 
-    const login = await api
-      .post('/api/auth/login')
-      .send({ email: 'new.person@test.local', password: temporaryPassword })
-    expect((await get('/api/tickets', sessionOf(login))).body.code).toBe('PASSWORD_CHANGE_REQUIRED')
+    // Nothing to log in with yet: the usual message, as for any wrong password
+    const before = await api.post('/api/auth/login').send({ email: 'new.person@test.local', password: 'password123' })
+    expectError(before, 401, undefined, 'Wrong email or password')
 
-    const changed = await api
-      .post('/api/auth/change-password')
-      .set(auth(sessionOf(login)))
-      .send({ currentPassword: temporaryPassword, newPassword: 'chosen-by-me1' })
-    expect((await get('/api/tickets', sessionOf(changed))).status).toBe(200)
+    const token = await inviteTokenFor('new.person@test.local')
+    const set = await api.post('/api/auth/set-password').send({ token, new_password: 'chosen-by-me1' })
+    expect(set.status).toBe(200)
+
+    const login = await api.post('/api/auth/login').send({ email: 'new.person@test.local', password: 'chosen-by-me1' })
+    expect(login.body.user.must_change_password).toBe(false)
+    expect((await get('/api/tickets', sessionOf(login))).status).toBe(200)
   })
 
   test('an unflagged user is never blocked', async () => {

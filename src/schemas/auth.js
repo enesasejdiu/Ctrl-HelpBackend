@@ -17,4 +17,20 @@ const changePassword = {
   }),
 }
 
-module.exports = { login, changePassword }
+// The token from a set-password link (base64url, 43 characters today; the limit leaves room without accepting junk)
+const token = z
+  .string({ error: (issue) => (issue.input == null ? 'Token is required' : 'Token must be text') })
+  .trim()
+  .min(1, 'Token is required')
+  .max(200, 'Token is not valid')
+
+const validateSetPasswordToken = {
+  query: z.object({ token }),
+}
+
+// Same password rule as everywhere else (common.newPassword: 10–72 characters, a letter and a number)
+const setPassword = {
+  body: z.strictObject({ token, new_password: newPassword }),
+}
+
+module.exports = { login, changePassword, validateSetPasswordToken, setPassword }

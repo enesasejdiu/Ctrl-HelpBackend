@@ -4,6 +4,8 @@ const bcrypt = require('bcryptjs')
 const app = require('../src/app')
 const pool = require('../src/db')
 const { assertTestDbName } = require('./testDb')
+const notifications = require('../src/mail/notifications')
+const { getMailer } = require('../src/mail/mailer')
 
 // A supertest client for the app (src/app.js has no app.listen), e.g. await api.get('/api/health')
 const api = request(app)
@@ -11,14 +13,14 @@ const api = request(app)
 const DEFAULT_PASSWORD = 'password123'
 let userCount = 0
 
-// Empties users, departments, tickets, comments and ticket_history. Categories, priorities and schema_migrations stay.
+// Empties users, departments, tickets, comments, ticket_history and password_setup_tokens. Categories, priorities and schema_migrations stay.
 async function resetData() {
   assertTestDbName(process.env.DB_NAME) // second safety net: never empty a real database
   // FOREIGN_KEY_CHECKS is per connection, so every statement must run on the same one
   const connection = await pool.getConnection()
   try {
     await connection.query('SET FOREIGN_KEY_CHECKS = 0')
-    for (const table of ['ticket_history', 'comments', 'tickets', 'users', 'departments']) {
+    for (const table of ['password_setup_tokens', 'ticket_history', 'comments', 'tickets', 'users', 'departments']) {
       await connection.query(`TRUNCATE TABLE ${table}`)
     }
   } finally {
@@ -139,14 +141,31 @@ function expectNoPasswordHash(body) {
 // expect(await dbSnapshot()).toEqual(before)
 async function dbSnapshot() {
   const snapshot = {}
-  for (const table of ['users', 'departments', 'tickets', 'comments', 'ticket_history']) {
+  for (const table of ['users', 'departments', 'tickets', 'comments', 'ticket_history', 'password_setup_tokens']) {
     const [rows] = await pool.query(`SELECT * FROM ${table} ORDER BY id`)
     snapshot[table] = rows
   }
   return snapshot
 }
 
+// The emails sent so far in this test (nodemailer jsonTransport; nothing leaves the process), once the background
+// notifications have finished. Each is { from, to, subject, text, html, link }. tests/setupAfterEnv.js empties the
+// outbox after every test.
+async function sentMail() {
+  await notifications.settle()
+  return [...getMailer().outbox]
+}
+
+// The token from the newest set-password email to this address
+async function inviteTokenFor(email) {
+  const invites = (await sentMail()).filter((mail) => mail.to === email && mail.link?.includes('/set-password?token='))
+  if (invites.length === 0) throw new Error(`No set-password email to ${email}`)
+  return new URL(invites.at(-1).link).searchParams.get('token')
+}
+
 module.exports = {
+  sentMail,
+  inviteTokenFor,
   api,
   resetData,
   createUser,

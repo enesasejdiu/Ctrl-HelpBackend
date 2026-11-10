@@ -5,6 +5,11 @@
 // protect production: JWT_SECRET must be at least 32 characters, must not be a known placeholder, and CLIENT_URL must be
 // https. With NODE_ENV=production a broken rule refuses to start; in development it is only a warning, so a local
 // .env with a short secret and http://localhost still works.
+//
+// The email settings (SMTP_*, MAIL_*, APP_URL, IT_NOTIFY_EMAIL) are checked by loadMailConfig() below, which the
+// mailer (src/mail/mailer.js) also uses. Malformed values always stop the program. In production email is on unless
+// MAIL_ENABLED=false, and then SMTP_HOST, MAIL_FROM and an https APP_URL are required; in development a missing SMTP
+// host only means emails are logged instead of sent.
 const { z } = require('zod')
 
 const MIN_SECRET_LENGTH = 32
@@ -56,6 +61,42 @@ const serverSchema = databaseSchema.extend({
   JWT_SECRET: required('JWT_SECRET'),
 })
 
+// The email settings. A blank value (SMTP_HOST=) counts as not set.
+const MAIL_KEYS = [
+  'MAIL_ENABLED',
+  'SMTP_HOST',
+  'SMTP_PORT',
+  'SMTP_SECURE',
+  'SMTP_USER',
+  'SMTP_PASS',
+  'MAIL_FROM',
+  'APP_URL',
+  'IT_NOTIFY_EMAIL',
+]
+const trueOrFalse = (name) => z.enum(['true', 'false'], { error: `${name} must be true or false` }).optional()
+const mailSchema = z.object({
+  MAIL_ENABLED: trueOrFalse('MAIL_ENABLED'),
+  SMTP_HOST: z.string().trim().optional(),
+  SMTP_PORT: port('SMTP_PORT').optional(),
+  SMTP_SECURE: trueOrFalse('SMTP_SECURE'),
+  SMTP_USER: z.string().trim().optional(),
+  SMTP_PASS: z.string().optional(),
+  MAIL_FROM: z
+    .string()
+    .trim()
+    // "address@example.com" or "Name <address@example.com>"
+    .regex(/^(?:[^<>\r\n]*<[^\s@<>]+@[^\s@<>]+>|[^\s@<>]+@[^\s@<>]+)$/, {
+      error: 'MAIL_FROM must be an address, e.g. "TicketFlow <no-reply@example.com>"',
+    })
+    .optional(),
+  APP_URL: z
+    .url({ protocol: /^https?$/, error: 'APP_URL must be the frontend address, e.g. https://helpdesk.example.com' })
+    .optional(),
+  IT_NOTIFY_EMAIL: z.email('IT_NOTIFY_EMAIL must be an email address').optional(),
+})
+const DEFAULT_SMTP_PORT = 587
+const DEV_MAIL_FROM = 'TicketFlow <no-reply@localhost>'
+
 class ConfigError extends Error {
   constructor(problems) {
     super(`Invalid configuration:\n${problems.map((p) => `  - ${p}`).join('\n')}`)
@@ -81,29 +122,107 @@ function productionProblems(settings) {
   return problems
 }
 
-// Validates env for 'server' (everything) or 'database' (the DB_* settings only).
-// Returns { config, warnings }. Throws ConfigError when the program must not start.
+// The email settings, checked. Returns { mail, notices }; throws ConfigError when the program must not start.
+// mail.mode says what the mailer does: 'smtp' (send), 'log' (print instead of sending) or 'test' (the test suite:
+// nodemailer's jsonTransport, nothing leaves the process). NODE_ENV=test is always 'test', whatever else is set.
+// notices are worth knowing but not mistakes (e.g. email switched off).
+function loadMailConfig(env = process.env) {
+  const nodeEnv = env.NODE_ENV || 'development'
+  const production = nodeEnv === 'production'
+  const raw = {}
+  for (const key of MAIL_KEYS) {
+    if (env[key] !== undefined && env[key].trim() !== '') raw[key] = env[key]
+  }
+
+  const result = mailSchema.safeParse(raw)
+  if (!result.success) throw new ConfigError(result.error.issues.map((issue) => issue.message))
+  const settings = result.data
+
+  // On by default in production (a new user's only way in is the emailed link), off by default elsewhere
+  const enabled = settings.MAIL_ENABLED ? settings.MAIL_ENABLED === 'true' : production
+  const problems = []
+  if (Boolean(settings.SMTP_USER) !== Boolean(settings.SMTP_PASS)) {
+    problems.push('SMTP_USER and SMTP_PASS must be set together (or both left empty for a server without login)')
+  }
+  if (production && enabled) {
+    for (const key of ['SMTP_HOST', 'MAIL_FROM', 'APP_URL']) {
+      if (!settings[key]) problems.push(`${key} is missing (needed to send email; or set MAIL_ENABLED=false)`)
+    }
+    if (settings.APP_URL && new URL(settings.APP_URL).protocol !== 'https:') {
+      problems.push(`APP_URL must use https in production (got ${settings.APP_URL})`)
+    }
+  }
+  if (problems.length > 0) throw new ConfigError(problems)
+
+  const notices = []
+  if (production && !enabled) {
+    notices.push('MAIL_ENABLED=false: no emails are sent, so new users never receive their set-password link')
+  } else if (!production && nodeEnv !== 'test' && enabled && !settings.SMTP_HOST) {
+    notices.push('MAIL_ENABLED=true but SMTP_HOST is empty: emails are logged instead of sent')
+  }
+
+  let mode = enabled && settings.SMTP_HOST ? 'smtp' : 'log'
+  if (nodeEnv === 'test') mode = 'test'
+  return {
+    mail: {
+      mode,
+      production,
+      host: settings.SMTP_HOST ?? null,
+      port: settings.SMTP_PORT ?? DEFAULT_SMTP_PORT,
+      secure: settings.SMTP_SECURE === 'true',
+      user: settings.SMTP_USER ?? null,
+      pass: settings.SMTP_PASS ?? null,
+      from: settings.MAIL_FROM ?? DEV_MAIL_FROM,
+      // Links in emails are built from this only, never from a request's Host header. Development falls back to
+      // CLIENT_URL.
+      appUrl: (settings.APP_URL ?? env.CLIENT_URL ?? 'http://localhost:5173').replace(/\/+$/, ''),
+      itNotifyEmail: settings.IT_NOTIFY_EMAIL?.toLowerCase() ?? null,
+      // Development and tests only: every email is also written to this folder as a .json file (the e2e tests read
+      // the set-password links from there). Ignored in production.
+      outboxDir: production ? null : env.MAIL_OUTBOX_DIR?.trim() || null,
+    },
+    notices,
+  }
+}
+
+// Validates env for 'server' (everything, including config.mail) or 'database' (the DB_* settings only).
+// Returns { config, warnings, notices }. Throws ConfigError when the program must not start.
 function loadConfig(env = process.env, { scope = 'server' } = {}) {
   const schema = scope === 'database' ? databaseSchema : serverSchema
   const result = schema.safeParse(env)
-  if (!result.success) {
-    throw new ConfigError(result.error.issues.map((issue) => issue.message))
+  const issues = result.success ? [] : result.error.issues.map((issue) => issue.message)
+  let mail = null
+  let notices = []
+  if (scope === 'server') {
+    // Collected together with the other problems, so one start lists everything that is wrong
+    try {
+      ;({ mail, notices } = loadMailConfig(env))
+    } catch (err) {
+      if (!(err instanceof ConfigError)) throw err
+      issues.push(...err.problems)
+    }
   }
-  const config = { ...result.data, NODE_ENV: env.NODE_ENV || 'development' }
+  if (issues.length > 0) {
+    throw new ConfigError(issues)
+  }
+  const config = { ...result.data, NODE_ENV: env.NODE_ENV || 'development', ...(mail && { mail }) }
 
   const problems = scope === 'server' ? productionProblems(config) : []
   if (problems.length > 0 && config.NODE_ENV === 'production') {
     throw new ConfigError(problems)
   }
-  return { config, warnings: problems }
+  return { config, warnings: problems, notices }
 }
 
 // For entry points (server, scripts): checks env, prints warnings, and exits with a clear message if it must not start
 function checkConfig(scope, { env = process.env, log = console, exit = process.exit } = {}) {
   try {
-    const { config, warnings } = loadConfig(env, { scope })
+    const { config, warnings, notices } = loadConfig(env, { scope })
     for (const warning of warnings) {
       log.warn(`Config warning (would refuse to start with NODE_ENV=production): ${warning}`)
+    }
+    for (const notice of notices) {
+      log.warn(`Config note: ${notice}`)
     }
     return config
   } catch (err) {
@@ -113,4 +232,4 @@ function checkConfig(scope, { env = process.env, log = console, exit = process.e
   }
 }
 
-module.exports = { loadConfig, checkConfig, ConfigError, PLACEHOLDER_SECRETS, MIN_SECRET_LENGTH }
+module.exports = { loadConfig, loadMailConfig, checkConfig, ConfigError, PLACEHOLDER_SECRETS, MIN_SECRET_LENGTH }

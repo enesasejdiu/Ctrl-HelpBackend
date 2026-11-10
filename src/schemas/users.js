@@ -25,6 +25,12 @@ const resetPasswordBody = {
   body: z.strictObject({}),
 }
 
+// POST /api/users/:id/resend-invite: no body
+const resendInvite = {
+  params: z.object({ id: id('User id') }),
+  body: z.strictObject({}),
+}
+
 // PATCH /api/users/:id is checked in two steps: the id first, then (once the user is known to exist and the caller
 // may change them) the body. Every body field is optional, but at least one must be sent. Unknown fields (password,
 // must_change_password, created_at, ...) are refused by name. null clears department_id and job_title.
@@ -47,4 +53,4 @@ const updateUser = {
     }),
 }
 
-module.exports = { createUser, resetPassword, resetPasswordBody, updateUserParams, updateUser }
+module.exports = { createUser, resetPassword, resetPasswordBody, resendInvite, updateUserParams, updateUser }

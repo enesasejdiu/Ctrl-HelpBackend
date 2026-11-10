@@ -2,6 +2,8 @@
 // Mounted at /api/tickets; every route requires a logged-in user.
 // Employees only ever see their own tickets; staff (agents and admins) see and manage all of them.
 // Every change to status, priority or assignee is recorded in ticket_history.
+// Emails (src/mail/notifications.js) go out after a change is saved, in the background: a new ticket, an assignment,
+// a comment and a resolve each notify the people involved. A failed email never fails the request.
 const express = require('express')
 const pool = require('../db')
 const { HttpError } = require('../middleware/errors')
@@ -10,6 +12,7 @@ const validate = require('../middleware/validate')
 const { OVERDUE_SQL } = require('../overdue')
 const schemas = require('../schemas/tickets')
 const { addComment } = require('../schemas/comments')
+const notify = require('../mail/notifications')
 
 const router = express.Router()
 
@@ -122,6 +125,7 @@ router.post('/', validate(schemas.createTicket), async (req, res) => {
     [title, description, req.user.id, categoryId, priorityId],
   )
   await logHistory(result.insertId, req.user.id, 'status', null, 'open')
+  notify.ticketCreated({ ticketId: result.insertId, actorId: req.user.id })
 
   res.status(201).json(await loadTicket(result.insertId, req.user))
 })
@@ -172,6 +176,8 @@ router.post('/:id/comments', validate(addComment), async (req, res) => {
      WHERE c.id = ?`,
     [result.insertId],
   )
+  // Internal notes send nothing (see notifications.commentAdded)
+  notify.commentAdded({ commentId: result.insertId, actorId: req.user.id })
 
   res.status(201).json({ ...rows[0], is_internal: Boolean(rows[0].is_internal) })
 })
@@ -219,6 +225,9 @@ router.patch('/:id/status', validate(schemas.updateStatus), async (req, res) => 
 
   await pool.query(`UPDATE tickets SET ${sets.join(', ')} WHERE id = ?`, [...params, ticket.id])
   await logHistory(ticket.id, req.user.id, 'status', ticket.status, status)
+  if (status === 'resolved') {
+    notify.ticketResolved({ ticketId: ticket.id, actorId: req.user.id })
+  }
 
   res.json(await loadTicket(ticket.id, req.user))
 })
@@ -279,6 +288,10 @@ router.patch('/:id/assign', requireRole('agent', 'admin'), validate(schemas.assi
   await pool.query('UPDATE tickets SET assigned_to = ?, status = ? WHERE id = ?', [assigneeId, newStatus, ticket.id])
   if (assigneeId !== ticket.assigned_to) {
     await logHistory(ticket.id, req.user.id, 'assigned_to', ticket.assignee_name, assigneeName)
+    // The new assignee hears about it (not when they took the ticket themselves; notifications skip the actor)
+    if (assigneeId !== null) {
+      notify.ticketAssigned({ ticketId: ticket.id, assigneeId, actorId: req.user.id })
+    }
   }
   if (newStatus !== ticket.status) {
     await logHistory(ticket.id, req.user.id, 'status', ticket.status, newStatus)

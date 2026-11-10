@@ -120,3 +120,4 @@ requireAuth checks the current role and active status in the database on every r
 - [x] Configuration checked at startup; weak secrets refused in production
 - [x] Password change/reset, deactivation and role change end other sessions
 - [x] Backend CI: Prettier, ESLint and tests on MySQL 8.4 and MariaDB 11
+- [x] Email notifications (nodemailer): set-password link for new users, new ticket → IT, assigned, comments, resolved

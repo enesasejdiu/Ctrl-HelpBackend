@@ -14,7 +14,29 @@ const GOOD = {
   DB_NAME: 'ticketflow',
   JWT_SECRET: STRONG_SECRET,
   CLIENT_URL: 'https://helpdesk.example.com',
+  // Email (production needs SMTP_HOST, MAIL_FROM and an https APP_URL unless MAIL_ENABLED=false)
+  SMTP_HOST: 'smtp.example.com',
+  SMTP_PORT: '587',
+  SMTP_SECURE: 'false',
+  SMTP_USER: 'mailer',
+  SMTP_PASS: 'smtp-password-never-logged',
+  MAIL_FROM: 'TicketFlow <no-reply@example.com>',
+  APP_URL: 'https://helpdesk.example.com',
+  IT_NOTIFY_EMAIL: 'it@example.com',
 }
+const MAIL_SETTINGS = [
+  'MAIL_ENABLED',
+  'SMTP_HOST',
+  'SMTP_PORT',
+  'SMTP_SECURE',
+  'SMTP_USER',
+  'SMTP_PASS',
+  'MAIL_FROM',
+  'APP_URL',
+  'IT_NOTIFY_EMAIL',
+]
+// GOOD without any email setting
+const withoutMail = (env) => Object.fromEntries(Object.entries(env).filter(([key]) => !MAIL_SETTINGS.includes(key)))
 const dev = (overrides) => ({ ...GOOD, NODE_ENV: 'development', ...overrides })
 const prod = (overrides) => ({ ...GOOD, NODE_ENV: 'production', ...overrides })
 
@@ -37,6 +59,94 @@ describe('a good configuration', () => {
 
   test('NODE_ENV defaults to development', () => {
     expect(loadConfig({ ...GOOD }).config.NODE_ENV).toBe('development')
+  })
+})
+
+describe('email settings', () => {
+  test('production sends real email by default, with the settings parsed', () => {
+    const { config, notices } = loadConfig(prod())
+    expect(notices).toEqual([])
+    expect(config.mail).toMatchObject({
+      mode: 'smtp',
+      host: 'smtp.example.com',
+      port: 587,
+      secure: false,
+      user: 'mailer',
+      from: 'TicketFlow <no-reply@example.com>',
+      appUrl: 'https://helpdesk.example.com',
+      itNotifyEmail: 'it@example.com',
+    })
+  })
+
+  test('production without SMTP_HOST, MAIL_FROM or APP_URL refuses to start and lists all three', () => {
+    const { exited, exitCode, log } = run(prod({ SMTP_HOST: '', MAIL_FROM: undefined, APP_URL: undefined }))
+    expect({ exited, exitCode }).toEqual({ exited: true, exitCode: 1 })
+    const message = log.error.mock.calls[0][0]
+    expect(message).toMatch(/SMTP_HOST is missing/)
+    expect(message).toMatch(/MAIL_FROM is missing/)
+    expect(message).toMatch(/APP_URL is missing/)
+    expect(message).toMatch(/or set MAIL_ENABLED=false/)
+  })
+
+  test('production refuses an http APP_URL', () => {
+    expect(() => loadConfig(prod({ APP_URL: 'http://helpdesk.example.com' }))).toThrow(
+      /APP_URL must use https in production/,
+    )
+  })
+
+  test('production with MAIL_ENABLED=false starts without SMTP, but says new users get no link', () => {
+    const { config, exited, log } = run({ ...withoutMail(prod()), MAIL_ENABLED: 'false' })
+    expect(exited).toBe(false)
+    expect(config.mail.mode).toBe('log')
+    expect(log.warn.mock.calls.map(([line]) => line).join('\n')).toMatch(
+      /MAIL_ENABLED=false: no emails are sent, so new users never receive their set-password link/,
+    )
+  })
+
+  test('development without SMTP settings logs emails instead of sending, with links from CLIENT_URL', () => {
+    const { config, notices } = loadConfig(withoutMail(dev({ CLIENT_URL: 'http://localhost:5173/' })))
+    expect(notices).toEqual([])
+    expect(config.mail).toMatchObject({ mode: 'log', appUrl: 'http://localhost:5173', itNotifyEmail: null })
+  })
+
+  test('development sends only with MAIL_ENABLED=true and an SMTP host (e.g. Mailpit)', () => {
+    expect(loadConfig(dev()).config.mail.mode).toBe('log') // off by default outside production
+    expect(loadConfig(dev({ MAIL_ENABLED: 'true' })).config.mail.mode).toBe('smtp')
+    const noHost = loadConfig(dev({ MAIL_ENABLED: 'true', SMTP_HOST: '' }))
+    expect(noHost.config.mail.mode).toBe('log')
+    expect(noHost.notices).toEqual(['MAIL_ENABLED=true but SMTP_HOST is empty: emails are logged instead of sent'])
+  })
+
+  test('the test suite never sends, whatever is set', () => {
+    expect(loadConfig({ ...GOOD, NODE_ENV: 'test', MAIL_ENABLED: 'true' }).config.mail.mode).toBe('test')
+  })
+
+  test('blank values count as not set, and APP_URL loses a trailing slash', () => {
+    const { config } = loadConfig(dev({ SMTP_PORT: ' ', IT_NOTIFY_EMAIL: '', APP_URL: 'https://desk.example.com/' }))
+    expect(config.mail).toMatchObject({ port: 587, itNotifyEmail: null, appUrl: 'https://desk.example.com' })
+  })
+
+  test.each([
+    ['SMTP_PORT', 'abc', /SMTP_PORT must be a number/],
+    ['SMTP_PORT', '70000', /SMTP_PORT must be between 1 and 65535/],
+    ['SMTP_SECURE', 'yes', /SMTP_SECURE must be true or false/],
+    ['MAIL_ENABLED', '1', /MAIL_ENABLED must be true or false/],
+    ['MAIL_FROM', 'TicketFlow', /MAIL_FROM must be an address/],
+    ['MAIL_FROM', 'TicketFlow <no-reply@example.com>\nBcc: x@evil.example', /MAIL_FROM must be an address/],
+    ['APP_URL', 'helpdesk', /APP_URL must be the frontend address/],
+    ['IT_NOTIFY_EMAIL', 'it-team', /IT_NOTIFY_EMAIL must be an email address/],
+  ])('a malformed %s (%j) stops even development', (name, value, message) => {
+    expect(() => loadConfig(dev({ [name]: value }))).toThrow(message)
+  })
+
+  test('SMTP_USER and SMTP_PASS must come together', () => {
+    expect(() => loadConfig(dev({ SMTP_PASS: '' }))).toThrow(/SMTP_USER and SMTP_PASS must be set together/)
+    expect(() => loadConfig(dev({ SMTP_USER: '' }))).toThrow(/SMTP_USER and SMTP_PASS must be set together/)
+    expect(loadConfig(dev({ SMTP_USER: '', SMTP_PASS: '' })).config.mail.user).toBeNull()
+  })
+
+  test('the database scripts never need email settings', () => {
+    expect(run(withoutMail(prod()), 'database').exited).toBe(false)
   })
 })
 
@@ -149,6 +259,15 @@ describe('the real entry points', () => {
     expect(res.status).toBe(1)
     expect(res.stderr).toMatch(/Invalid configuration/)
     expect(res.stderr).toMatch(/JWT_SECRET is a placeholder/)
+    expect(res.stdout).not.toMatch(/API running/)
+  })
+
+  test('src/server.js refuses to start in production without SMTP settings, and never prints the SMTP password', () => {
+    const res = spawnNode('src/server.js', prod({ SMTP_HOST: '', PORT: '5999', DB_NAME: 'ticketflow_test_never_used' }))
+    expect(res.status).toBe(1)
+    expect(res.stderr).toMatch(/Invalid configuration/)
+    expect(res.stderr).toMatch(/SMTP_HOST is missing/)
+    expect(`${res.stdout}${res.stderr}`).not.toContain(GOOD.SMTP_PASS)
     expect(res.stdout).not.toMatch(/API running/)
   })
 

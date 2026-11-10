@@ -23,6 +23,10 @@
     {
       "key": "departmentId",
       "value": "1"
+    },
+    {
+      "key": "setPasswordToken",
+      "value": ""
     }
   ],
   "item": [
@@ -218,6 +222,54 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"currentPassword\": \"password123\",\n  \"newPassword\": \"my-new-password1\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Check set-password link",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/set-password/validate?token={{setPasswordToken}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "set-password", "validate"],
+              "query": [
+                {
+                  "key": "token",
+                  "value": "{{setPasswordToken}}"
+                }
+              ]
+            },
+            "description": "Public. Put the token from a set-password email (the part after ?token=) in the setPasswordToken variable. Returns { status: \"valid\", name, email, expires_at } or { status: \"expired\" | \"used\" | \"invalid\", message, code }. Changes nothing."
+          },
+          "response": []
+        },
+        {
+          "name": "Set password with link",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/set-password",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "set-password"]
+            },
+            "description": "Public (no login). Sets the password of the account the link belongs to, clears must_change_password and uses up the link. new_password: 10-72 characters with a letter and a number. 400 TOKEN_INVALID / TOKEN_EXPIRED / TOKEN_USED for a link that cannot be used. Log in afterwards with the new password.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"{{setPasswordToken}}\",\n  \"new_password\": \"MyOwnPassword1\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -513,7 +565,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["users"]
             },
-            "description": "Admin or HR. Creates an account and returns { user, temporaryPassword }. The temporary password is only shown in this response; the new user logs in with it and has must_change_password = true. Admins must send a role (employee, agent, hr, admin); HR can only create employees and may leave role out. department_id (an existing department) and job_title are optional. Change the email to create another account.",
+            "description": "Admin or HR. Creates an account and returns { user, inviteExpiresAt }. No password is returned: the new user gets an email with a set-password link ({APP_URL}/set-password?token=...) that works once, for 72 hours (in development with email off, the link is printed in the API console instead). Admins must send a role (employee, agent, hr, admin); HR can only create employees and may leave role out. department_id (an existing department) and job_title are optional. Change the email to create another account.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"name\": \"New Employee\",\n  \"email\": \"new.employee@ticketflow.local\",\n  \"role\": \"employee\",\n  \"job_title\": \"Marketing Assistant\",\n  \"department_id\": 1\n}",
@@ -523,6 +575,20 @@
                 }
               }
             }
+          },
+          "response": []
+        },
+        {
+          "name": "Resend invite",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/{{userId}}/resend-invite",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "{{userId}}", "resend-invite"]
+            },
+            "description": "Admin or HR (HR: employees only), no body. Emails the user a new set-password link; the old link stops working. Returns { user, inviteExpiresAt }. 409 PASSWORD_ALREADY_SET if the user already set a password (use Reset password), 409 ACCOUNT_DEACTIVATED for a deactivated account."
           },
           "response": []
         },
