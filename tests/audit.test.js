@@ -3,7 +3,7 @@
 // at a time.
 const pool = require('../src/db')
 const { AUDIT_ACTIONS, withoutSecrets } = require('../src/audit')
-const { api, resetData, createUser, loginAs, auth, expectError, inviteTokenFor } = require('./helpers')
+const { api, resetData, createUser, loginAs, auth, expectError, inviteTokenFor, useEmail } = require('./helpers')
 
 beforeEach(resetData)
 
@@ -120,7 +120,8 @@ describe('recording every event', () => {
     expect(JSON.stringify(entry)).not.toContain(res.body.temporaryPassword)
   })
 
-  test('user created: by whom, with email, role and department; the set-password link is never stored', async () => {
+  test('user created (email set up): by whom, with email, role and department; the link is never stored', async () => {
+    useEmail(true)
     const hr = await createUser({ role: 'hr' })
     const res = await api
       .post('/api/users')
@@ -130,7 +131,7 @@ describe('recording every event', () => {
     expect(entry).toMatchObject({
       actor_id: hr.id,
       target_user_id: res.body.user.id,
-      details: { email: 'new.person@test.local', role: 'employee', department_id: null },
+      details: { email: 'new.person@test.local', role: 'employee', department_id: null, delivery: 'email' },
     })
     const linkToken = await inviteTokenFor('new.person@test.local')
     expect(JSON.stringify(entry)).not.toContain(linkToken)
@@ -202,7 +203,10 @@ describe('never a secret', () => {
       .post('/api/auth/change-password')
       .set(auth(userSession))
       .send({ currentPassword: user.password, newPassword: 'Brand-new-pass1' })
+    // Email not set up yet: the reset gives a temporary password
     const reset = await api.post(`/api/users/${user.id}/reset-password`).set(auth(adminSession)).send()
+    // Now set up, so the new account below sets its password with a link
+    useEmail(true)
     await api
       .post('/api/users')
       .set(auth(adminSession))

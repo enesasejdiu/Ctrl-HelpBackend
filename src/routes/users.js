@@ -1,7 +1,11 @@
 // User management routes.
 // Mounted at /api/users. Agents/admins can list who can be assigned tickets.
 // Admins and HR create, list and change accounts. HR only creates and changes employees, and never changes roles.
-// A new account gets an emailed set-password link (src/passwordSetup.js), not a password shown to its creator.
+// Passwords for new and reset accounts are delivered one of two ways, decided by the server's settings only
+// (isEmailConfigured() in src/mail/mailer.js), and every such response says which with password_delivery:
+//   'email'               email is set up: a one-time link (src/passwordTokens.js) goes to the user; no password
+//                         is ever shown to the admin or HR
+//   'temporary_password'  email is not set up: a temporary password is returned once (temporaryPassword), as before
 const express = require('express')
 const bcrypt = require('bcryptjs')
 const pool = require('../db')
@@ -10,8 +14,12 @@ const { requireAuth, requireRole, isStaff } = require('../middleware/auth')
 const validate = require('../middleware/validate')
 const schemas = require('../schemas/users')
 const { makeTemporaryPassword } = require('../temporaryPassword')
-const { issueToken, unusablePasswordHash } = require('../passwordSetup')
+const { issueToken, latestPurpose, unusablePasswordHash } = require('../passwordTokens')
+const { isEmailConfigured } = require('../mail/mailer')
 const notify = require('../mail/notifications')
+
+const EMAIL = 'email'
+const TEMPORARY_PASSWORD = 'temporary_password'
 const { revokeUserSessions } = require('../sessionStore')
 const { recordAudit } = require('../audit')
 
@@ -57,11 +65,13 @@ router.get('/', requireRole('admin', 'hr'), async (req, res) => {
 })
 
 // POST /api/users { name, email, role, department_id?, job_title? } (admin and HR)
-// → 201 { user, inviteExpiresAt }. HR may leave out role (it means employee); admins must send it.
-// No password is returned or shown to anyone: the account starts with a password nobody knows (so it can't be logged
-// into), and the new user gets an email with a set-password link that works once, for 72 hours. The user row and the
-// link's token are saved together; the email goes out after that, in the background, and a failed email doesn't undo
-// the account (send a new link with POST /api/users/:id/resend-invite).
+// HR may leave out role (it means employee); admins must send it.
+// Email set up → 201 { user, password_delivery: 'email' }. The account starts with a password nobody knows (so it
+//   can't be logged into), and the new user gets a one-time 'setup' link (48 hours). The user row and the token are
+//   saved together; the email goes out after the commit, in the background, and a failed email doesn't undo the
+//   account (send a new link with POST /api/users/:id/resend-link).
+// Not set up → 201 { user, temporaryPassword, password_delivery: 'temporary_password' }: the temporary password is
+//   returned only in this response (only its hash is stored), and the user must change it at the first login.
 router.post('/', requireRole('admin', 'hr'), validate(schemas.createUser), async (req, res) => {
   const { name, email } = req.valid.body
   const isHr = req.user.role === 'hr'
@@ -88,10 +98,12 @@ router.post('/', requireRole('admin', 'hr'), validate(schemas.createUser), async
     throw new HttpError(409, 'An account with this email already exists')
   }
 
-  const passwordHash = await unusablePasswordHash()
+  const byEmail = isEmailConfigured()
+  const temporaryPassword = byEmail ? null : makeTemporaryPassword()
+  const passwordHash = byEmail ? await unusablePasswordHash() : await bcrypt.hash(temporaryPassword, 10)
   const conn = await pool.getConnection()
   let userId
-  let invite
+  let link = null
   try {
     await conn.beginTransaction()
     const [result] = await conn.query(
@@ -100,12 +112,12 @@ router.post('/', requireRole('admin', 'hr'), validate(schemas.createUser), async
       [name, email, passwordHash, role, departmentId, jobTitle],
     )
     userId = result.insertId
-    invite = await issueToken(conn, userId)
-    // Saved with the account; never the link or its token
+    if (byEmail) link = await issueToken(conn, userId, 'setup')
+    // Saved with the account; never a password, the link or its token
     await recordAudit('user_created', {
       actorId: req.user.id,
       targetUserId: userId,
-      details: { email, role, department_id: departmentId },
+      details: { email, role, department_id: departmentId, delivery: byEmail ? EMAIL : TEMPORARY_PASSWORD },
       req,
       db: conn,
     })
@@ -121,23 +133,47 @@ router.post('/', requireRole('admin', 'hr'), validate(schemas.createUser), async
     conn.release()
   }
 
+  const user = await findUser(userId)
+  if (!byEmail) {
+    return res.status(201).json({ user, temporaryPassword, password_delivery: TEMPORARY_PASSWORD })
+  }
   // Only after the commit, and not awaited
-  notify.userInvited({ userId, token: invite.token, actorId: req.user.id })
-  res.status(201).json({ user: await findUser(userId), inviteExpiresAt: invite.expiresAt })
+  notify.passwordLink({ userId, token: link.token, purpose: 'setup', actorId: req.user.id })
+  res.status(201).json({ user, password_delivery: EMAIL })
 })
 
-// POST /api/users/:id/resend-invite (admin and HR; HR only for employees), no body → 200 { user, inviteExpiresAt }
-// A new set-password link, e.g. when the first one expired or the email got lost. The old link stops working.
-// Only for accounts that haven't set their own password yet (must_change_password); for anyone else it is a 409, and
-// a forgotten password goes through reset-password instead. Deactivated accounts get no link (409).
-router.post('/:id/resend-invite', requireRole('admin', 'hr'), validate(schemas.resendInvite), async (req, res) => {
+// Who may send whom a password link (resend-link) or reset their password: HR only employees, and nobody themselves
+// (your own password needs your current one: POST /api/auth/change-password). Runs before the body is looked at.
+async function loadTarget(req, action) {
   const { id } = req.valid.params
+  if (id === req.user.id) {
+    throw new HttpError(403, 'Use Change password for your own account')
+  }
   const [[target]] = await pool.query('SELECT id, role, is_active, must_change_password FROM users WHERE id = ?', [id])
   if (!target) {
     throw new HttpError(404, 'User not found')
   }
   if (req.user.role === 'hr' && target.role !== 'employee') {
-    throw new HttpError(403, 'HR can only send invitations to employee accounts')
+    throw new HttpError(403, `HR can only ${action} employee accounts`)
+  }
+  return target
+}
+
+// POST /api/users/:id/resend-link { purpose? } (admin and HR; HR only for employees) → 200 { user, password_delivery }
+// A fresh one-time link, e.g. when the first one expired or the email got lost; the old link stops working.
+// purpose: 'setup' or 'reset'; left out, it is the purpose of the user's last link (or 'setup' if there was none).
+// Only while the user still has no password of their own (must_change_password); otherwise 409 PASSWORD_ALREADY_SET
+// (a forgotten password goes through reset-password instead). 409 EMAIL_NOT_CONFIGURED when email isn't set up
+// (there is no link to send: use reset-password for a new temporary password), 409 ACCOUNT_DEACTIVATED.
+router.post('/:id/resend-link', requireRole('admin', 'hr'), validate(schemas.resendLink), async (req, res) => {
+  const { id } = req.valid.params
+  const target = await loadTarget(req, 'send links to')
+  if (!isEmailConfigured()) {
+    throw new HttpError(
+      409,
+      'Email is not set up, so no link can be sent. Use Reset password for a temporary password',
+      'EMAIL_NOT_CONFIGURED',
+    )
   }
   if (!target.is_active) {
     throw new HttpError(409, 'This account is deactivated. Reactivate it first', 'ACCOUNT_DEACTIVATED')
@@ -148,12 +184,14 @@ router.post('/:id/resend-invite', requireRole('admin', 'hr'), validate(schemas.r
 
   // Locks the user row, so two resends at the same moment run one after the other and only the newest link works
   const conn = await pool.getConnection()
-  let invite
+  let link
+  let purpose
   try {
     await conn.beginTransaction()
     await conn.query('SELECT id FROM users WHERE id = ? FOR UPDATE', [id])
-    invite = await issueToken(conn, id)
-    await recordAudit('invite_resent', { actorId: req.user.id, targetUserId: id, req, db: conn })
+    purpose = req.valid.body.purpose ?? (await latestPurpose(conn, id)) ?? 'setup'
+    link = await issueToken(conn, id, purpose)
+    await recordAudit('invite_resent', { actorId: req.user.id, targetUserId: id, details: { purpose }, req, db: conn })
     await conn.commit()
   } catch (err) {
     await conn.rollback()
@@ -162,8 +200,8 @@ router.post('/:id/resend-invite', requireRole('admin', 'hr'), validate(schemas.r
     conn.release()
   }
 
-  notify.userInvited({ userId: id, token: invite.token, actorId: req.user.id })
-  res.json({ user: await findUser(id), inviteExpiresAt: invite.expiresAt })
+  notify.passwordLink({ userId: id, token: link.token, purpose, actorId: req.user.id })
+  res.json({ user: await findUser(id), password_delivery: EMAIL })
 })
 
 // Step 1 of a reset: who may reset whom. Runs before the body is looked at.
@@ -185,12 +223,15 @@ async function checkResetAllowed(req, res, next) {
   next()
 }
 
-// POST /api/users/:id/reset-password (admin and HR), no body → 200 { user, temporaryPassword }
-// Replaces the password with a new temporary one (the old one stops working at once) and sets must_change_password,
-// so the user has to choose their own at the next login. Deactivated accounts can be reset too. It also unlocks an
-// account locked by too many wrong passwords.
-// Sessions: raises session_version, so every session the user had before the reset ends at once (401 on the next
-// request); they log in again with the temporary password.
+// POST /api/users/:id/reset-password (admin and HR), no body
+// The old password stops working at once, must_change_password is set, and the account is unlocked (wrong-password
+// count and lock cleared). Deactivated accounts can be reset too.
+// Email set up → 200 { user, password_delivery: 'email' }: the password becomes one nobody knows, and the user gets a
+//   one-time 'reset' link (48 hours) by email after the commit, to choose a new one.
+// Not set up → 200 { user, temporaryPassword, password_delivery: 'temporary_password' }: a new temporary password,
+//   returned only here, which the user must change at the next login.
+// Sessions: either way every session the user had ends at once (rows revoked, session_version raised; 401 on the next
+// request).
 router.post(
   '/:id/reset-password',
   requireRole('admin', 'hr'),
@@ -200,8 +241,10 @@ router.post(
   async (req, res) => {
     const { id } = req.valid.params
 
-    const temporaryPassword = makeTemporaryPassword()
-    const passwordHash = await bcrypt.hash(temporaryPassword, 10)
+    const byEmail = isEmailConfigured()
+    const temporaryPassword = byEmail ? null : makeTemporaryPassword()
+    const passwordHash = byEmail ? await unusablePasswordHash() : await bcrypt.hash(temporaryPassword, 10)
+    let link = null
     // One transaction: the new hash and flag, and every session of the user ended (their rows revoked, and
     // session_version raised), are saved together or not at all. It also unlocks the account (wrong-password count
     // and lock cleared), so the user can log in with the temporary password straight away.
@@ -215,11 +258,12 @@ router.post(
         [passwordHash, id],
       )
       const ended = await revokeUserSessions(id, { db: conn })
-      // The new temporary password is never logged
+      if (byEmail) link = await issueToken(conn, id, 'reset')
+      // Never the temporary password, the link or its token
       await recordAudit('password_reset', {
         actorId: req.user.id,
         targetUserId: id,
-        details: { sessions_ended: ended },
+        details: { sessions_ended: ended, delivery: byEmail ? EMAIL : TEMPORARY_PASSWORD },
         req,
         db: conn,
       })
@@ -231,7 +275,13 @@ router.post(
       conn.release()
     }
 
-    res.json({ user: await findUser(id), temporaryPassword })
+    const user = await findUser(id)
+    if (!byEmail) {
+      return res.json({ user, temporaryPassword, password_delivery: TEMPORARY_PASSWORD })
+    }
+    // Only after the commit, and not awaited
+    notify.passwordLink({ userId: id, token: link.token, purpose: 'reset', actorId: req.user.id })
+    res.json({ user, password_delivery: EMAIL })
   },
 )
 

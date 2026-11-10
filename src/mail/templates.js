@@ -99,16 +99,17 @@ const ticketSubject = (template, ticket) =>
   fill(template, { id: ticket.id, title: oneLine(ticket.title, SUBJECT_TITLE_LENGTH) })
 const ticketButton = (ticket) => fill(strings.openTicket, { id: ticket.id })
 
-// New account → set-password link (to the new user)
-function invite({ name, email, actor, link, hours }) {
-  const s = strings.invite
+// A one-time password link: purpose 'setup' (new account) or 'reset' (an admin or HR reset the password)
+function passwordLink({ purpose, name, email, actor, link, hours }) {
+  const s = purpose === 'reset' ? strings.passwordReset : strings.accountSetup
   return render({
     subject: s.subject,
     greetingName: name,
     blocks: [
       { text: fill(s.intro, { actor, email }) },
       { button: s.button, link },
-      { text: fill(s.expiry, { hours, actor }) },
+      { text: fill(strings.passwordLink.expiry, { hours }) },
+      { text: strings.passwordLink.unexpected },
     ],
     reason: s.reason,
   })
@@ -178,7 +179,7 @@ function ticketResolved({ recipientName, ticket, actor, link }) {
 }
 
 module.exports = {
-  invite,
+  passwordLink,
   ticketCreated,
   ticketAssigned,
   commentAdded,

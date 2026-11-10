@@ -28,9 +28,15 @@ const validateSetPasswordToken = {
   query: z.object({ token }),
 }
 
-// Same password rule as everywhere else (common.newPassword: 10–72 characters, a letter and a number)
+// new_password only has to be text here (400 otherwise). The password rule (common.newPassword) is checked by the
+// route after the token, and answers 422, so a link sent with a weak password stays unused.
 const setPassword = {
-  body: z.strictObject({ token, new_password: newPassword }),
+  body: z.strictObject({
+    token,
+    new_password: z.string({
+      error: (issue) => (issue.input == null ? 'New password is required' : 'New password must be text'),
+    }),
+  }),
 }
 
 module.exports = { login, changePassword, validateSetPasswordToken, setPassword }

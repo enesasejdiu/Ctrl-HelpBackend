@@ -17,6 +17,7 @@ const {
   auth,
   sessionOf,
   inviteTokenFor,
+  useEmail,
 } = require('./helpers')
 
 // Routes anyone may call without logging in
@@ -233,7 +234,31 @@ describe('blocking until a temporary password is changed', () => {
     expect((await get('/api/tickets', token)).status).toBe(200)
   })
 
-  test('an account created by an admin has no usable password until the emailed link sets one', async () => {
+  test('an account created by an admin (email not set up) is blocked until its temporary password is changed', async () => {
+    const admin = await createUser({ role: 'admin' })
+    const created = await api
+      .post('/api/users')
+      .set(auth(await loginAs(admin)))
+      .send({ name: 'Temp Person', email: 'temp.person@test.local', role: 'employee' })
+    const { temporaryPassword } = created.body
+    expect(created.body.password_delivery).toBe('temporary_password')
+
+    const login = await api
+      .post('/api/auth/login')
+      .send({ email: 'temp.person@test.local', password: temporaryPassword })
+    expect((await get('/api/tickets', sessionOf(login))).body.code).toBe('PASSWORD_CHANGE_REQUIRED')
+
+    const changed = await api
+      .post('/api/auth/change-password')
+      .set(auth(sessionOf(login)))
+      .send({ currentPassword: temporaryPassword, newPassword: 'chosen-by-me1' })
+    expect(changed.status).toBe(200)
+    // The same session continues, now unblocked
+    expect((await get('/api/tickets', sessionOf(login))).status).toBe(200)
+  })
+
+  test('an account created by an admin (email set up) has no usable password until the emailed link sets one', async () => {
+    useEmail(true)
     const admin = await createUser({ role: 'admin' })
     const created = await api
       .post('/api/users')

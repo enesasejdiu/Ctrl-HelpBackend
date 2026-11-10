@@ -2,7 +2,7 @@
 // the commit) and don't await them: the work runs in the background, and an error (a database problem while picking
 // recipients, an SMTP failure) is logged and never reaches the request. A failed email never undoes the change.
 //
-//   userInvited      new account            → the new user (set-password link)
+//   passwordLink     new account or reset   → the user (one-time set-password link; only when email is set up)
 //   ticketCreated    new ticket             → IT: IT_NOTIFY_EMAIL if set, otherwise every active agent
 //   ticketAssigned   assigned / reassigned  → the new assignee
 //   commentAdded     comment by the requester → the assignee, or IT if unassigned
@@ -13,9 +13,9 @@
 // an email address are skipped; each address gets at most one copy.
 // Logs say who, which template and what went wrong, never the SMTP password or the email body (links, tokens).
 const pool = require('../db')
-const { getMailer, redact } = require('./mailer')
+const { getMailer, redact, sendMailSafe } = require('./mailer')
 const templates = require('./templates')
-const { INVITE_HOURS } = require('../passwordSetup')
+const { TOKEN_HOURS } = require('../passwordTokens')
 
 const pending = new Set()
 
@@ -37,13 +37,9 @@ async function settle() {
   while (pending.size > 0) await Promise.all([...pending])
 }
 
-// Sends one email and logs (instead of throwing) if it fails
+// Sends one email; sendMailSafe logs (instead of throwing) if it fails
 async function deliver(template, to, message) {
-  try {
-    await getMailer().sendMail({ to, ...message })
-  } catch (err) {
-    console.error(`[mail] Could not send "${template}" to ${to}: ${redact(err.message, getMailer().config)}`)
-  }
+  await sendMailSafe({ template, to, ...message })
 }
 
 async function loadUser(id) {
@@ -92,20 +88,22 @@ function recipients(people, actor) {
 
 const appUrl = () => getMailer().config.appUrl
 
-// New account → the set-password link, to the new user. `token` is the plain token, which only this email carries.
-function userInvited({ userId, token, actorId }) {
-  inBackground('userInvited', async () => {
+// A one-time password link to the user: purpose 'setup' (new account) or 'reset' (an admin or HR reset it). token is
+// the plain token, which only this email carries. Deactivated users get nothing. Only called when email is set up.
+function passwordLink({ userId, token, purpose, actorId }) {
+  inBackground('passwordLink', async () => {
     const [user, actor] = [await loadUser(userId), await loadUser(actorId)]
     for (const person of recipients([user], null)) {
       const link = templates.links.setPassword(appUrl(), token)
-      const message = templates.invite({
+      const message = templates.passwordLink({
+        purpose,
         name: person.name,
         email: person.email,
         actor: actor?.name ?? 'An administrator',
         link,
-        hours: INVITE_HOURS,
+        hours: TOKEN_HOURS,
       })
-      await deliver('invite', person.email, { ...message, link })
+      await deliver(purpose === 'reset' ? 'passwordReset' : 'accountSetup', person.email, { ...message, link })
     }
   })
 }
@@ -188,4 +186,4 @@ function ticketResolved({ ticketId, actorId }) {
   })
 }
 
-module.exports = { userInvited, ticketCreated, ticketAssigned, commentAdded, ticketResolved, settle }
+module.exports = { passwordLink, ticketCreated, ticketAssigned, commentAdded, ticketResolved, settle }

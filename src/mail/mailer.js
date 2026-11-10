@@ -1,11 +1,12 @@
-// The one place that talks to nodemailer. Everything else sends with sendMail({ to, subject, html, text }) (usually
-// through src/mail/notifications.js, which never lets an email failure reach a request).
+// The one place that talks to nodemailer. Everything else sends with sendMailSafe({ to, subject, html, text, template })
+// (usually through src/mail/notifications.js), which logs a failure instead of throwing, so an email never fails a
+// request. isEmailConfigured() says whether email is set up (then passwords go out as one-time links).
 //
 // What happens to an email depends on config.mail.mode (from src/config.js loadMailConfig):
 //   smtp  real SMTP (SMTP_HOST, ...). The server checks the connection once at startup (verify) and only warns if it
 //         fails, so a mail outage never stops the API.
-//   log   MAIL_ENABLED=false, or no SMTP_HOST in development: the email is printed (to, subject and, outside
-//         production, the link) instead of sent. A local catcher like Mailpit or MailHog is the alternative (README).
+//   log   email is not set up (MAIL_ENABLED is not true, or SMTP_HOST / MAIL_FROM is missing): to and subject are
+//         printed instead of sending; never the body, a link or a token. A local catcher like Mailpit or MailHog is the alternative (README).
 //   test  the test suite: nodemailer's jsonTransport (nothing leaves the process), and every email lands in
 //         getMailer().outbox for assertions.
 // With MAIL_OUTBOX_DIR set (development and tests only), every email is also saved there as a .json file.
@@ -46,15 +47,14 @@ function createMailer(config, { log = console } = {}) {
     fs.writeFileSync(path.join(config.outboxDir, file), JSON.stringify(message, null, 2))
   }
 
-  // Sends one email. Rejects if the SMTP server refuses it; callers decide what that means (notifications.js logs it).
-  // `link` is optional and only used for the log line in log mode.
+  // Sends one email. Rejects if the SMTP server refuses it; use sendMailSafe() unless the caller handles that itself.
+  // `link` is optional and only kept in the test outbox / MAIL_OUTBOX_DIR, never logged.
   async function sendMail({ to, subject, html, text, link }) {
     const message = { from: config.from, to, subject, text, html }
     saveToOutboxDir({ ...message, link })
 
     if (config.mode === 'log') {
-      const shownLink = link && !config.production ? ` link=${link}` : ''
-      log.log(`[mail] Not sent (email is off): to=${to} subject="${subject}"${shownLink}`)
+      log.log(`[mail] Not sent (email is off): to=${to} subject="${subject}"`)
       return { logged: true }
     }
 
@@ -82,10 +82,23 @@ function createMailer(config, { log = console } = {}) {
     }
   }
 
+  // Sends and never throws: a failure is logged (recipient, template, error; never the SMTP password, the body, a link
+  // or a token) and false is returned
+  async function sendMailSafe({ template = 'email', ...message }) {
+    try {
+      await sendMail(message)
+      return true
+    } catch (err) {
+      log.error(`[mail] Could not send "${template}" to ${message.to}: ${redact(err.message, config)}`)
+      return false
+    }
+  }
+
   return {
     config,
     outbox,
     sendMail,
+    sendMailSafe,
     verify,
     // Tests: swap in a transport that fails, to check that a failed email never breaks a request
     setTransport(replacement) {
@@ -112,4 +125,7 @@ module.exports = {
   resetMailer,
   redact,
   sendMail: (message) => getMailer().sendMail(message),
+  sendMailSafe: (message) => getMailer().sendMailSafe(message),
+  // Email is set up (MAIL_ENABLED=true, SMTP_HOST and MAIL_FROM): decided from the server's settings only
+  isEmailConfigured: () => getMailer().config.emailConfigured,
 }

@@ -224,6 +224,7 @@ describe('POST /api/users/:id/reset-password: refusals change nothing', () => {
     expect(await dbSnapshot()).toEqual(before)
   })
 
+  // Email isn't set up in these tests, so a reset gives a temporary password (password-links.test.js has email mode)
   test('success returns the user and the temporary password, never a hash', async () => {
     const target = await createUser()
     const res = await reset(target.id, adminToken)
@@ -231,6 +232,7 @@ describe('POST /api/users/:id/reset-password: refusals change nothing', () => {
     expect(res.body).toEqual({
       user: expect.objectContaining({ id: target.id, must_change_password: true }),
       temporaryPassword: expect.stringMatching(/^[A-Za-z0-9]{12,}$/),
+      password_delivery: 'temporary_password',
     })
     expectNoPasswordHash(res.body)
   })

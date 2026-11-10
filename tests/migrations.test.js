@@ -103,26 +103,21 @@ describe('schema', () => {
     expect(String(version.dflt)).toBe('0')
   })
 
-  test('password_setup_tokens stores a unique 64-character hash per token, deleted with its user (migration 010)', async () => {
-    expect(await column('password_setup_tokens', 'token_hash')).toMatchObject({ type: 'char(64)', nullable: 'NO' })
-    expect(await column('password_setup_tokens', 'expires_at')).toMatchObject({ type: 'datetime', nullable: 'NO' })
-    expect(await column('password_setup_tokens', 'used_at')).toMatchObject({ type: 'datetime', nullable: 'YES' })
+  test('password_tokens stores a unique 64-character hash and a purpose per token, deleted with its user (migrations 010, 011)', async () => {
+    expect(await column('password_tokens', 'token_hash')).toMatchObject({ type: 'char(64)', nullable: 'NO' })
+    expect(await column('password_tokens', 'purpose')).toMatchObject({ type: "enum('setup','reset')", nullable: 'NO' })
+    expect(await column('password_tokens', 'expires_at')).toMatchObject({ type: 'datetime', nullable: 'NO' })
+    expect(await column('password_tokens', 'used_at')).toMatchObject({ type: 'datetime', nullable: 'YES' })
     const [{ insertId: userId }] = await db.query(
       "INSERT INTO users (name, email, password_hash) VALUES ('T', 't.tokens@test.local', 'x')",
     )
     const hash = 'a'.repeat(64)
-    await db.query('INSERT INTO password_setup_tokens (user_id, token_hash, expires_at) VALUES (?, ?, NOW())', [
-      userId,
-      hash,
-    ])
+    await db.query('INSERT INTO password_tokens (user_id, token_hash, expires_at) VALUES (?, ?, NOW())', [userId, hash])
     await expect(
-      db.query('INSERT INTO password_setup_tokens (user_id, token_hash, expires_at) VALUES (?, ?, NOW())', [
-        userId,
-        hash,
-      ]),
+      db.query('INSERT INTO password_tokens (user_id, token_hash, expires_at) VALUES (?, ?, NOW())', [userId, hash]),
     ).rejects.toMatchObject({ code: 'ER_DUP_ENTRY' })
     await db.query('DELETE FROM users WHERE id = ?', [userId])
-    const [left] = await db.query('SELECT id FROM password_setup_tokens WHERE user_id = ?', [userId])
+    const [left] = await db.query('SELECT id FROM password_tokens WHERE user_id = ?', [userId])
     expect(left).toHaveLength(0)
   })
 
@@ -141,8 +136,8 @@ describe('schema', () => {
 })
 
 describe('up → down → up', () => {
-  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 010 down to 003
-  test('rolling back 010, 009, 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
+  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 011 down to 003
+  test('rolling back 011, 010, 009, 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
     const { db, dbName } = await newDatabase()
     const schema = async () => {
       const tables = {}
@@ -158,16 +153,41 @@ describe('up → down → up', () => {
       (await db.query('SELECT filename FROM schema_migrations ORDER BY filename'))[0].map((r) => r.filename)
 
     const before = await schema()
-    for (let i = 0; i < 8; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
+    for (let i = 0; i < 9; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
     expect(await applied()).toEqual(['001_initial.sql', '002_hr_role_and_password_change.sql'])
     const [departments] = await db.query("SHOW TABLES LIKE 'departments'")
     expect(departments).toHaveLength(0)
-    const [tokens] = await db.query("SHOW TABLES LIKE 'password_setup_tokens'")
-    expect(tokens).toHaveLength(0)
+    for (const table of ['password_setup_tokens', 'password_tokens']) {
+      const [tokens] = await db.query(`SHOW TABLES LIKE '${table}'`)
+      expect(tokens).toHaveLength(0)
+    }
 
     await quietly(() => migrate({ dbName, backupFirst: false }))
     expect(await schema()).toEqual(before)
-    expect((await applied()).at(-1)).toBe('010_password_setup_tokens.sql')
+    expect((await applied()).at(-1)).toBe('011_password_tokens.sql')
+  })
+
+  test('011 keeps the links issued under 010 as setup links; rolling it back drops only reset links', async () => {
+    const { db, dbName } = await newDatabase('010')
+    const [{ insertId: userId }] = await db.query(
+      "INSERT INTO users (name, email, password_hash) VALUES ('T', 't.011@test.local', 'x')",
+    )
+    await db.query('INSERT INTO password_setup_tokens (user_id, token_hash, expires_at) VALUES (?, ?, NOW())', [
+      userId,
+      'b'.repeat(64),
+    ])
+
+    await quietly(() => migrate({ dbName, backupFirst: false }))
+    const [[kept]] = await db.query('SELECT purpose FROM password_tokens WHERE user_id = ?', [userId])
+    expect(kept.purpose).toBe('setup')
+
+    await db.query(
+      "INSERT INTO password_tokens (user_id, token_hash, purpose, expires_at) VALUES (?, ?, 'reset', NOW())",
+      [userId, 'c'.repeat(64)],
+    )
+    await quietly(() => rollback({ dbName, backupFirst: false }))
+    const [left] = await db.query('SELECT token_hash FROM password_setup_tokens WHERE user_id = ?', [userId])
+    expect(left.map((r) => r.token_hash)).toEqual(['b'.repeat(64)])
   })
 
   test('a migration without a rollback file is refused, not half-undone', async () => {

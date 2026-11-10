@@ -16,8 +16,8 @@ const message = {
   link: 'http://localhost:5173/set-password?token=tok123',
 }
 
-describe('log mode (development with MAIL_ENABLED=false or no SMTP host)', () => {
-  test('logs to, subject and the link instead of sending, and never the body', async () => {
+describe('log mode (email not set up)', () => {
+  test('logs to and subject instead of sending; never the body, the link or its token', async () => {
     const { mail } = loadMailConfig({ NODE_ENV: 'development', MAIL_ENABLED: 'false', SMTP_HOST: 'smtp.example.com' })
     expect(mail.mode).toBe('log')
     const log = fakeLog()
@@ -28,12 +28,26 @@ describe('log mode (development with MAIL_ENABLED=false or no SMTP host)', () =>
     const [line] = log.log.mock.calls[0]
     expect(line).toContain('to=ann@test.local')
     expect(line).toContain('subject="Set your TicketFlow password"')
-    expect(line).toContain('link=http://localhost:5173/set-password?token=tok123')
+    expect(line).not.toContain('set-password')
+    expect(line).not.toContain('tok123')
     expect(line).not.toContain('secret body text')
   })
 
-  test('development without SMTP_HOST logs too', () => {
-    expect(loadMailConfig({ NODE_ENV: 'development' }).mail.mode).toBe('log')
+  test('MAIL_ENABLED=true without SMTP_HOST or MAIL_FROM logs too, and email does not count as set up', () => {
+    for (const env of [
+      { NODE_ENV: 'development' },
+      { NODE_ENV: 'development', MAIL_ENABLED: 'true', MAIL_FROM: 'TicketFlow <a@b.example>' },
+      { NODE_ENV: 'development', MAIL_ENABLED: 'true', SMTP_HOST: 'smtp.example.com' },
+    ]) {
+      expect(loadMailConfig(env).mail).toMatchObject({ mode: 'log', emailConfigured: false })
+    }
+  })
+
+  test('email is set up only with MAIL_ENABLED=true, SMTP_HOST and MAIL_FROM', () => {
+    const env = { NODE_ENV: 'development', SMTP_HOST: 'smtp.example.com', MAIL_FROM: 'TicketFlow <a@b.example>' }
+    expect(loadMailConfig({ ...env, MAIL_ENABLED: 'true' }).mail).toMatchObject({ mode: 'smtp', emailConfigured: true })
+    expect(loadMailConfig({ ...env, MAIL_ENABLED: 'false' }).mail.emailConfigured).toBe(false)
+    expect(loadMailConfig(env).mail.emailConfigured).toBe(false)
   })
 
   test('in production (MAIL_ENABLED=false) the link is left out of the log', async () => {
@@ -58,6 +72,7 @@ describe('the startup check (verify)', () => {
       MAIL_ENABLED: 'true',
       SMTP_HOST: '127.0.0.1',
       SMTP_PORT: String(port),
+      MAIL_FROM: 'TicketFlow <no-reply@example.com>',
       SMTP_USER: 'mailer',
       SMTP_PASS: 'smtp-pass-do-not-log',
     })
@@ -74,6 +89,25 @@ describe('the startup check (verify)', () => {
     const log = fakeLog()
     await createMailer(loadMailConfig({ NODE_ENV: 'development' }).mail, { log }).verify()
     expect(log.log.mock.calls[0][0]).toMatch(/Email is off/)
+  })
+})
+
+describe('sendMailSafe', () => {
+  test('a failed send is logged with recipient and template, without secrets, and never throws', async () => {
+    const { mail } = loadMailConfig({ NODE_ENV: 'test', SMTP_USER: 'mailer', SMTP_PASS: 'smtp-pass-do-not-log' })
+    const log = fakeLog()
+    const mailer = createMailer(mail, { log })
+    mailer.setTransport({
+      sendMail: async () => {
+        throw new Error('535 auth failed for smtp-pass-do-not-log at https://x/set-password?token=tok123')
+      },
+    })
+    await expect(mailer.sendMailSafe({ ...message, template: 'accountSetup' })).resolves.toBe(false)
+    const [line] = log.error.mock.calls[0]
+    expect(line).toContain('Could not send "accountSetup" to ann@test.local')
+    expect(line).not.toContain('smtp-pass-do-not-log')
+    expect(line).not.toContain('tok123')
+    expect(line).not.toContain('secret body text')
   })
 })
 

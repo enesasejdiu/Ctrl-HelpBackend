@@ -10,7 +10,8 @@ const pool = require('../db')
 const { HttpError } = require('../middleware/errors')
 const { requireAuth } = require('../middleware/auth')
 const { loginRateLimit, setPasswordRateLimit } = require('../middleware/rateLimit')
-const { lookUpToken } = require('../passwordSetup')
+const { lookUpToken } = require('../passwordTokens')
+const { newPassword: newPasswordRule } = require('../schemas/common')
 const { SESSION_HOURS, SESSION_COOKIE, setSessionCookies, clearSessionCookies } = require('../session')
 const { createSession, revokeSession, revokeUserSessions } = require('../sessionStore')
 const { recordAudit } = require('../audit')
@@ -267,16 +268,19 @@ router.post('/change-password', requireAuth, validate(schemas.changePassword), a
   res.json({ message: 'Password changed', user: publicUser({ ...user, must_change_password: false }) })
 })
 
-// What a set-password link that can't be used answers, per state of its token (see src/passwordSetup.js)
+// What a one-time password link that can't be used answers, per state of its token (see src/passwordTokens.js)
 const TOKEN_PROBLEMS = {
-  invalid: ['This link is not valid. It may have been replaced by a newer one.', 'TOKEN_INVALID'],
-  expired: ['This link has expired. Ask an admin or HR to send you a new one.', 'TOKEN_EXPIRED'],
-  used: ['This link has already been used. Log in with the password you set.', 'TOKEN_USED'],
+  invalid: ['This link is not valid. Ask your administrator or HR for a new link.', 'TOKEN_INVALID'],
+  expired: ['This link has expired. Ask your administrator or HR for a new link.', 'TOKEN_EXPIRED'],
+  used: ['This link has already been used. Ask your administrator or HR for a new link.', 'TOKEN_USED'],
 }
 
-// GET /api/auth/set-password/validate?token= → 200 { status: 'valid', name, email, expires_at }
-//                                           or 200 { status: 'expired' | 'used' | 'invalid', message, code }
+// GET /api/auth/set-password/validate?token= → 200 { status, purpose, ... }
+//   valid:                     { status: 'valid', purpose: 'setup' | 'reset', email, expires_at }
+//   expired / used / invalid:  { status, purpose: null, message, code }
 // Public. Tells the set-password page whether to show the form, before the user types anything. It changes nothing.
+// An unknown token, one replaced by a newer link and one of a deactivated account all answer the same 'invalid'
+// (one indexed lookup each), and a link that can't be used never reveals whose it is.
 router.get(
   '/set-password/validate',
   setPasswordRateLimit,
@@ -284,25 +288,26 @@ router.get(
   async (req, res) => {
     const { status, row } = await lookUpToken(pool, req.valid.query.token)
     if (status === 'valid') {
-      return res.json({ status, name: row.name, email: row.email, expires_at: row.expires_at })
+      return res.json({ status, purpose: row.purpose, email: row.email, expires_at: row.expires_at })
     }
     const [message, code] = TOKEN_PROBLEMS[status]
-    res.json({ status, message, code })
+    res.json({ status, purpose: null, message, code })
   },
 )
 
 // POST /api/auth/set-password { token, new_password } → 200 { message }
-// Public (the user has no password yet, so no session; requireAuth and its must_change_password check don't apply).
-// Sets the password (same rule as change-password), clears must_change_password, marks the link used and removes the
-// user's other unused links. The user then logs in normally; no session is started here.
-// A link that can't be used → 400 TOKEN_INVALID / TOKEN_EXPIRED / TOKEN_USED. A weak password → 400 with the rule.
-// Sessions: like a reset, it ends any session the user still has (rows revoked, session_version raised; e.g. one
-// opened with a temporary password after a reset), and clears a login lock.
+// Public: the person has no usable password (a new account, or one reset by email), so no session. requireAuth and its
+// must_change_password check don't apply.
+// One transaction: check the token (locked, so the same link sent twice at once works only once), check the password
+// rule, set the hash, clear must_change_password, mark the token used, and remove the user's other unused tokens.
+// The user is not logged in: they log in afterwards with the new password.
+//   400 TOKEN_INVALID / TOKEN_EXPIRED / TOKEN_USED   a link that can't be used
+//   422 WEAK_PASSWORD { errors: [{ field: 'new_password', message }] }   the token stays unused
+// Sessions: like a reset, it ends any session the user still has (rows revoked, session_version raised), and clears
+// a login lock.
 router.post('/set-password', setPasswordRateLimit, validate(schemas.setPassword), async (req, res) => {
-  const { token, new_password: newPassword } = req.valid.body
-  const passwordHash = await bcrypt.hash(newPassword, 10)
+  const { token, new_password: password } = req.valid.body
 
-  // The token row stays locked (FOR UPDATE) until the commit, so the same link sent twice at once works only once
   const conn = await pool.getConnection()
   try {
     await conn.beginTransaction()
@@ -311,16 +316,29 @@ router.post('/set-password', setPasswordRateLimit, validate(schemas.setPassword)
       const [message, code] = TOKEN_PROBLEMS[status]
       throw new HttpError(400, message, code)
     }
+    // The shared rule (10–72 characters, a letter and a number), checked once the link is known to be good
+    const rule = newPasswordRule.safeParse(password)
+    if (!rule.success) {
+      const message = rule.error.issues[0].message
+      throw new HttpError(422, message, 'WEAK_PASSWORD', { errors: [{ field: 'new_password', message }] })
+    }
+    const passwordHash = await bcrypt.hash(password, 10)
     await conn.query(
       `UPDATE users SET password_hash = ?, must_change_password = FALSE, failed_login_count = 0, locked_until = NULL,
          session_version = session_version + 1, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
       [passwordHash, row.user_id],
     )
-    await conn.query('UPDATE password_setup_tokens SET used_at = ? WHERE id = ?', [new Date(Date.now()), row.id])
-    await conn.query('DELETE FROM password_setup_tokens WHERE user_id = ? AND used_at IS NULL', [row.user_id])
+    await conn.query('UPDATE password_tokens SET used_at = ? WHERE id = ?', [new Date(Date.now()), row.id])
+    await conn.query('DELETE FROM password_tokens WHERE user_id = ? AND used_at IS NULL', [row.user_id])
     await revokeUserSessions(row.user_id, { db: conn })
-    await recordAudit('password_set_with_link', { actorId: row.user_id, targetUserId: row.user_id, req, db: conn })
+    await recordAudit('password_set_with_link', {
+      actorId: row.user_id,
+      targetUserId: row.user_id,
+      details: { purpose: row.purpose },
+      req,
+      db: conn,
+    })
     await conn.commit()
   } catch (err) {
     await conn.rollback()

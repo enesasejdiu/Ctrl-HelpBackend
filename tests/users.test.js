@@ -1,5 +1,6 @@
 // Tests for /api/users: creating accounts (admin and HR), listing them, and HR's limits when changing them.
 // Also checks that HR is treated as an employee everywhere else (tickets, stats).
+const bcrypt = require('bcryptjs')
 const crypto = require('crypto')
 const pool = require('../src/db')
 const {
@@ -14,6 +15,7 @@ const {
   sessionOf,
   sentMail,
   inviteTokenFor,
+  useEmail,
 } = require('./helpers')
 
 let emailCount = 0
@@ -40,6 +42,9 @@ async function createDepartment() {
 
 let admin, hr, adminToken, hrToken
 
+// Email is off unless a test switches it on (useEmail)
+afterEach(() => useEmail(false))
+
 beforeEach(async () => {
   await resetData()
   admin = await createUser({ role: 'admin' })
@@ -49,7 +54,12 @@ beforeEach(async () => {
 })
 
 describe('POST /api/users', () => {
-  test.each(['employee', 'agent', 'hr', 'admin'])('admin creates a %s, who gets a set-password link', async (role) => {
+  const ROLES_AND_MODES = ['employee', 'agent', 'hr', 'admin'].flatMap((role) => [
+    [role, 'email'],
+    [role, 'temporary_password'],
+  ])
+  test.each(ROLES_AND_MODES)('admin creates a %s (password delivery: %s)', async (role, delivery) => {
+    useEmail(delivery === 'email')
     const departmentId = await createDepartment()
     const body = newUserBody(role, { department_id: departmentId })
     const res = await api.post('/api/users').set(auth(adminToken)).send(body)
@@ -66,16 +76,28 @@ describe('POST /api/users', () => {
     })
     expect(res.body.user).not.toHaveProperty('password_hash')
 
-    // No password of any kind in the response; the new user gets an email with a link instead
-    expect(res.body).not.toHaveProperty('temporaryPassword')
-    expect(res.body).not.toHaveProperty('temporary_password')
-    const mail = await sentMail()
-    expect(mail.map((m) => m.to)).toEqual([body.email])
-    expect(mail[0].link).toMatch(/^http:\/\/localhost:5173\/set-password\?token=[A-Za-z0-9_-]{43}$/)
-
+    expect(res.body.password_delivery).toBe(delivery)
     const row = await dbUser(res.body.user.id)
     expect(row.must_change_password).toBe(1)
-    expect(row.password_hash).toMatch(/^\$2[aby]\$10\$/) // a real bcrypt hash, of a password nobody knows
+    expect(row.password_hash).toMatch(/^\$2[aby]\$10\$/)
+    const mail = await sentMail()
+
+    if (delivery === 'email') {
+      // No password of any kind in the response; the new user gets an email with a link instead
+      expect(res.body).not.toHaveProperty('temporaryPassword')
+      expect(res.body).not.toHaveProperty('temporary_password')
+      expect(mail.map((m) => m.to)).toEqual([body.email])
+      expect(mail[0].link).toMatch(/^http:\/\/localhost:5173\/set-password\?token=[A-Za-z0-9_-]{43}$/)
+    } else {
+      // 12+ characters, letters and digits only, at least one of each; only its bcrypt hash is stored; no email
+      const { temporaryPassword } = res.body
+      expect(temporaryPassword).toMatch(/^[A-Za-z0-9]{12,}$/)
+      expect(temporaryPassword).toMatch(/[A-Za-z]/)
+      expect(temporaryPassword).toMatch(/\d/)
+      expect(row.password_hash).not.toBe(temporaryPassword)
+      expect(await bcrypt.compare(temporaryPassword, row.password_hash)).toBe(true)
+      expect(mail).toEqual([])
+    }
   })
 
   test('HR creates an employee', async () => {
@@ -141,7 +163,16 @@ describe('POST /api/users', () => {
     expect(await userCount()).toBe(before)
   })
 
-  test('the new account cannot log in until the link sets a password; then it logs in normally', async () => {
+  test('the temporary password logs in (email not set up), and the user must change it', async () => {
+    const created = await api.post('/api/users').set(auth(hrToken)).send(newUserBody('employee'))
+    const { user, temporaryPassword } = created.body
+    const login = await api.post('/api/auth/login').send({ email: user.email, password: temporaryPassword })
+    expect(login.status).toBe(200)
+    expect(login.body.user).toMatchObject({ id: user.id, must_change_password: true })
+  })
+
+  test('email set up: the new account cannot log in until the link sets a password; then it logs in normally', async () => {
+    useEmail(true)
     const created = await api.post('/api/users').set(auth(hrToken)).send(newUserBody('employee'))
     const { user } = created.body
 
@@ -159,7 +190,14 @@ describe('POST /api/users', () => {
     expect(me.body.must_change_password).toBe(false)
   })
 
-  test('every new account gets a different link, and a different unusable password hash', async () => {
+  test('every new account gets a different temporary password (email not set up)', async () => {
+    const a = await api.post('/api/users').set(auth(adminToken)).send(newUserBody('employee'))
+    const b = await api.post('/api/users').set(auth(adminToken)).send(newUserBody('employee'))
+    expect(a.body.temporaryPassword).not.toBe(b.body.temporaryPassword)
+  })
+
+  test('email set up: every new account gets a different link, and a different unusable password hash', async () => {
+    useEmail(true)
     const a = await api.post('/api/users').set(auth(adminToken)).send(newUserBody('employee'))
     const b = await api.post('/api/users').set(auth(adminToken)).send(newUserBody('employee'))
     expect(await inviteTokenFor(a.body.user.email)).not.toBe(await inviteTokenFor(b.body.user.email))
@@ -665,44 +703,50 @@ describe('PATCH /api/users/:id never removes the last active admin', () => {
 })
 
 describe('POST /api/users: the response, the invitation, and refusals', () => {
-  test('201 returns the user fields and when the link expires: no password and no hash', async () => {
-    const departmentId = await createDepartment()
-    const res = await api
-      .post('/api/users')
-      .set(auth(adminToken))
-      .send(newUserBody('employee', { department_id: departmentId, job_title: 'Clerk' }))
+  test.each(['email', 'temporary_password'])(
+    '201 returns the user fields and how the password is delivered (%s), and no hash',
+    async (delivery) => {
+      useEmail(delivery === 'email')
+      const departmentId = await createDepartment()
+      const res = await api
+        .post('/api/users')
+        .set(auth(adminToken))
+        .send(newUserBody('employee', { department_id: departmentId, job_title: 'Clerk' }))
 
-    expect(res.status).toBe(201)
-    expect(Object.keys(res.body).sort()).toEqual(['inviteExpiresAt', 'user'])
-    const hoursLeft = (new Date(res.body.inviteExpiresAt) - Date.now()) / 3600000
-    expect(hoursLeft).toBeGreaterThan(71.9)
-    expect(hoursLeft).toBeLessThanOrEqual(72)
-    expect(res.body.user).toEqual(
-      expect.objectContaining({
-        id: expect.any(Number),
-        email: expect.any(String),
-        name: expect.any(String),
-        role: 'employee',
-        department_id: departmentId,
-        job_title: 'Clerk',
-        must_change_password: true,
-        created_at: expect.any(String),
-      }),
-    )
-    expectNoPasswordHash(res.body)
-  })
+      expect(res.status).toBe(201)
+      expect(Object.keys(res.body).sort()).toEqual(
+        delivery === 'email' ? ['password_delivery', 'user'] : ['password_delivery', 'temporaryPassword', 'user'],
+      )
+      expect(res.body.password_delivery).toBe(delivery)
+      expect(res.body.user).toEqual(
+        expect.objectContaining({
+          id: expect.any(Number),
+          email: expect.any(String),
+          name: expect.any(String),
+          role: 'employee',
+          department_id: departmentId,
+          job_title: 'Clerk',
+          must_change_password: true,
+          created_at: expect.any(String),
+        }),
+      )
+      expectNoPasswordHash(res.body)
+    },
+  )
 
-  test('only a hash of the link token is stored, never the token itself', async () => {
+  test('email set up: only a hash of the link token is stored, never the token itself', async () => {
+    useEmail(true)
     const res = await api.post('/api/users').set(auth(hrToken)).send(newUserBody('employee'))
     const token = await inviteTokenFor(res.body.user.email)
-    const [rows] = await pool.query('SELECT * FROM password_setup_tokens WHERE user_id = ?', [res.body.user.id])
+    const [rows] = await pool.query('SELECT * FROM password_tokens WHERE user_id = ?', [res.body.user.id])
     expect(rows).toHaveLength(1)
     expect(rows[0].token_hash).toBe(crypto.createHash('sha256').update(token).digest('hex'))
     expect(JSON.stringify(rows)).not.toContain(token)
     expect(rows[0].used_at).toBeNull()
   })
 
-  test('refused requests send no email', async () => {
+  test('refused requests send no email (email set up)', async () => {
+    useEmail(true)
     await api.post('/api/users').set(auth(hrToken)).send(newUserBody('admin')).expect(403)
     await api
       .post('/api/users')
@@ -749,7 +793,22 @@ describe('POST /api/users: the response, the invitation, and refusals', () => {
     expect(await dbSnapshot()).toEqual(before)
   })
 
-  test('the link token is never written to the console', async () => {
+  test('the temporary password is never written to the console (email not set up)', async () => {
+    const spies = ['log', 'info', 'warn', 'error', 'debug'].map((level) =>
+      jest.spyOn(console, level).mockImplementation(() => {}),
+    )
+    try {
+      const res = await api.post('/api/users').set(auth(adminToken)).send(newUserBody('employee'))
+      expect(res.status).toBe(201)
+      const written = spies.flatMap((spy) => spy.mock.calls.flat().map(String)).join('\n')
+      expect(written).not.toContain(res.body.temporaryPassword)
+    } finally {
+      spies.forEach((spy) => spy.mockRestore())
+    }
+  })
+
+  test('email set up: the link token is never written to the console', async () => {
+    useEmail(true)
     const spies = ['log', 'info', 'warn', 'error', 'debug'].map((level) =>
       jest.spyOn(console, level).mockImplementation(() => {}),
     )
