@@ -51,7 +51,7 @@ async function rollback({ dbName = process.env.DB_NAME, backupFirst = true } = {
       await connection.query(sql)
     } catch (err) {
       const restore = backupFile ? ` If it changed anything, restore backups/${backupFile}.` : ''
-      throw new Error(`Rolling back ${latest.filename} failed: ${err.message}.${restore}`)
+      throw new Error(`Rolling back ${latest.filename} failed: ${err.message}.${restore}`, { cause: err })
     }
     await connection.query('DELETE FROM schema_migrations WHERE filename = ?', [latest.filename])
     console.log(`Rolled back ${latest.filename}`)
