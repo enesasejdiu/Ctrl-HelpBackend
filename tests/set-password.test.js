@@ -200,6 +200,19 @@ describe('POST /api/auth/set-password', () => {
     expectError(await setPassword(extra), 400, 'TOKEN_INVALID')
   })
 
+  test('ends any session the user still had (e.g. one opened with a temporary password)', async () => {
+    const flagged = await createUser({ mustChangePassword: true })
+    const session = await loginAs(flagged)
+    expect((await api.get('/api/auth/me').set(auth(session))).status).toBe(200)
+
+    await api.post(`/api/users/${flagged.id}/resend-invite`).set(auth(admin.token)).expect(200)
+    await setPassword(await inviteTokenFor(flagged.email)).expect(200)
+
+    expectError(await api.get('/api/auth/me').set(auth(session)), 401, undefined)
+    const [open] = await pool.query('SELECT id FROM sessions WHERE user_id = ? AND revoked_at IS NULL', [flagged.id])
+    expect(open).toHaveLength(0)
+  })
+
   test('needs no session and no CSRF header', async () => {
     const { token } = await invite()
     const res = await api.post('/api/auth/set-password').send({ token, new_password: 'my-own-pass1' })

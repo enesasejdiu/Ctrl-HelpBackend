@@ -281,7 +281,16 @@ async function seed({ force = process.argv.includes('--force') } = {}) {
   const connection = await pool.getConnection()
   try {
     await connection.query('SET FOREIGN_KEY_CHECKS = 0')
-    for (const table of ['ticket_history', 'comments', 'tickets', 'priorities', 'categories', 'users', 'departments']) {
+    for (const table of [
+      'sessions',
+      'ticket_history',
+      'comments',
+      'tickets',
+      'priorities',
+      'categories',
+      'users',
+      'departments',
+    ]) {
       await connection.query(`TRUNCATE TABLE ${table}`)
     }
   } finally {

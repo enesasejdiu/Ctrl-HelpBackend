@@ -1,7 +1,6 @@
-// Ending sessions (users.session_version, migration 007): every token carries the version it was issued with, and
-// requireAuth refuses it once the user's version has moved on. A password change, a password reset, deactivation and
-// a role change raise the version; logout and ordinary edits don't. The person who changes their own password gets a
-// fresh session straight away.
+// Ending sessions: server-side session rows (migration 008) and users.session_version (migration 007). A password
+// change ends the user's other sessions and keeps the current one; a password reset, deactivation and a role change
+// end all of them; ordinary edits end none. Logout and "log out everywhere" are in tests/server-sessions.test.js.
 const jwt = require('jsonwebtoken')
 const pool = require('../src/db')
 const { api, resetData, createUser, loginAs, auth, dbUser, expectError, sessionOf } = require('./helpers')
@@ -38,7 +37,7 @@ const browserMe = (browser) => asBrowser(api.get('/api/auth/me'), browser)
 const patchUser = (id, token, body) => api.patch(`/api/users/${id}`).set(auth(token)).send(body)
 
 describe('changing your own password', () => {
-  test('in the browser: the changing browser gets fresh cookies and stays logged in; its old cookie is ended', async () => {
+  test('in the browser: the changing browser keeps its session and cookies, and stays logged in', async () => {
     const user = await createUser()
     const browser = await browserLogin(user)
 
@@ -47,22 +46,17 @@ describe('changing your own password', () => {
       newPassword: 'Brand-new-pass1',
     })
     expect(res.status).toBe(200)
-    const fresh = cookiesOf(res)
-    expect(fresh.tf_session).toBe(sessionOf(res))
-    expect(fresh.tf_csrf).toMatch(/^[0-9a-f]{64}$/)
+    expect(cookiesOf(res)).toEqual({}) // no new cookies: the current session continues
 
-    const freshBrowser = { session: fresh.tf_session, csrf: fresh.tf_csrf }
-    expect((await browserMe(freshBrowser)).status).toBe(200)
-    // A change (POST) works too, so the new CSRF cookie is accepted
-    const ticket = await asBrowser(api.post('/api/tickets'), freshBrowser).send({
+    expect((await browserMe(browser)).status).toBe(200)
+    // A change (POST) works too, with the same CSRF cookie
+    const ticket = await asBrowser(api.post('/api/tickets'), browser).send({
       title: 'Printer broken',
       description: 'It prints blank pages',
       category_id: 1,
       priority_id: 1,
     })
     expect(ticket.status).toBe(201)
-
-    expectError(await browserMe(browser), 401, undefined, ENDED)
   })
 
   test("ends the user's sessions in other browsers and devices", async () => {
@@ -107,13 +101,21 @@ describe('changing your own password', () => {
     expect((await dbUser(user.id)).session_version).toBe(0)
   })
 
-  test('raises session_version by exactly 1', async () => {
+  test('revokes the other session rows, keeps the current one, and leaves session_version alone', async () => {
     const user = await createUser()
+    const current = await loginAs(user)
+    await loginAs(user)
+    await loginAs(user)
     await api
       .post('/api/auth/change-password')
-      .set(auth(await loginAs(user)))
+      .set(auth(current))
       .send({ currentPassword: user.password, newPassword: 'Brand-new-pass1' })
-    expect((await dbUser(user.id)).session_version).toBe(1)
+
+    const [rows] = await pool.query('SELECT id, revoked_at FROM sessions WHERE user_id = ?', [user.id])
+    const currentSid = jwt.decode(current).sid
+    expect(rows.filter((r) => r.revoked_at === null).map((r) => r.id)).toEqual([currentSid])
+    expect(rows.filter((r) => r.revoked_at !== null)).toHaveLength(2)
+    expect((await dbUser(user.id)).session_version).toBe(0)
   })
 })
 
@@ -265,26 +267,28 @@ describe('what does not end sessions', () => {
   })
 })
 
-describe('the session_version check in requireAuth', () => {
-  test('a token from before migration 007 (no session_version) works while the version is 0', async () => {
-    const user = await createUser()
-    const oldStyle = jwt.sign({ id: user.id, name: user.name, role: user.role }, process.env.JWT_SECRET, {
+describe('the session_version check in requireAuth (kept next to the server-side session)', () => {
+  // Hand-made tokens use the sid of a real, active session, so only the version decides
+  async function signed(user, claims) {
+    const { sid } = jwt.decode(await loginAs(user))
+    return jwt.sign({ id: user.id, name: user.name, role: user.role, sid, ...claims }, process.env.JWT_SECRET, {
       expiresIn: '1h',
     })
-    expect((await me(oldStyle)).status).toBe(200)
+  }
+
+  test('a token without session_version counts as version 0', async () => {
+    const user = await createUser()
+    const noVersion = await signed(user, {})
+    expect((await me(noVersion)).status).toBe(200)
 
     await pool.query('UPDATE users SET session_version = 1 WHERE id = ?', [user.id])
-    expectError(await me(oldStyle), 401, undefined, ENDED)
+    expectError(await me(noVersion), 401, undefined, ENDED)
   })
 
   test('a token with a different version is refused, even a higher one', async () => {
     const user = await createUser()
-    const sign = (version) =>
-      jwt.sign({ id: user.id, name: user.name, role: user.role, session_version: version }, process.env.JWT_SECRET, {
-        expiresIn: '1h',
-      })
-    expect((await me(sign(0))).status).toBe(200)
-    expectError(await me(sign(1)), 401, undefined, ENDED)
+    expect((await me(await signed(user, { session_version: 0 }))).status).toBe(200)
+    expectError(await me(await signed(user, { session_version: 1 })), 401, undefined, ENDED)
   })
 
   test('login puts the current version in the token', async () => {

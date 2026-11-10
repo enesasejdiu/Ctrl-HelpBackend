@@ -103,7 +103,7 @@ describe('schema', () => {
     expect(String(version.dflt)).toBe('0')
   })
 
-  test('password_setup_tokens stores a unique 64-character hash per token, deleted with its user (migration 008)', async () => {
+  test('password_setup_tokens stores a unique 64-character hash per token, deleted with its user (migration 009)', async () => {
     expect(await column('password_setup_tokens', 'token_hash')).toMatchObject({ type: 'char(64)', nullable: 'NO' })
     expect(await column('password_setup_tokens', 'expires_at')).toMatchObject({ type: 'datetime', nullable: 'NO' })
     expect(await column('password_setup_tokens', 'used_at')).toMatchObject({ type: 'datetime', nullable: 'YES' })
@@ -141,8 +141,8 @@ describe('schema', () => {
 })
 
 describe('up → down → up', () => {
-  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 008 down to 003
-  test('rolling back 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
+  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 009 down to 003
+  test('rolling back 009, 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
     const { db, dbName } = await newDatabase()
     const schema = async () => {
       const tables = {}
@@ -158,7 +158,7 @@ describe('up → down → up', () => {
       (await db.query('SELECT filename FROM schema_migrations ORDER BY filename'))[0].map((r) => r.filename)
 
     const before = await schema()
-    for (let i = 0; i < 6; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
+    for (let i = 0; i < 7; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
     expect(await applied()).toEqual(['001_initial.sql', '002_hr_role_and_password_change.sql'])
     const [departments] = await db.query("SHOW TABLES LIKE 'departments'")
     expect(departments).toHaveLength(0)
@@ -167,7 +167,7 @@ describe('up → down → up', () => {
 
     await quietly(() => migrate({ dbName, backupFirst: false }))
     expect(await schema()).toEqual(before)
-    expect((await applied()).at(-1)).toBe('008_password_setup_tokens.sql')
+    expect((await applied()).at(-1)).toBe('009_password_setup_tokens.sql')
   })
 
   test('a migration without a rollback file is refused, not half-undone', async () => {

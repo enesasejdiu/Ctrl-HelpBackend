@@ -12,6 +12,7 @@ const schemas = require('../schemas/users')
 const { makeTemporaryPassword } = require('../temporaryPassword')
 const { issueToken, unusablePasswordHash } = require('../passwordSetup')
 const notify = require('../mail/notifications')
+const { revokeUserSessions } = require('../sessionStore')
 
 const router = express.Router()
 
@@ -191,14 +192,26 @@ router.post(
 
     const temporaryPassword = makeTemporaryPassword()
     const passwordHash = await bcrypt.hash(temporaryPassword, 10)
-    // One statement, so the new hash, the flag and the ended sessions are saved together or not at all. It also unlocks the account
-    // (wrong-password count and lock cleared), so the user can log in with the temporary password straight away.
-    await pool.query(
-      `UPDATE users SET password_hash = ?, must_change_password = TRUE, failed_login_count = 0, locked_until = NULL,
-         session_version = session_version + 1, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
-      [passwordHash, id],
-    )
+    // One transaction: the new hash and flag, and every session of the user ended (their rows revoked, and
+    // session_version raised), are saved together or not at all. It also unlocks the account (wrong-password count
+    // and lock cleared), so the user can log in with the temporary password straight away.
+    const conn = await pool.getConnection()
+    try {
+      await conn.beginTransaction()
+      await conn.query(
+        `UPDATE users SET password_hash = ?, must_change_password = TRUE, failed_login_count = 0, locked_until = NULL,
+           session_version = session_version + 1, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [passwordHash, id],
+      )
+      await revokeUserSessions(id, { db: conn })
+      await conn.commit()
+    } catch (err) {
+      await conn.rollback()
+      throw err
+    } finally {
+      conn.release()
+    }
 
     res.json({ user: await findUser(id), temporaryPassword })
   },
@@ -321,6 +334,10 @@ async function editUser(req, res) {
     }
 
     await conn.query(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, [...params, id])
+
+    // A role change or deactivation ends all of the user's sessions (rows revoked; session_version is raised above too)
+
+    if (roleChanges || deactivates) await revokeUserSessions(id, { db: conn })
 
     if (stopsBeingStaff) {
       const [tickets] = await conn.query(

@@ -103,16 +103,13 @@ describe('POST /api/auth/change-password', () => {
     if (message) expect(res.body.errors).toContainEqual({ field: 'newPassword', message })
   })
 
-  test('the person who changed it stays logged in: the response carries a fresh token that works everywhere', async () => {
+  test('the person who changed it stays logged in: the same session keeps working everywhere, no new cookie', async () => {
     const user = await createUser({ mustChangePassword: true })
     const token = await loginAs(user)
     const res = await change(token, { currentPassword: user.password, newPassword: NEW_PASSWORD })
     expect(res.status).toBe(200)
-    expect(sessionOf(res)).toEqual(expect.any(String))
-    expect(sessionOf(res)).not.toBe(token)
-    expect((await api.get('/api/tickets').set(auth(sessionOf(res)))).status).toBe(200)
-    // The token sent with the change belonged to the old password, so it has ended like every other session
-    expect((await api.get('/api/tickets').set(auth(token))).status).toBe(401)
+    expect(sessionOf(res)).toBeUndefined() // the current session continues as it is
+    expect((await api.get('/api/tickets').set(auth(token))).status).toBe(200)
   })
 
   test('neither password is ever written to the console', async () => {
@@ -194,6 +191,6 @@ describe('POST /api/auth/change-password: more rules', () => {
     const res = await change(current, { currentPassword: user.password, newPassword: 'Brand-new-pass1' })
     expect(res.status).toBe(200)
     expectError(await api.get('/api/auth/me').set(auth(other)), 401, undefined, 'Session expired, please log in again')
-    expect((await api.get('/api/auth/me').set(auth(sessionOf(res)))).status).toBe(200)
+    expect((await api.get('/api/auth/me').set(auth(current))).status).toBe(200)
   })
 })

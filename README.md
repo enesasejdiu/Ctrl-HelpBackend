@@ -64,6 +64,7 @@ The API runs on **http://localhost:5050**. Check it with http://localhost:5050/a
 | `npm run db:department-report`  | Read-only: the free-text department values migration 005 will turn into departments |
 | `npm run db:verify-departments` | Read-only: checks that migration 005 linked every user correctly                    |
 | `npm run db:backup`             | Back up the database to `backups/`                                                  |
+| `npm run db:sessions:cleanup`   | Delete sessions that ended more than 7 days ago (also runs daily in the server)     |
 | `npm test`                      | Run all tests once (see [Running tests](#running-tests))                            |
 | `npm run test:coverage`         | Run the tests with a coverage report                                                |
 | `npm run lint`                  | Check the code with ESLint (fails on any error or warning)                          |
@@ -149,12 +150,17 @@ leaves the layout to Prettier. Before pushing, run `npm run format` and `npm run
 
 **CI.** [GitHub Actions](.github/workflows/ci.yml) ("Backend CI") runs on every push to `main` and every pull request.
 It runs 4 jobs, one for each of **MySQL 8.4** and **MariaDB 11** on **Node 22** and **24**. Each job starts that
-database in a container and runs `npm ci`, `npm run format:check`, `npm run lint` and `npm run test:coverage`.
+database in a container and runs `npm ci`, `npm audit --omit=dev --audit-level=high` (fails on high or critical
+known issues in the packages the app runs with), `npm run format:check`, `npm run lint` and `npm run test:coverage`.
 MySQL 8.4 keeps its default `ONLY_FULL_GROUP_BY` mode, so queries that MariaDB would allow but MySQL refuses are
 caught. The coverage report is kept as a download on the run for 7 days. A newer push to the same branch cancels
 the older run.
 
 **Merge a pull request only when all 4 jobs are green.**
+
+**Dependabot** ([`.github/dependabot.yml`](.github/dependabot.yml)) opens update pull requests every Monday: one for
+all minor and patch npm updates together, one per major npm update (those can break things), and one for the GitHub
+Actions used by the workflow. They run CI like any other pull request.
 
 ## Demo accounts
 
@@ -233,29 +239,56 @@ header `X-CSRF-Token` with the value of the `tf_csrf` cookie. Otherwise it gets:
 (403). Another site can make the browser send the cookies, but it can't read `tf_csrf` to copy it into the header.
 GET requests don't need the header, and neither do login and logout.
 
-**Logout.** `POST /api/auth/logout` clears both cookies and answers 204. It needs no session, so it also works with
-an expired one. It ends only that browser's session: the user's other sessions keep working (see below).
+**Logout.** `POST /api/auth/logout` ends this browser's session **on the server** (its row in `sessions` gets
+`revoked_at`), then clears both cookies and answers 204. So even a copy of the token taken before logging out stops
+working. It needs no valid session: with an expired or already ended one it only clears the cookies, and still
+answers 204. The user's other sessions keep working. `POST /api/auth/logout-all` (logged in, with the CSRF header)
+is "log out everywhere": it ends every session of the user, in every browser and device, this one included.
 
-**When sessions end.** Every token carries the user's `session_version` (a column on `users`, migration 007). Each
-request compares it with the database, and a token whose version no longer matches gets
-401 `Session expired, please log in again`. The version goes up, ending **all** of that user's sessions in every
-browser and device, when:
+**When sessions end.** Sessions are stored on the server, in the `sessions` table (migration 008): one row per
+login, with `created_at`, `expires_at` (8 hours after login), `revoked_at`, `last_seen_at` (written at most once a
+minute), `ip` and `user_agent`. The token carries the row's id as `sid`. Every request checks that the row exists,
+belongs to the user and is neither revoked nor expired; otherwise it gets 401 `Session expired, please log in
+again`. As a second, independent check, the token also carries the user's `session_version` (migration 007), which
+must still match `users.session_version`.
 
-| Event                                                                       | What happens                                                                                                                        |
-| --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| The user changes their password (`POST /api/auth/change-password`)          | Every other session ends. The browser that made the change gets fresh cookies in the same response, so that person stays logged in. |
-| An admin or HR resets the password (`POST /api/users/:id/reset-password`)   | All the user's sessions end; they log in with the temporary password.                                                               |
-| The account is deactivated (`PATCH /api/users/:id` with `is_active: false`) | All sessions end. Reactivating doesn't bring them back; the user logs in again.                                                     |
-| The role changes (`PATCH /api/users/:id` with a different `role`)           | All sessions end. The new login carries the new role.                                                                               |
+| Event                                                                       | What happens                                                                                                                      |
+| --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Logout (`POST /api/auth/logout`)                                            | This session ends (its row is revoked). The user's other sessions keep working.                                                   |
+| Log out everywhere (`POST /api/auth/logout-all`)                            | All of the user's sessions end, this one included.                                                                                |
+| The user changes their password (`POST /api/auth/change-password`)          | Every **other** session ends (rows revoked). The session that made the change continues as it is, so that person stays logged in. |
+| An admin or HR resets the password (`POST /api/users/:id/reset-password`)   | All the user's sessions end (rows revoked, `session_version` raised); they log in with the temporary password.                    |
+| A password is set with an emailed link (`POST /api/auth/set-password`)      | All the user's sessions end (rows revoked, `session_version` raised); they log in with the new password.                          |
+| The account is deactivated (`PATCH /api/users/:id` with `is_active: false`) | All sessions end. Reactivating doesn't bring them back; the user logs in again.                                                   |
+| The role changes (`PATCH /api/users/:id` with a different `role`)           | All sessions end. The new login carries the new role.                                                                             |
+| 8 hours after login                                                         | The session expires (the row and the token both end then).                                                                        |
 
-Nothing else ends sessions. Logout clears only its own browser's cookies. Edits to name, email, department or job
-title, saving the role the user already has, a wrong current password and refused requests all leave sessions
-alone. The admin or HR person making the change keeps their own session. Otherwise a session ends when its token
-expires, 8 hours after login. Tokens from before migration 007 have no version and count as version 0, so the
-migration logged nobody out.
+Nothing else ends sessions: edits to name, email, department or job title, saving the role the user already has, a
+wrong current password and refused requests all leave them alone. The admin or HR person making a change keeps their
+own session. A password change doesn't raise `session_version`, because that would end the current session too; the
+revoked rows already end the others.
 
-**CORS.** Only `CLIENT_URL` is allowed, with credentials. It's never `*`: without `CLIENT_URL`, no other origin is
-allowed at all.
+Tokens from before migration 008 have no `sid`, so they are refused: everyone who was logged in when 008 was applied
+logs in once more.
+
+**Cleanup.** Sessions that expired or were revoked more than 7 days ago are deleted when the server starts and then
+once a day. Run it by hand with `npm run db:sessions:cleanup`; it only removes ended sessions, so nobody is logged
+out.
+
+**CORS.** Only `CLIENT_URL` is allowed (compared exactly), with credentials, the methods `GET, POST, PATCH, PUT,
+DELETE` and the headers `Content-Type, X-CSRF-Token`. Any other origin gets no CORS headers at all, so the browser
+won't let other sites read the responses. It's never `*`; without `CLIENT_URL`, no origin is allowed.
+
+**Request limits and security headers** (`src/app.js`):
+
+- JSON bodies over **100 KB** get 413 `{ "message": "Request body is too large (at most 100 KB)", "code": "PAYLOAD_TOO_LARGE" }`.
+- [helmet](https://helmetjs.github.io/), set up for an API: `Content-Security-Policy: default-src 'none';
+frame-ancestors 'none'` (nothing to load, no framing), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer`, same-origin resource and opener policies, and no `X-Powered-By`.
+- **Production only** (`NODE_ENV=production`): HSTS (`max-age=15552000; includeSubDomains`, 180 days), and
+  `trust proxy` set to 1, so behind nginx `req.ip` (and with it the login rate limit) is the client's real address
+  from `X-Forwarded-For`. In development neither is set: HSTS would lock `http://localhost` out of the browser, and
+  trusting the header without a proxy would let any client pick its own IP.
 
 **Cookie only, no Bearer.** The session is only ever read from the `tf_session` cookie. No response body contains
 the token: login returns `{ user }`, change-password `{ message, user }`. An `Authorization` header is ignored, so
@@ -316,8 +349,7 @@ fields.
 - **Other errors:** 400 for a new password that breaks the rule or matches the current one, a missing field or an
   extra field. 401 without a valid session.
 - **Sessions:** every other session of the user ends (see [When sessions end](#sessions-cookies-and-csrf)). The
-  session that made the change ends too, but the response sets fresh `tf_session` and `tf_csrf` cookies, so the
-  person who changed it stays logged in.
+  session that made the change continues as it is, cookies and all, so the person who changed it stays logged in.
 
 ### Creating an account: `POST /api/users`
 
@@ -604,7 +636,8 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | ------ | --------------------------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | GET    | `/api/health`                     | anyone       | Health check → `{ status: "ok" }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | POST   | `/api/auth/login`                 | anyone       | Log in `{ email, password }` → `{ user }`, and sets the `tf_session` and `tf_csrf` cookies (see [Sessions](#sessions-cookies-and-csrf)); sets `last_login_at`. With `must_change_password: true`, everything except `/api/auth/me` and change-password answers 403 `PASSWORD_CHANGE_REQUIRED`. 5 wrong passwords lock the account for 15 minutes (423 `ACCOUNT_LOCKED` with `retryAfterMinutes`); more than 20 requests per IP in 15 minutes get 429 `RATE_LIMITED`. See [Login limits](#login-limits-lockout-and-rate-limit) |
-| POST   | `/api/auth/logout`                | anyone       | Clears the session cookies → 204 (works without a session)                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| POST   | `/api/auth/logout`                | anyone       | Ends this session on the server and clears the cookies → 204 (works without a valid session)                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| POST   | `/api/auth/logout-all`            | logged in    | Ends every session of the user, this one included, and clears the cookies → 204                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | GET    | `/api/auth/me`                    | logged in    | The current user: `{ id, name, email, role, department_id, department_name, job_title, created_at, last_login_at, must_change_password }` (`null` when empty; never the password hash). Login returns the same user object                                                                                                                                                                                                                                                                                                    |
 | POST   | `/api/auth/change-password`       | logged in    | Change your password `{ currentPassword, newPassword }` → `{ message, user }`, with fresh session cookies; clears `must_change_password` and ends the user's other sessions (400 `INVALID_CURRENT_PASSWORD` if the current password is wrong). See [Changing your own password](#changing-your-own-password-post-apiauthchange-password)                                                                                                                                                                                      |
 | GET    | `/api/meta`                       | logged in    | Categories and priorities (for dropdowns)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -716,5 +749,6 @@ TASKS.md                  Development task list
 | `tickets`               | Tickets: requester, assignee, category, priority, status, resolution note, timestamps                                                                                                                                                                                                                           |
 | `comments`              | Comments on tickets; `is_internal` marks staff-only notes                                                                                                                                                                                                                                                       |
 | `ticket_history`        | Audit trail: who changed which field (status, priority, assignee) from what to what, and when                                                                                                                                                                                                                   |
+| `sessions`              | One row per login (migration 008): `user_id`, `created_at`, `expires_at`, `revoked_at`, `last_seen_at`, `ip`, `user_agent`. The token's `sid` is the row id. Rows are deleted 7 days after they end                                                                                                             |
 | `password_setup_tokens` | Set-password links for new accounts: the SHA-256 hash of each token (never the token), `expires_at` (72 hours), `used_at`. See [Email](#email)                                                                                                                                                                  |
 | `schema_migrations`     | Which migrations this database has run, and when                                                                                                                                                                                                                                                                |

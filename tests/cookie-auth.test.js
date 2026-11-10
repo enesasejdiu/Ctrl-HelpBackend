@@ -256,13 +256,12 @@ describe('a browser-like client (supertest agent keeping cookies)', () => {
     expect(changed.status).toBe(200)
     expect(changed.body).not.toHaveProperty('token')
 
-    // The response replaced both cookies: the session continues with them, and the new tf_csrf is the one to send
-    const freshCsrf = jarValue(agent, 'tf_csrf')
-    expect(freshCsrf).not.toBe(csrf)
+    // The session continues with the same cookies, so the same tf_csrf still works
+    expect(jarValue(agent, 'tf_csrf')).toBe(csrf)
     expect((await agent.get('/api/auth/me')).status).toBe(200)
     const renamed = await agent
       .patch(`/api/departments/${created.body.id}`)
-      .set('X-CSRF-Token', freshCsrf)
+      .set('X-CSRF-Token', csrf)
       .send({ name: 'Agent Dept 2' })
     expect(renamed.status).toBe(200)
   })

@@ -4,7 +4,7 @@
 -- A token works once (used_at), for 72 hours (expires_at). Setting the password, or sending a new link, removes the
 -- user's other unused tokens. Deleting a user deletes their tokens.
 -- expires_at and used_at are written by the API (src/passwordSetup.js), so they are DATETIME, not TIMESTAMP.
--- Undone by migrations/down/008_password_setup_tokens.sql.
+-- Undone by migrations/down/009_password_setup_tokens.sql.
 CREATE TABLE IF NOT EXISTS password_setup_tokens (
   id INT AUTO_INCREMENT PRIMARY KEY,
   user_id INT NOT NULL,

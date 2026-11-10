@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken')
 const pool = require('../db')
 const { HttpError } = require('./errors')
 const { SESSION_COOKIE, CSRF_COOKIE, CSRF_HEADER, csrfMatches } = require('../session')
+const { findActiveSession } = require('../sessionStore')
 
 // Methods that change something: with cookie authentication they need X-CSRF-Token equal to the tf_csrf cookie
 const CSRF_METHODS = ['POST', 'PATCH', 'PUT', 'DELETE']
@@ -15,11 +16,16 @@ const CSRF_METHODS = ['POST', 'PATCH', 'PUT', 'DELETE']
 const ALLOWED_BEFORE_PASSWORD_CHANGE = ['GET /api/auth/me', 'POST /api/auth/change-password']
 
 // Verifies the token, then loads the user's CURRENT name, role and active status from the database,
-// so role changes and deactivation take effect immediately instead of when the token expires. A token whose
-// session_version no longer matches the user's (raised by a password change or reset, deactivation or a role change)
-// is refused with 401, which ends that session.
+// so role changes and deactivation take effect immediately instead of when the token expires.
+// Two more checks end sessions, both with 401 "Session expired, please log in again":
+//   * the server-side session: the token's "sid" must be a row in sessions (src/sessionStore.js) for this user that
+//     isn't revoked or expired. Logout, "log out everywhere", a password change (other sessions), a reset,
+//     deactivation and a role change revoke rows, so a copied token stops working at once. A token without sid
+//     (issued before migration 008) is refused.
+//   * session_version: a reset, deactivation or role change also raises users.session_version, and every token issued
+//     before that no longer matches (kept as a second, independent check).
 // A user who still has a temporary password (must_change_password) is blocked everywhere else with 403.
-// Exposes the logged-in user as req.user = { id, name, role }.
+// Exposes the logged-in user as req.user = { id, name, role }, and the session id as req.sessionId.
 //
 // The token comes only from the tf_session cookie; there is no "Authorization: Bearer" any more, so a header alone
 // is a 401 "Not logged in".
@@ -56,9 +62,14 @@ async function requireAuth(req, res, next) {
   if (!user || !user.is_active) {
     throw new HttpError(401, 'Session expired, please log in again')
   }
-  // Ended sessions: a password change or reset, deactivation or a role change raises users.session_version, and every
-  // token issued before that no longer matches. Tokens from before migration 007 carry no version and count as 0.
+  // Ended sessions (1): a reset, deactivation or role change raises users.session_version, and every token issued
+  // before that no longer matches. Tokens from before migration 007 carry no version and count as 0.
   if ((payload.session_version ?? 0) !== user.session_version) {
+    throw new HttpError(401, 'Session expired, please log in again')
+  }
+  // Ended sessions (2): the server-side session must exist, belong to this user, and be neither revoked nor expired
+  const session = await findActiveSession(payload.sid)
+  if (!session || !session.active || session.user_id !== user.id) {
     throw new HttpError(401, 'Session expired, please log in again')
   }
 
@@ -71,6 +82,7 @@ async function requireAuth(req, res, next) {
   }
 
   req.user = { id: user.id, name: user.name, role: user.role }
+  req.sessionId = payload.sid
   next()
 }
 
