@@ -204,7 +204,25 @@ header `X-CSRF-Token` with the value of the `tf_csrf` cookie. Otherwise it gets:
 GET requests don't need the header, and neither do login and logout.
 
 **Logout.** `POST /api/auth/logout` clears both cookies and answers 204. It needs no session, so it also works with
-an expired one. The token stays valid until it expires (there is no revocation list), but the browser no longer has it.
+an expired one. It ends only that browser's session: the user's other sessions keep working (see below).
+
+**When sessions end.** Every token carries the user's `session_version` (a column on `users`, migration 007). Each
+request compares it with the database, and a token whose version no longer matches gets
+401 `Session expired, please log in again`. The version goes up, ending **all** of that user's sessions in every
+browser and device, when:
+
+| Event | What happens |
+| ----- | ------------ |
+| The user changes their password (`POST /api/auth/change-password`) | Every other session ends. The browser that made the change gets fresh cookies (and the response has the new `token`), so that person stays logged in. |
+| An admin or HR resets the password (`POST /api/users/:id/reset-password`) | All the user's sessions end; they log in with the temporary password. |
+| The account is deactivated (`PATCH /api/users/:id` with `is_active: false`) | All sessions end. Reactivating doesn't bring them back; the user logs in again. |
+| The role changes (`PATCH /api/users/:id` with a different `role`) | All sessions end. The new login carries the new role. |
+
+Nothing else ends sessions. Logout clears only its own browser's cookies. Edits to name, email, department or job
+title, saving the role the user already has, a wrong current password and refused requests all leave sessions
+alone. The admin or HR person making the change keeps their own session. Otherwise a session ends when its token
+expires, 8 hours after login. Tokens from before migration 007 have no version and count as version 0, so the
+migration logged nobody out.
 
 **CORS.** Only `CLIENT_URL` is allowed, with credentials. It's never `*`: without `CLIENT_URL`, no other origin is
 allowed at all.
@@ -260,14 +278,15 @@ fields.
   password needs at least 10 characters, a letter and a digit, and at most 72 characters (bcrypt ignores anything
   after 72 bytes). Each failed rule has its own message. Temporary passwords always pass it, and a test checks
   10,000 of them.
-- **On success:** 200 `{ "message": "Password changed", "user": { ... } }`. The new bcrypt hash,
-  `must_change_password = false` and `updated_at` are saved in one statement.
+- **On success:** 200 `{ "message": "Password changed", "token": "...", "user": { ... } }`. The new bcrypt hash,
+  `must_change_password = false`, `updated_at` and a raised `session_version` are saved in one statement.
 - **Wrong current password:** 400 `{ "message": "Current password is wrong", "code": "INVALID_CURRENT_PASSWORD" }`.
   This is 400, not 401, so clients don't mistake it for an expired session. Nothing changes, and the session stays.
 - **Other errors:** 400 for a new password that breaks the rule or matches the current one, a missing field or an
   extra field. 401 without a valid token.
-- **Sessions:** logins are stateless JWTs that can't be revoked, so other sessions keep working until they expire
-  (8 hours). The token used for the change stays valid.
+- **Sessions:** every other session of the user ends (see [When sessions end](#sessions-cookies-and-csrf)). The token
+  sent with the change ends too, but the response sets fresh `tf_session` and `tf_csrf` cookies and returns the new
+  `token`, so the person who changed it stays logged in. Clients that send the token themselves must use the new one.
 
 ### Creating an account: `POST /api/users`
 
@@ -363,14 +382,9 @@ Deactivated accounts can be reset too.
 }
 ```
 
-**Sessions.** Logins are stateless JWTs (valid for 8 hours) with no revocation list.
-Even so, a session from before the reset can do nothing: every request reloads the user, and while
-`must_change_password` is set only `GET /api/auth/me` and `POST /api/auth/change-password` work, and the latter needs
-the new temporary password. Once the user has chosen a new password, though, older tokens work again until they
-expire. Ending them for good would need a per-user token version or "valid after" time in the JWT.
-
-Role changes and deactivation take effect immediately: every request checks the user's current role and active
-status in the database.
+**Sessions.** A reset ends every session the user had (401 on their next request). They log in again with the
+temporary password. Deactivating a user or changing their role ends their sessions in the same way; see
+[When sessions end](#sessions-cookies-and-csrf).
 
 ## Departments
 
@@ -474,7 +488,7 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | POST   | `/api/auth/login`               | anyone              | Log in `{ email, password }` → `{ token, must_change_password, user }`, and sets the `tf_session` and `tf_csrf` cookies (see [Sessions](#sessions-cookies-and-csrf)); sets `last_login_at`. With `must_change_password: true`, everything except `/api/auth/me` and change-password answers 403 `PASSWORD_CHANGE_REQUIRED`. 5 wrong passwords lock the account for 15 minutes (423 `ACCOUNT_LOCKED` with `retryAfterMinutes`); more than 20 requests per IP in 15 minutes get 429 `RATE_LIMITED`. See [Login limits](#login-limits-lockout-and-rate-limit) |
 | POST   | `/api/auth/logout`              | anyone              | Clears the session cookies → 204 (works without a session) |
 | GET    | `/api/auth/me`                  | logged in           | The current user: `{ id, name, email, role, department_id, department_name, job_title, created_at, last_login_at, must_change_password }` (`null` when empty; never the password hash). Login returns the same user object |
-| POST   | `/api/auth/change-password`     | logged in           | Change your password `{ currentPassword, newPassword }` → `{ message, user }`; clears `must_change_password` (400 `INVALID_CURRENT_PASSWORD` if the current password is wrong). See [Changing your own password](#changing-your-own-password-post-apiauthchange-password) |
+| POST   | `/api/auth/change-password`     | logged in           | Change your password `{ currentPassword, newPassword }` → `{ message, token, user }`, with fresh session cookies; clears `must_change_password` and ends the user's other sessions (400 `INVALID_CURRENT_PASSWORD` if the current password is wrong). See [Changing your own password](#changing-your-own-password-post-apiauthchange-password) |
 | GET    | `/api/meta`                     | logged in           | Categories and priorities (for dropdowns)                                                       |
 | GET    | `/api/tickets`                  | logged in           | List tickets (employees: own only). Filters: `status`, `priority`, `category`, `assigned=me\|unassigned`, `q`, `overdue=1` |
 | POST   | `/api/tickets`                  | logged in           | Create a ticket `{ title, description, category_id, priority_id }`                              |
@@ -563,7 +577,7 @@ TASKS.md                  Development task list
 
 | Table            | Contents                                                                                     |
 | ---------------- | -------------------------------------------------------------------------------------------- |
-| `users`          | Accounts: name, email, password hash, role (employee/agent/hr/admin), department_id, job title, active flag, last login, wrong-password count and lock (`failed_login_count`, `locked_until`). `department` is the old free-text value, no longer used |
+| `users`          | Accounts: name, email, password hash, role (employee/agent/hr/admin), department_id, job title, active flag, last login, wrong-password count and lock (`failed_login_count`, `locked_until`), `session_version` (raising it ends the user's sessions). `department` is the old free-text value, no longer used |
 | `departments`    | Departments people belong to; `users.department_id` links to them (see [Departments](#departments)) |
 | `categories`     | Ticket categories (Hardware, Software, Network, Access, Email, Other)                         |
 | `priorities`     | Priority levels with their target resolution time in hours                                   |

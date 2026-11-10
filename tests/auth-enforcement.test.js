@@ -198,7 +198,7 @@ describe('blocking until a temporary password is changed', () => {
     expect(create.body.code).toBe('PASSWORD_CHANGE_REQUIRED');
   });
 
-  test('after changing the password the same token works everywhere', async () => {
+  test('after changing the password the fresh token from the response works everywhere', async () => {
     const user = await createUser({ mustChangePassword: true });
     const token = await loginAs(user);
     expect((await get('/api/tickets', token)).status).toBe(403);
@@ -208,7 +208,7 @@ describe('blocking until a temporary password is changed', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({ currentPassword: user.password, newPassword: 'my-own-password9' });
     expect(res.status).toBe(200);
-    expect((await get('/api/tickets', token)).status).toBe(200);
+    expect((await get('/api/tickets', res.body.token)).status).toBe(200);
   });
 
   test('an account created by an admin is blocked until its temporary password is changed', async () => {
@@ -222,11 +222,11 @@ describe('blocking until a temporary password is changed', () => {
     const login = await api.post('/api/auth/login').send({ email: 'new.person@test.local', password: temporaryPassword });
     expect((await get('/api/tickets', login.body.token)).body.code).toBe('PASSWORD_CHANGE_REQUIRED');
 
-    await api
+    const changed = await api
       .post('/api/auth/change-password')
       .set('Authorization', `Bearer ${login.body.token}`)
       .send({ currentPassword: temporaryPassword, newPassword: 'chosen-by-me1' });
-    expect((await get('/api/tickets', login.body.token)).status).toBe(200);
+    expect((await get('/api/tickets', changed.body.token)).status).toBe(200);
   });
 
   test('an unflagged user is never blocked', async () => {

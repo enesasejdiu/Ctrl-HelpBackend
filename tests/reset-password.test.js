@@ -89,8 +89,10 @@ describe('POST /api/users/:id/reset-password', () => {
     expect(newLogin.status).toBe(200);
     expect(newLogin.body.user.must_change_password).toBe(true);
 
-    // Any session the user still has is blocked until they choose a new password
-    const blocked = await api.get('/api/tickets').set(auth(oldToken));
+    // Any session the user had before the reset is ended; the new login is blocked until they choose a password
+    const ended = await api.get('/api/tickets').set(auth(oldToken));
+    expectError(ended, 401, undefined, 'Session expired, please log in again');
+    const blocked = await api.get('/api/tickets').set(auth(newLogin.body.token));
     expect(blocked.body.code).toBe('PASSWORD_CHANGE_REQUIRED');
   });
 
@@ -143,7 +145,7 @@ describe('POST /api/users/:id/reset-password', () => {
     expect(JSON.stringify(res.body)).not.toMatch(/password_hash|\$2[aby]\$/);
   });
 
-  test("a session from before the reset can't use the app or change the password without the new one", async () => {
+  test("a session from before the reset can't use the app or change the password (it has ended)", async () => {
     const target = await createUser();
     const oldToken = await loginAs(target);
     await reset(target.id, adminToken);
@@ -152,10 +154,9 @@ describe('POST /api/users/:id/reset-password', () => {
       .post('/api/auth/change-password')
       .set(auth(oldToken))
       .send({ currentPassword: target.password, newPassword: 'Attacker1234' });
-    expect(change.status).toBe(400);
-    expect(change.body.code).toBe('INVALID_CURRENT_PASSWORD');
-    for (const path of ['/api/tickets', '/api/meta']) {
-      expect((await api.get(path).set(auth(oldToken))).status).toBe(403);
+    expectError(change, 401, undefined, 'Session expired, please log in again');
+    for (const path of ['/api/tickets', '/api/meta', '/api/auth/me']) {
+      expect([path, (await api.get(path).set(auth(oldToken))).status]).toEqual([path, 401]);
     }
   });
 
@@ -221,12 +222,11 @@ describe('POST /api/users/:id/reset-password: refusals change nothing', () => {
     expectNoPasswordHash(res.body);
   });
 
-  // Logins are stateless JWTs with no revocation list. Old sessions are blocked until the password is changed (tested
-  // above), but they are not ended. When tokens can be revoked, remove .skip.
-  test.skip('SKIPPED (tokens are stateless JWTs and cannot be revoked): a reset ends the user\'s existing sessions', async () => {
+  // Ended through users.session_version (migration 007)
+  test("a reset ends the user's existing sessions", async () => {
     const target = await createUser();
     const oldToken = await loginAs(target);
     await reset(target.id, adminToken);
-    expect((await api.get('/api/auth/me').set(auth(oldToken))).status).toBe(401);
+    expectError(await api.get('/api/auth/me').set(auth(oldToken)), 401, undefined, 'Session expired, please log in again');
   });
 });

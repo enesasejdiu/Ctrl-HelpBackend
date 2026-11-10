@@ -18,17 +18,20 @@ const router = express.Router();
 
 // Signed token identifying the user. requireAuth only trusts the id from it and reloads name/role from the DB;
 // name and role are included so the frontend can show them without an extra request.
-// Valid for 8 hours, the same as the session cookie that carries it.
+// session_version must still match users.session_version when the token is used (see requireAuth), so raising that
+// column ends the session. Valid for 8 hours, the same as the session cookie that carries it.
 function makeToken(user) {
-  return jwt.sign({ id: user.id, name: user.name, role: user.role }, process.env.JWT_SECRET, {
-    expiresIn: `${SESSION_HOURS}h`,
-  });
+  return jwt.sign(
+    { id: user.id, name: user.name, role: user.role, session_version: user.session_version },
+    process.env.JWT_SECRET,
+    { expiresIn: `${SESSION_HOURS}h` }
+  );
 }
 
 // What these routes load about a user: the public fields, plus the password hash and active flag for the checks.
 // The department comes from departments; the old free-text users.department is no longer read (see migrations/005).
 const AUTH_USER_COLUMNS = `
-  u.id, u.name, u.email, u.role, u.password_hash, u.is_active, u.must_change_password,
+  u.id, u.name, u.email, u.role, u.password_hash, u.is_active, u.must_change_password, u.session_version,
   u.department_id, d.name AS department_name, u.job_title, u.created_at, u.last_login_at`;
 const AUTH_USER_FROM = 'FROM users u LEFT JOIN departments d ON d.id = u.department_id';
 const AUTH_USER_SELECT = `SELECT ${AUTH_USER_COLUMNS} ${AUTH_USER_FROM}`;
@@ -146,7 +149,8 @@ router.post('/login', loginRateLimit, validate(schemas.login), async (req, res) 
 });
 
 // POST /api/auth/logout → 204. Clears both session cookies. Needs no session (an expired one is fine too), so it can't
-// fail. The token itself stays valid until it expires (there is no revocation list), but the browser no longer has it.
+// fail. It ends only this browser's session: session_version is not raised, so the user's other sessions keep working
+// (and the token itself stays valid until it expires, but the browser no longer has it).
 // No CSRF check: the worst another site could do is log you out, and sameSite "lax" already keeps the cookies off
 // cross-site POSTs.
 router.post('/logout', (req, res) => {
@@ -164,11 +168,12 @@ router.get('/me', requireAuth, async (req, res) => {
   res.json(publicUser(rows[0]));
 });
 
-// POST /api/auth/change-password { currentPassword, newPassword } → { message, user }
+// POST /api/auth/change-password { currentPassword, newPassword } → { message, token, user }
 // Your own account only (the token says whose). Also the way out of a temporary password: requireAuth lets a flagged
 // user reach this route, and it clears the flag.
-// Sessions: tokens are stateless JWTs that can't be revoked, so other sessions keep working until they expire; the
-// token used for this request stays valid.
+// Sessions: raises session_version, which ends every session of this user, including other browsers and devices.
+// The session that made the change gets a fresh token at once (new cookies, and the token in the body for Bearer
+// clients), so the person who changed the password stays logged in.
 router.post('/change-password', requireAuth, validate(schemas.changePassword), async (req, res) => {
   const { currentPassword, newPassword } = req.valid.body;
   const [[user]] = await pool.query(`${AUTH_USER_SELECT} WHERE u.id = ?`, [req.user.id]);
@@ -182,12 +187,34 @@ router.post('/change-password', requireAuth, validate(schemas.changePassword), a
   }
 
   const passwordHash = await bcrypt.hash(newPassword, 10);
-  // One statement, so the new hash and the cleared flag are saved together or not at all
-  await pool.query(
-    'UPDATE users SET password_hash = ?, must_change_password = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-    [passwordHash, user.id]
-  );
-  res.json({ message: 'Password changed', user: publicUser({ ...user, must_change_password: false }) });
+  // One statement, so the new hash, the cleared flag and the ended sessions are saved together or not at all.
+  // In a transaction with the read-back: the UPDATE keeps the row locked until commit, so the version read is exactly
+  // the one this change set. (Otherwise an admin's reset landing in between would be baked into this session's new
+  // token, and the reset would not end it.)
+  const conn = await pool.getConnection();
+  let sessionVersion;
+  try {
+    await conn.beginTransaction();
+    await conn.query(
+      `UPDATE users SET password_hash = ?, must_change_password = FALSE, session_version = session_version + 1,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [passwordHash, user.id]
+    );
+    [[{ session_version: sessionVersion }]] = await conn.query('SELECT session_version FROM users WHERE id = ?', [
+      user.id,
+    ]);
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+
+  const token = makeToken({ ...user, session_version: sessionVersion });
+  setSessionCookies(res, token);
+  res.json({ message: 'Password changed', token, user: publicUser({ ...user, must_change_password: false }) });
 });
 
 module.exports = router;
