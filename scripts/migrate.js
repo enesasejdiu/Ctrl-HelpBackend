@@ -127,7 +127,7 @@ async function migrate({ dbName = process.env.DB_NAME, backupFirst = true, until
         }
       } catch (err) {
         const restore = backupFile ? ` Restore backups/${backupFile} before trying again.` : ''
-        throw new Error(`${migration.file} failed and may be half applied: ${err.message}.${restore}`)
+        throw new Error(`${migration.file} failed and may be half applied: ${err.message}.${restore}`, { cause: err })
       }
       await connection.query('INSERT INTO schema_migrations (filename, checksum) VALUES (?, ?)', [
         migration.file,
