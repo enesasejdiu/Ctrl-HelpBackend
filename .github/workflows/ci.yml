@@ -72,6 +72,10 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
 
+      # Which server this job really tests against, and its sql_mode (MySQL 8.4 should list ONLY_FULL_GROUP_BY)
+      - name: Show database version and sql_mode
+        run: mysql -h 127.0.0.1 -uroot -proot -e "SELECT VERSION() AS version, @@GLOBAL.sql_mode AS sql_mode\G"
+
       # Exactly the versions in package-lock.json (fails if it is out of sync with package.json)
       - run: npm ci
 
