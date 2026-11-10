@@ -1,0 +1,5 @@
+# Generated files, backups and lock files: never formatted
+node_modules
+coverage
+backups
+package-lock.json

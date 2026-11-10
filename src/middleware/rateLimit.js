@@ -3,10 +3,10 @@
 // per-account lockout in routes/auth.js covers guessing one account's password.
 // Off in the test suite (NODE_ENV=test), where hundreds of logins come from one address, except in the test that sets
 // RATE_LIMIT_IN_TESTS=1 to check it. The counts live in memory, so a restart clears them.
-const { rateLimit } = require('express-rate-limit');
+const { rateLimit } = require('express-rate-limit')
 
-const LOGIN_LIMIT = 20;
-const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_LIMIT = 20
+const LOGIN_WINDOW_MS = 15 * 60 * 1000
 
 const loginRateLimit = rateLimit({
   windowMs: LOGIN_WINDOW_MS,
@@ -18,8 +18,8 @@ const loginRateLimit = rateLimit({
     res.status(429).json({
       message: 'Too many login attempts. Wait a few minutes and try again.',
       code: 'RATE_LIMITED',
-    });
+    })
   },
-});
+})
 
-module.exports = { loginRateLimit, LOGIN_LIMIT, LOGIN_WINDOW_MS };
+module.exports = { loginRateLimit, LOGIN_LIMIT, LOGIN_WINDOW_MS }

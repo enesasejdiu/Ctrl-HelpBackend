@@ -1,6 +1,6 @@
 // Request schema for POST /api/tickets/:id/comments.
-const { z } = require('zod');
-const { ticketParams, tooLong } = require('./common');
+const { z } = require('zod')
+const { ticketParams, tooLong } = require('./common')
 
 const addComment = {
   params: ticketParams,
@@ -12,6 +12,6 @@ const addComment = {
       .max(10000, tooLong('Comment', 10000)),
     is_internal: z.boolean({ error: 'is_internal must be true or false' }).optional(),
   }),
-};
+}
 
-module.exports = { addComment };
+module.exports = { addComment }

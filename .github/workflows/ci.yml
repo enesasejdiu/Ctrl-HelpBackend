@@ -1,0 +1,99 @@
+# Backend CI: formatting, lint and the full test suite (with coverage) on every push to main and every pull request.
+# The tests run against a real database server in a service container, on both databases the app supports
+# (MySQL 8.4 and MariaDB 11) and on Node 20 and 22: 4 jobs. A pull request should only be merged when all 4 are green.
+name: Backend CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to the same branch or PR cancels its older, still-running run (no point finishing an outdated one)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.db.name }} · Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      # Let every combination finish, so one failure doesn't hide whether the others pass
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+        db:
+          # MySQL 8.4 runs with its default sql_mode, which includes ONLY_FULL_GROUP_BY
+          - name: MySQL 8.4
+            image: mysql:8.4
+            health: mysqladmin ping -h 127.0.0.1 -uroot -proot
+          - name: MariaDB 11
+            image: mariadb:11
+            health: healthcheck.sh --connect --innodb_initialized
+
+    # The database server for this job. The tests create their own throwaway ticketflow_test_* database on it
+    # (and drop it afterwards), so no DB_NAME is needed.
+    services:
+      db:
+        image: ${{ matrix.db.image }}
+        env:
+          # Each image reads its own variable and ignores the other one
+          MYSQL_ROOT_PASSWORD: root
+          MARIADB_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        # The job's steps only start once the health check passes, i.e. the server accepts connections
+        options: >-
+          --health-cmd="${{ matrix.db.health }}"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+
+    # Settings the backend reads from the environment (there is no .env file in CI)
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: root
+      JWT_SECRET: ci-only-jwt-secret-for-tests-never-used-anywhere-else-4b8e1f0c9d2a7e63
+      NODE_ENV: test
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Node from the matrix; npm's download cache is kept between runs, keyed on package-lock.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # Which server this job really tests against, and its sql_mode (MySQL 8.4 should list ONLY_FULL_GROUP_BY)
+      - name: Show database version and sql_mode
+        run: mysql -h 127.0.0.1 -uroot -proot -e "SELECT VERSION() AS version, @@GLOBAL.sql_mode AS sql_mode\G"
+
+      # Exactly the versions in package-lock.json (fails if it is out of sync with package.json)
+      - run: npm ci
+
+      # Every file must match the Prettier style (fix locally with npm run format)
+      - run: npm run format:check
+
+      # ESLint: any error or warning fails the job
+      - run: npm run lint
+
+      # The whole Jest suite, with a coverage report (no minimum is enforced yet)
+      - run: npm run test:coverage
+
+      # The coverage report, also when tests failed, so a failure can be looked into; kept 7 days
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: coverage-${{ matrix.db.image == 'mysql:8.4' && 'mysql-8.4' || 'mariadb-11' }}-node-${{ matrix.node }}
+          path: coverage/
+          retention-days: 7
+          if-no-files-found: ignore

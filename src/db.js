@@ -1,6 +1,6 @@
 // MySQL connection pool shared across the app.
 // Use with async/await, e.g. const [rows] = await pool.query('SELECT ...', [params]);
-const mysql = require('mysql2/promise');
+const mysql = require('mysql2/promise')
 
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
@@ -10,6 +10,6 @@ const pool = mysql.createPool({
   database: process.env.DB_NAME,
   waitForConnections: true,
   connectionLimit: 10,
-});
+})
 
-module.exports = pool;
+module.exports = pool
