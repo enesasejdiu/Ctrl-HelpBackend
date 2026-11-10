@@ -81,6 +81,11 @@ jobs:
       # Exactly the versions in package-lock.json (fails if it is out of sync with package.json)
       - run: npm ci
 
+      # Known security issues in the packages the app runs with (dev tools excluded): high or critical fails the job.
+      # Fix with npm audit fix, or by updating the package; Dependabot (.github/dependabot.yml) proposes updates weekly.
+      - name: npm audit (production dependencies)
+        run: npm audit --omit=dev --audit-level=high
+
       # Every file must match the Prettier style (fix locally with npm run format)
       - run: npm run format:check
 

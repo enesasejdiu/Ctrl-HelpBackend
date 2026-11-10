@@ -149,12 +149,17 @@ leaves the layout to Prettier. Before pushing, run `npm run format` and `npm run
 
 **CI.** [GitHub Actions](.github/workflows/ci.yml) ("Backend CI") runs on every push to `main` and every pull request.
 It runs 4 jobs, one for each of **MySQL 8.4** and **MariaDB 11** on **Node 22** and **24**. Each job starts that
-database in a container and runs `npm ci`, `npm run format:check`, `npm run lint` and `npm run test:coverage`.
+database in a container and runs `npm ci`, `npm audit --omit=dev --audit-level=high` (fails on high or critical
+known issues in the packages the app runs with), `npm run format:check`, `npm run lint` and `npm run test:coverage`.
 MySQL 8.4 keeps its default `ONLY_FULL_GROUP_BY` mode, so queries that MariaDB would allow but MySQL refuses are
 caught. The coverage report is kept as a download on the run for 7 days. A newer push to the same branch cancels
 the older run.
 
 **Merge a pull request only when all 4 jobs are green.**
+
+**Dependabot** ([`.github/dependabot.yml`](.github/dependabot.yml)) opens update pull requests every Monday: one for
+all minor and patch npm updates together, one per major npm update (those can break things), and one for the GitHub
+Actions used by the workflow. They run CI like any other pull request.
 
 ## Demo accounts
 
