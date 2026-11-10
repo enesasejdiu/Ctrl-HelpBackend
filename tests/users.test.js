@@ -3,9 +3,18 @@
 const bcrypt = require('bcryptjs')
 const pool = require('../src/db')
 const { newPassword } = require('../src/schemas/common')
-const { api, resetData, createUser, loginAs, dbSnapshot, expectError, expectNoPasswordHash } = require('./helpers')
+const {
+  api,
+  resetData,
+  createUser,
+  loginAs,
+  dbSnapshot,
+  expectError,
+  expectNoPasswordHash,
+  auth,
+  sessionOf,
+} = require('./helpers')
 
-const auth = (token) => ({ Authorization: `Bearer ${token}` })
 let emailCount = 0
 // A valid POST /api/users body; emails stay unique within a test
 function newUserBody(role, extra = {}) {
@@ -140,7 +149,7 @@ describe('POST /api/users', () => {
     expect(login.status).toBe(200)
     expect(login.body.user).toMatchObject({ id: user.id, must_change_password: true })
 
-    const me = await api.get('/api/auth/me').set(auth(login.body.token))
+    const me = await api.get('/api/auth/me').set(auth(sessionOf(login)))
     expect(me.body.must_change_password).toBe(true)
   })
 

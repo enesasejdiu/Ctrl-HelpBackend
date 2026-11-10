@@ -1,11 +1,11 @@
 // Cookie sessions with CSRF protection (src/session.js, middleware/auth.js): login sets the httpOnly tf_session cookie
-// and the readable tf_csrf cookie; requireAuth reads the cookie first and falls back to the Bearer header (for now);
-// cookie-authenticated changes need X-CSRF-Token = tf_csrf; logout clears both cookies; CORS allows only CLIENT_URL,
-// with credentials.
+// and the readable tf_csrf cookie and returns only { user }; requireAuth reads only the cookie (an Authorization
+// header is ignored, so Bearer alone is a 401); changes need X-CSRF-Token = tf_csrf; logout clears both cookies;
+// CORS allows only CLIENT_URL, with credentials.
 const jwt = require('jsonwebtoken')
 const request = require('supertest')
 const app = require('../src/app')
-const { api, createUser, createDepartment, auth } = require('./helpers')
+const { api, createUser, createDepartment } = require('./helpers')
 
 const EIGHT_HOURS = 8 * 60 * 60
 
@@ -25,12 +25,12 @@ function cookiesOf(res) {
   return cookies
 }
 
-// Logs in and returns the token from the body and the two cookie values
+// Logs in and returns the two cookie values
 async function loginWithCookies(user) {
   const res = await api.post('/api/auth/login').send({ email: user.email, password: user.password })
   expect(res.status).toBe(200)
   const cookies = cookiesOf(res)
-  return { token: res.body.token, session: cookies.tf_session.value, csrf: cookies.tf_csrf.value }
+  return { session: cookies.tf_session.value, csrf: cookies.tf_csrf.value }
 }
 
 const cookieHeader = (values) =>
@@ -44,7 +44,7 @@ describe('login sets the session cookies', () => {
     const res = await api.post('/api/auth/login').send({ email: user.email, password: user.password })
     const { tf_session: session } = cookiesOf(res)
 
-    expect(session.value).toBe(res.body.token)
+    expect(jwt.decode(session.value)).toMatchObject({ id: user.id })
     expect(session.flags.has('httponly')).toBe(true)
     expect(session.attrs.samesite).toBe('Lax')
     expect(session.attrs.path).toBe('/')
@@ -75,12 +75,15 @@ describe('login sets the session cookies', () => {
     }
   })
 
-  test('the body still has { token, user }, and the token is valid for 8 hours', async () => {
+  test("the body is only { user } (no token anywhere in it), and the cookie's token is valid for 8 hours", async () => {
     const user = await createUser()
     const res = await api.post('/api/auth/login').send({ email: user.email, password: user.password })
 
-    expect(res.body).toMatchObject({ token: expect.any(String), user: { id: user.id } })
-    const { iat, exp } = jwt.decode(res.body.token)
+    expect(Object.keys(res.body)).toEqual(['user'])
+    expect(res.body.user.id).toBe(user.id)
+    const { tf_session: session } = cookiesOf(res)
+    expect(JSON.stringify(res.body)).not.toContain(session.value)
+    const { iat, exp } = jwt.decode(session.value)
     expect(exp - iat).toBe(EIGHT_HOURS)
   })
 
@@ -102,72 +105,64 @@ describe('authenticating', () => {
     expect(me.body.id).toBe(user.id)
   })
 
-  test('the Bearer header still works, and its changes need no CSRF header', async () => {
-    const admin = await createUser({ role: 'admin' })
-    const { token } = await loginWithCookies(admin)
+  test('a Bearer header alone is a 401 "Not logged in": the token is only accepted in the cookie', async () => {
+    const user = await createUser({ role: 'admin' })
+    const { session } = await loginWithCookies(user) // a valid token, sent the old way
+    const bearer = { Authorization: `Bearer ${session}` }
 
-    expect((await api.get('/api/auth/me').set(auth(token))).status).toBe(200)
-    const created = await api.post('/api/departments').set(auth(token)).send({ name: 'Bearer Dept' })
-    expect(created.status).toBe(201)
+    const me = await api.get('/api/auth/me').set(bearer)
+    expect(me.status).toBe(401)
+    expect(me.body.message).toBe('Not logged in')
+    const created = await api.post('/api/departments').set(bearer).send({ name: 'Bearer Dept' })
+    expect(created.status).toBe(401)
   })
 
-  test("a Bearer header wins over the cookie: the request runs as the header's user, with no CSRF check", async () => {
-    // Like Postman or Playwright's API helper: it kept the cookie from an earlier login, but sends another token
+  test("next to a cookie, a Bearer header is ignored: the request runs as the cookie's user, and changes need CSRF", async () => {
     const admin = await createUser({ role: 'admin' })
     const employee = await createUser()
-    const { token: adminToken } = await loginWithCookies(admin)
+    const { session: adminSession } = await loginWithCookies(admin)
     const { session: employeeSession, csrf } = await loginWithCookies(employee)
     const cookies = cookieHeader({ tf_session: employeeSession, tf_csrf: csrf })
 
-    const me = await api.get('/api/auth/me').set(auth(adminToken)).set('Cookie', cookies)
-    expect(me.body.id).toBe(admin.id)
-    const created = await api
+    const me = await api.get('/api/auth/me').set('Authorization', `Bearer ${adminSession}`).set('Cookie', cookies)
+    expect(me.body.id).toBe(employee.id)
+    // The admin token in the header doesn't help: the employee can't create departments, and without the CSRF header
+    // the change is refused before that
+    const noCsrf = await api
       .post('/api/departments')
-      .set(auth(adminToken))
+      .set('Authorization', `Bearer ${adminSession}`)
       .set('Cookie', cookies)
       .send({ name: 'Header Dept' })
-    expect(created.status).toBe(201)
+    expect(noCsrf.body.code).toBe('CSRF_INVALID')
   })
 
-  test('an invalid Bearer header is a 401 even with a valid cookie (no falling back)', async () => {
+  test('an invalid Authorization header changes nothing: a valid cookie still works', async () => {
     const user = await createUser()
     const { session } = await loginWithCookies(user)
 
-    const res = await api
-      .get('/api/auth/me')
-      .set('Authorization', 'Bearer not-a-token')
-      .set('Cookie', `tf_session=${session}`)
-    expect(res.status).toBe(401)
+    for (const header of ['Bearer not-a-token', 'Basic abc']) {
+      const res = await api.get('/api/auth/me').set('Authorization', header).set('Cookie', `tf_session=${session}`)
+      expect([header, res.status]).toEqual([header, 200])
+    }
   })
 
-  test("an Authorization header that isn't Bearer is ignored: the cookie is used", async () => {
-    const user = await createUser()
-    const { session } = await loginWithCookies(user)
-
-    const res = await api.get('/api/auth/me').set('Authorization', 'Basic abc').set('Cookie', `tf_session=${session}`)
-    expect(res.status).toBe(200)
-  })
-
-  test.each([
-    ['cookie', (token) => ['Cookie', `tf_session=${token}`]],
-    ['Bearer header', (token) => ['Authorization', `Bearer ${token}`]],
-  ])('an expired token in the %s is a 401', async (_, header) => {
+  test('an expired token in the cookie is a 401', async () => {
     const user = await createUser()
     const expired = jwt.sign({ id: user.id, name: user.name, role: user.role }, process.env.JWT_SECRET, {
       expiresIn: -10,
     })
 
-    const res = await api.get('/api/auth/me').set(...header(expired))
+    const res = await api.get('/api/auth/me').set('Cookie', `tf_session=${expired}`)
     expect(res.status).toBe(401)
     expect(res.body.message).toBe('Session expired, please log in again')
   })
 
-  test('no cookie and no header is a 401', async () => {
+  test('no cookie is a 401', async () => {
     expect((await api.get('/api/auth/me')).status).toBe(401)
   })
 })
 
-describe('CSRF: changes authenticated by the cookie need X-CSRF-Token', () => {
+describe('CSRF: every change (POST/PATCH/PUT/DELETE) needs X-CSRF-Token', () => {
   const CSRF_INVALID = {
     message: 'Missing or invalid CSRF token. Reload the page and try again.',
     code: 'CSRF_INVALID',
@@ -236,6 +231,40 @@ describe('CSRF: changes authenticated by the cookie need X-CSRF-Token', () => {
       .set('Cookie', cookies)
       .send({ email: user.email, password: user.password })
     expect(res.status).toBe(200)
+  })
+})
+
+describe('a browser-like client (supertest agent keeping cookies)', () => {
+  // Reads a cookie the agent has stored, like the frontend reads tf_csrf from document.cookie
+  const jarValue = (agent, name) =>
+    agent.jar.getCookie(name, { path: '/', domain: '127.0.0.1', secure: false, script: false })?.value
+
+  test('logs in, makes a change with the CSRF header from its cookie, changes its password and keeps going', async () => {
+    const user = await createUser({ role: 'admin' })
+    const agent = request.agent(app)
+    expect((await agent.post('/api/auth/login').send({ email: user.email, password: user.password })).status).toBe(200)
+
+    const csrf = jarValue(agent, 'tf_csrf')
+    expect(csrf).toMatch(/^[0-9a-f]{64}$/)
+    const created = await agent.post('/api/departments').set('X-CSRF-Token', csrf).send({ name: 'Agent Dept' })
+    expect(created.status).toBe(201)
+
+    const changed = await agent
+      .post('/api/auth/change-password')
+      .set('X-CSRF-Token', csrf)
+      .send({ currentPassword: user.password, newPassword: 'Brand-new-pass1' })
+    expect(changed.status).toBe(200)
+    expect(changed.body).not.toHaveProperty('token')
+
+    // The response replaced both cookies: the session continues with them, and the new tf_csrf is the one to send
+    const freshCsrf = jarValue(agent, 'tf_csrf')
+    expect(freshCsrf).not.toBe(csrf)
+    expect((await agent.get('/api/auth/me')).status).toBe(200)
+    const renamed = await agent
+      .patch(`/api/departments/${created.body.id}`)
+      .set('X-CSRF-Token', freshCsrf)
+      .send({ name: 'Agent Dept 2' })
+    expect(renamed.status).toBe(200)
   })
 })
 

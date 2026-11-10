@@ -65,17 +65,30 @@ async function createUser({
   return { id: result.insertId, ...user, password }
 }
 
-// Logs in through the API, like the frontend does, and returns the token
+// The tf_session cookie a response set (login, change-password), or undefined. The token is never in the body.
+function sessionOf(res) {
+  for (const line of res.headers['set-cookie'] || []) {
+    const [pair] = line.split(';')
+    const [name, ...value] = pair.trim().split('=')
+    if (name === 'tf_session' && value.join('=')) return decodeURIComponent(value.join('='))
+  }
+  return undefined
+}
+
+// Logs in through the API, like the frontend does, and returns the session (the tf_session cookie's value)
 async function loginAs(user) {
   const res = await api.post('/api/auth/login').send({ email: user.email, password: user.password })
   if (res.status !== 200) {
     throw new Error(`loginAs(${user.email}) failed: ${res.status} ${JSON.stringify(res.body)}`)
   }
-  return res.body.token
+  return sessionOf(res)
 }
 
-// The Authorization header for a token, e.g. api.get(path).set(auth(token))
-const auth = (token) => ({ Authorization: `Bearer ${token}` })
+// Headers that send a session the way a browser does: the tf_session cookie, plus a tf_csrf cookie and the matching
+// X-CSRF-Token header (double-submit: the backend only checks that the two are equal, so any value works).
+// Use with any method, e.g. api.post(path).set(auth(session)).send(body)
+const TEST_CSRF = 'test-csrf-token'
+const auth = (session) => ({ Cookie: `tf_session=${session}; tf_csrf=${TEST_CSRF}`, 'X-CSRF-Token': TEST_CSRF })
 
 async function dbUser(id) {
   const [[row]] = await pool.query('SELECT * FROM users WHERE id = ?', [id])
@@ -138,8 +151,10 @@ module.exports = {
   resetData,
   createUser,
   loginAs,
+  sessionOf,
   DEFAULT_PASSWORD,
   auth,
+  TEST_CSRF,
   dbUser,
   createDepartment,
   createCallers,

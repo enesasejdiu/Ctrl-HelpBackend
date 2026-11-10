@@ -10,6 +10,7 @@ const {
   dbSnapshot,
   expectError,
   expectNoPasswordHash,
+  auth,
 } = require('./helpers')
 
 const NEW_PASSWORD = 'Matrix-new-pass1'
@@ -152,7 +153,7 @@ describe('permission matrix', () => {
     const before = await dbSnapshot()
 
     let req = api[method](path)
-    if (caller) req = req.set('Authorization', `Bearer ${caller.token}`)
+    if (caller) req = req.set(auth(caller.token))
     const res = await (body === undefined ? req : req.send(body))
 
     expect(res.status).toBe(status)

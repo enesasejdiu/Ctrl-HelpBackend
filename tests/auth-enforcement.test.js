@@ -14,6 +14,8 @@ const {
   dbSnapshot,
   expectError,
   expectNoPasswordHash,
+  auth,
+  sessionOf,
 } = require('./helpers')
 
 // Routes anyone may call without logging in
@@ -38,7 +40,7 @@ const ROUTES = [...routesOf('', app.router), ...apiRoutes.flatMap(([prefix, rout
 function call(route, token) {
   const [method, pattern] = route.split(' ')
   const req = api[method.toLowerCase()](pattern.replace(/:\w+/g, '1'))
-  return token ? req.set('Authorization', `Bearer ${token}`) : req
+  return token ? req.set(auth(token)) : req
 }
 
 beforeEach(resetData)
@@ -99,20 +101,24 @@ describe('must_change_password', () => {
     expect(login.body.user.must_change_password).toBe(false)
     expect(login.body.user).not.toHaveProperty('password_hash')
 
-    const me = await api.get('/api/auth/me').set('Authorization', `Bearer ${login.body.token}`)
+    const me = await api.get('/api/auth/me').set(auth(sessionOf(login)))
     expect(me.body.must_change_password).toBe(false)
   })
 
   test.each([
     ['a flagged user', true],
     ['a normal user', false],
-  ])('login tells the client next to the token whether %s must change their password', async (_, flagged) => {
-    const user = await createUser({ mustChangePassword: flagged })
-    const login = await api.post('/api/auth/login').send({ email: user.email, password: user.password })
-    expect(login.status).toBe(200)
-    expect(login.body).toMatchObject({ token: expect.any(String), must_change_password: flagged })
-    expect(login.body.user.must_change_password).toBe(flagged)
-  })
+  ])(
+    'login returns { user } telling the client whether %s must change their password; no token in the body',
+    async (_, flagged) => {
+      const user = await createUser({ mustChangePassword: flagged })
+      const login = await api.post('/api/auth/login').send({ email: user.email, password: user.password })
+      expect(login.status).toBe(200)
+      expect(Object.keys(login.body)).toEqual(['user'])
+      expect(login.body.user.must_change_password).toBe(flagged)
+      expect(sessionOf(login)).toEqual(expect.any(String)) // the session is the cookie
+    },
+  )
 
   test('a successful login sets last_login_at; a wrong password or a deactivated account does not', async () => {
     const user = await createUser()
@@ -137,7 +143,7 @@ describe('must_change_password', () => {
   test('/me returns job_title, created_at and last_login_at, and never the password hash', async () => {
     const user = await createUser({ jobTitle: 'Accountant' })
     const login = await api.post('/api/auth/login').send({ email: user.email, password: user.password })
-    const me = await api.get('/api/auth/me').set('Authorization', `Bearer ${login.body.token}`)
+    const me = await api.get('/api/auth/me').set(auth(sessionOf(login)))
     expect(me.status).toBe(200)
 
     const stored = await dbUser(user.id)
@@ -162,7 +168,7 @@ describe('must_change_password', () => {
     // Clear the login loginAs just recorded, as for an account that has a token but no recorded login
     await pool.query('UPDATE users SET last_login_at = NULL WHERE id = ?', [user.id])
 
-    const me = await api.get('/api/auth/me').set('Authorization', `Bearer ${token}`)
+    const me = await api.get('/api/auth/me').set(auth(token))
     expect(me.status).toBe(200)
     expect(me.body).toHaveProperty('job_title', null)
     expect(me.body).toHaveProperty('last_login_at', null)
@@ -172,7 +178,7 @@ describe('must_change_password', () => {
   test('an HR user can log in and /me shows the hr role', async () => {
     const hr = await createUser({ role: 'hr' })
     const token = await loginAs(hr)
-    const me = await api.get('/api/auth/me').set('Authorization', `Bearer ${token}`)
+    const me = await api.get('/api/auth/me').set(auth(token))
     expect(me.status).toBe(200)
     expect(me.body).toMatchObject({ id: hr.id, role: 'hr', must_change_password: false })
   })
@@ -183,14 +189,14 @@ describe('blocking until a temporary password is changed', () => {
     message: 'You must change your password before continuing',
     code: 'PASSWORD_CHANGE_REQUIRED',
   }
-  const get = (path, token) => api.get(path).set('Authorization', `Bearer ${token}`)
+  const get = (path, token) => api.get(path).set(auth(token))
 
   test('a flagged user can log in and use /me, but every other endpoint returns 403 PASSWORD_CHANGE_REQUIRED', async () => {
     const user = await createUser({ role: 'admin', mustChangePassword: true })
     const login = await api.post('/api/auth/login').send({ email: user.email, password: user.password })
     expect(login.status).toBe(200)
     expect(login.body.user.must_change_password).toBe(true)
-    const token = login.body.token
+    const token = sessionOf(login)
 
     expect((await get('/api/auth/me', token)).status).toBe(200)
     expect((await get('/api/auth/me/', token)).status).toBe(200)
@@ -200,7 +206,7 @@ describe('blocking until a temporary password is changed', () => {
     }
     const create = await api
       .post('/api/tickets')
-      .set('Authorization', `Bearer ${token}`)
+      .set(auth(token))
       .send({ title: 'x', description: 'y', category_id: 1, priority_id: 1 })
     expect(create.status).toBe(403)
     expect(create.body.code).toBe('PASSWORD_CHANGE_REQUIRED')
@@ -213,30 +219,30 @@ describe('blocking until a temporary password is changed', () => {
 
     const res = await api
       .post('/api/auth/change-password')
-      .set('Authorization', `Bearer ${token}`)
+      .set(auth(token))
       .send({ currentPassword: user.password, newPassword: 'my-own-password9' })
     expect(res.status).toBe(200)
-    expect((await get('/api/tickets', res.body.token)).status).toBe(200)
+    expect((await get('/api/tickets', sessionOf(res))).status).toBe(200)
   })
 
   test('an account created by an admin is blocked until its temporary password is changed', async () => {
     const admin = await createUser({ role: 'admin' })
     const created = await api
       .post('/api/users')
-      .set('Authorization', `Bearer ${await loginAs(admin)}`)
+      .set(auth(await loginAs(admin)))
       .send({ name: 'New Person', email: 'new.person@test.local', role: 'employee' })
     const { temporaryPassword } = created.body
 
     const login = await api
       .post('/api/auth/login')
       .send({ email: 'new.person@test.local', password: temporaryPassword })
-    expect((await get('/api/tickets', login.body.token)).body.code).toBe('PASSWORD_CHANGE_REQUIRED')
+    expect((await get('/api/tickets', sessionOf(login))).body.code).toBe('PASSWORD_CHANGE_REQUIRED')
 
     const changed = await api
       .post('/api/auth/change-password')
-      .set('Authorization', `Bearer ${login.body.token}`)
+      .set(auth(sessionOf(login)))
       .send({ currentPassword: temporaryPassword, newPassword: 'chosen-by-me1' })
-    expect((await get('/api/tickets', changed.body.token)).status).toBe(200)
+    expect((await get('/api/tickets', sessionOf(changed))).status).toBe(200)
   })
 
   test('an unflagged user is never blocked', async () => {

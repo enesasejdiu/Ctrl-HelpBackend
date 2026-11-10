@@ -1,27 +1,16 @@
 {
   "info": {
     "name": "TicketFlow API",
-    "description": "All TicketFlow backend endpoints. Run `npm run db:seed` first, then one of the Login requests: it saves the token into {{token}}, which every other request sends as a Bearer token. Log in as the admin to be allowed every request.",
+    "description": "All TicketFlow backend endpoints. Run `npm run db:seed` first (on a development database), then one of the Login requests. The session is a cookie: login sets `tf_session` (httpOnly) and `tf_csrf`, Postman keeps them in its cookie jar and sends them with every request to the API. The collection's pre-request script copies `tf_csrf` into the `X-CSRF-Token` header on POST, PATCH, PUT and DELETE, which the backend requires. There is no token to copy and no Authorization header (the backend ignores it). Log in as the admin to be allowed every request; Auth → Logout clears the cookies.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
-    "type": "bearer",
-    "bearer": [
-      {
-        "key": "token",
-        "value": "{{token}}",
-        "type": "string"
-      }
-    ]
+    "type": "noauth"
   },
   "variable": [
     {
       "key": "baseUrl",
       "value": "http://localhost:5050/api"
-    },
-    {
-      "key": "token",
-      "value": ""
     },
     {
       "key": "ticketId",
@@ -71,7 +60,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["auth", "login"]
             },
-            "description": "Logs in and stores the token in the {{token}} collection variable.",
+            "description": "Logs in. The backend sets the tf_session and tf_csrf cookies, which Postman sends with the other requests.",
             "auth": {
               "type": "noauth"
             },
@@ -92,10 +81,12 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Save the token so every other request uses it (collection auth = Bearer {{token}})",
-                  "if (pm.response.code === 200 || pm.response.code === 201) {",
-                  "  pm.collectionVariables.set('token', pm.response.json().token);",
-                  "}"
+                  "// The session is the tf_session cookie (Postman's cookie jar sends it from now on); the body only has { user }",
+                  "pm.test('logged in: the session cookie is set', () => {",
+                  "  pm.response.to.have.status(200)",
+                  "  pm.expect(pm.cookies.has('tf_session')).to.be.true",
+                  "  pm.expect(pm.response.json()).to.not.have.property('token')",
+                  "})"
                 ]
               }
             }
@@ -116,7 +107,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["auth", "login"]
             },
-            "description": "Logs in and stores the token in the {{token}} collection variable.",
+            "description": "Logs in. The backend sets the tf_session and tf_csrf cookies, which Postman sends with the other requests.",
             "auth": {
               "type": "noauth"
             },
@@ -137,10 +128,12 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Save the token so every other request uses it (collection auth = Bearer {{token}})",
-                  "if (pm.response.code === 200 || pm.response.code === 201) {",
-                  "  pm.collectionVariables.set('token', pm.response.json().token);",
-                  "}"
+                  "// The session is the tf_session cookie (Postman's cookie jar sends it from now on); the body only has { user }",
+                  "pm.test('logged in: the session cookie is set', () => {",
+                  "  pm.response.to.have.status(200)",
+                  "  pm.expect(pm.cookies.has('tf_session')).to.be.true",
+                  "  pm.expect(pm.response.json()).to.not.have.property('token')",
+                  "})"
                 ]
               }
             }
@@ -161,7 +154,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["auth", "login"]
             },
-            "description": "Logs in and stores the token in the {{token}} collection variable.",
+            "description": "Logs in. The backend sets the tf_session and tf_csrf cookies, which Postman sends with the other requests.",
             "auth": {
               "type": "noauth"
             },
@@ -182,10 +175,12 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Save the token so every other request uses it (collection auth = Bearer {{token}})",
-                  "if (pm.response.code === 200 || pm.response.code === 201) {",
-                  "  pm.collectionVariables.set('token', pm.response.json().token);",
-                  "}"
+                  "// The session is the tf_session cookie (Postman's cookie jar sends it from now on); the body only has { user }",
+                  "pm.test('logged in: the session cookie is set', () => {",
+                  "  pm.response.to.have.status(200)",
+                  "  pm.expect(pm.cookies.has('tf_session')).to.be.true",
+                  "  pm.expect(pm.response.json()).to.not.have.property('token')",
+                  "})"
                 ]
               }
             }
@@ -219,7 +214,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["auth", "change-password"]
             },
-            "description": "Changes your own password; also clears must_change_password after a temporary password. Body: currentPassword and newPassword (10-72 characters, a letter and a digit). Returns { message: \"Password changed\", user }. A wrong current password returns 400 with code INVALID_CURRENT_PASSWORD (not 401, the session is fine). Other sessions are not ended: tokens are stateless.",
+            "description": "Changes your own password; also clears must_change_password after a temporary password. Body: currentPassword and newPassword (10-72 characters, a letter and a digit). Returns { message: \"Password changed\", user }. A wrong current password returns 400 with code INVALID_CURRENT_PASSWORD (not 401, the session is fine). It ends the user's other sessions; this one continues, because the response sets fresh session cookies.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"currentPassword\": \"password123\",\n  \"newPassword\": \"my-new-password1\"\n}",
@@ -231,6 +226,22 @@
             }
           },
           "response": []
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "logout"]
+            },
+            "description": "Clears the session cookies (204). Needs no session.",
+            "auth": {
+              "type": "noauth"
+            }
+          }
         }
       ]
     },
@@ -661,6 +672,21 @@
         "description": "Admin only."
       },
       "response": []
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Changes need the CSRF header: copy the tf_csrf cookie (set at login) into X-CSRF-Token",
+          "if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(pm.request.method)) {",
+          "  const csrf = pm.cookies.get('tf_csrf')",
+          "  if (csrf) pm.request.headers.upsert({ key: 'X-CSRF-Token', value: csrf })",
+          "}"
+        ]
+      }
     }
   ]
 }

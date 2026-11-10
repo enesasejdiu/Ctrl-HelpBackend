@@ -1,7 +1,6 @@
 // Authentication routes: login, logout, "who am I" and change password.
 // Mounted at /api/auth. A successful login sets the session cookies (tf_session with the token, httpOnly, and tf_csrf
-// for the CSRF header; see src/session.js) and still returns { token, user }, so clients that send the token as
-// "Authorization: Bearer <token>" keep working until they switch to the cookie.
+// for the CSRF header; see src/session.js) and returns { user }. The token is never sent in a response body.
 // There is no self-registration: admins and HR create accounts with POST /api/users.
 const express = require('express')
 const bcrypt = require('bcryptjs')
@@ -103,8 +102,8 @@ function publicUser(user) {
   }
 }
 
-// POST /api/auth/login → { token, must_change_password, user }
-// A user with a temporary password logs in normally; must_change_password tells the client to send them to the
+// POST /api/auth/login → { user }, and the session cookies (tf_session, httpOnly, and tf_csrf; see src/session.js)
+// A user with a temporary password logs in normally; user.must_change_password tells the client to send them to the
 // change-password screen, and requireAuth blocks everything else until they do.
 // Limits: at most 20 requests per IP address per 15 minutes (429 RATE_LIMITED, middleware/rateLimit.js), and 5 wrong
 // passwords in a row lock the account for 15 minutes (423 ACCOUNT_LOCKED, even with the right password). The lock
@@ -145,9 +144,8 @@ router.post('/login', loginRateLimit, validate(schemas.login), async (req, res) 
   const [[{ last_login_at: lastLoginAt }]] = await pool.query('SELECT last_login_at FROM users WHERE id = ?', [user.id])
 
   const loggedIn = publicUser({ ...user, last_login_at: lastLoginAt })
-  const token = makeToken(user)
-  setSessionCookies(res, token)
-  res.json({ token, must_change_password: loggedIn.must_change_password, user: loggedIn })
+  setSessionCookies(res, makeToken(user))
+  res.json({ user: loggedIn })
 })
 
 // POST /api/auth/logout → 204. Clears both session cookies. Needs no session (an expired one is fine too), so it can't
@@ -170,12 +168,12 @@ router.get('/me', requireAuth, async (req, res) => {
   res.json(publicUser(rows[0]))
 })
 
-// POST /api/auth/change-password { currentPassword, newPassword } → { message, token, user }
+// POST /api/auth/change-password { currentPassword, newPassword } → { message, user }, and fresh session cookies
 // Your own account only (the token says whose). Also the way out of a temporary password: requireAuth lets a flagged
 // user reach this route, and it clears the flag.
 // Sessions: raises session_version, which ends every session of this user, including other browsers and devices.
-// The session that made the change gets a fresh token at once (new cookies, and the token in the body for Bearer
-// clients), so the person who changed the password stays logged in.
+// The session that made the change gets fresh session cookies in the same response, so the person who changed the
+// password stays logged in.
 router.post('/change-password', requireAuth, validate(schemas.changePassword), async (req, res) => {
   const { currentPassword, newPassword } = req.valid.body
   const [[user]] = await pool.query(`${AUTH_USER_SELECT} WHERE u.id = ?`, [req.user.id])
@@ -214,9 +212,8 @@ router.post('/change-password', requireAuth, validate(schemas.changePassword), a
     conn.release()
   }
 
-  const token = makeToken({ ...user, session_version: sessionVersion })
-  setSessionCookies(res, token)
-  res.json({ message: 'Password changed', token, user: publicUser({ ...user, must_change_password: false }) })
+  setSessionCookies(res, makeToken({ ...user, session_version: sessionVersion }))
+  res.json({ message: 'Password changed', user: publicUser({ ...user, must_change_password: false }) })
 })
 
 module.exports = router
