@@ -4,14 +4,13 @@ const bcrypt = require('bcryptjs')
 const pool = require('../src/db')
 const { newPassword } = require('../src/schemas/common')
 const { makeTemporaryPassword } = require('../src/temporaryPassword')
-const { api, resetData, createUser, loginAs, auth, dbUser, dbSnapshot, expectError } = require('./helpers')
+const { api, resetData, createUser, loginAs, auth, dbUser, dbSnapshot, expectError, sessionOf } = require('./helpers')
 
 beforeEach(resetData)
 
 describe('POST /api/auth/change-password', () => {
   const NEW_PASSWORD = 'brand-new-pass1'
-  const change = (token, body) =>
-    api.post('/api/auth/change-password').set('Authorization', `Bearer ${token}`).send(body)
+  const change = (token, body) => api.post('/api/auth/change-password').set(auth(token)).send(body)
 
   test('without a token returns 401', async () => {
     const res = await api.post('/api/auth/change-password').send({ currentPassword: 'x', newPassword: NEW_PASSWORD })
@@ -109,9 +108,9 @@ describe('POST /api/auth/change-password', () => {
     const token = await loginAs(user)
     const res = await change(token, { currentPassword: user.password, newPassword: NEW_PASSWORD })
     expect(res.status).toBe(200)
-    expect(res.body.token).toEqual(expect.any(String))
-    expect(res.body.token).not.toBe(token)
-    expect((await api.get('/api/tickets').set(auth(res.body.token))).status).toBe(200)
+    expect(sessionOf(res)).toEqual(expect.any(String))
+    expect(sessionOf(res)).not.toBe(token)
+    expect((await api.get('/api/tickets').set(auth(sessionOf(res)))).status).toBe(200)
     // The token sent with the change belonged to the old password, so it has ended like every other session
     expect((await api.get('/api/tickets').set(auth(token))).status).toBe(401)
   })
@@ -195,6 +194,6 @@ describe('POST /api/auth/change-password: more rules', () => {
     const res = await change(current, { currentPassword: user.password, newPassword: 'Brand-new-pass1' })
     expect(res.status).toBe(200)
     expectError(await api.get('/api/auth/me').set(auth(other)), 401, undefined, 'Session expired, please log in again')
-    expect((await api.get('/api/auth/me').set(auth(res.body.token))).status).toBe(200)
+    expect((await api.get('/api/auth/me').set(auth(sessionOf(res)))).status).toBe(200)
   })
 })

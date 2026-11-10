@@ -1,9 +1,8 @@
 // Tests for /api/departments: listing with user counts, create/rename/delete for admin and HR, name rules, and
 // deleting only empty departments (also when a user is being assigned at the same moment).
 const pool = require('../src/db')
-const { api, resetData, createUser, loginAs } = require('./helpers')
+const { api, resetData, createUser, loginAs, auth } = require('./helpers')
 
-const auth = (token) => ({ Authorization: `Bearer ${token}` })
 const list = (token) => api.get('/api/departments').set(auth(token))
 const create = (token, body) => api.post('/api/departments').set(auth(token)).send(body)
 const rename = (token, id, body) => api.patch(`/api/departments/${id}`).set(auth(token)).send(body)

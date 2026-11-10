@@ -2,7 +2,7 @@
 // a locked account gets 423 ACCOUNT_LOCKED even with the right password, the lock runs out by itself, a successful
 // login clears the count, and an admin/HR password reset unlocks the account. Unknown emails stay a plain 401.
 const pool = require('../src/db')
-const { api, createUser, loginAs, auth, dbUser, expectNoPasswordHash } = require('./helpers')
+const { api, createUser, loginAs, auth, dbUser, expectNoPasswordHash, sessionOf } = require('./helpers')
 
 const WRONG = 'wrong-password1'
 const WRONG_LOGIN = { message: 'Wrong email or password' }
@@ -148,7 +148,7 @@ describe('login lockout', () => {
     // The temporary password works at once (the user then has to choose their own)
     const res = await login(user.email, reset.body.temporaryPassword)
     expect(res.status).toBe(200)
-    expect(res.body.must_change_password).toBe(true)
+    expect(res.body.user.must_change_password).toBe(true)
   })
 
   test('a deactivated account counts wrong passwords and locks like any other', async () => {
@@ -191,7 +191,7 @@ describe('login lockout', () => {
     const user = await createUser()
     await wrongLogins(user, 2)
     const res = await login(user.email, user.password)
-    const me = await api.get('/api/auth/me').set(auth(res.body.token))
+    const me = await api.get('/api/auth/me').set(auth(sessionOf(res)))
 
     for (const body of [res.body.user, me.body]) {
       expect(body).not.toHaveProperty('failed_login_count')

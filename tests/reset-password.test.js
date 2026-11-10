@@ -12,6 +12,7 @@ const {
   dbSnapshot,
   expectError,
   expectNoPasswordHash,
+  sessionOf,
 } = require('./helpers')
 
 let admin, hr, adminToken, hrToken
@@ -102,7 +103,7 @@ describe('POST /api/users/:id/reset-password', () => {
     // Any session the user had before the reset is ended; the new login is blocked until they choose a password
     const ended = await api.get('/api/tickets').set(auth(oldToken))
     expectError(ended, 401, undefined, 'Session expired, please log in again')
-    const blocked = await api.get('/api/tickets').set(auth(newLogin.body.token))
+    const blocked = await api.get('/api/tickets').set(auth(sessionOf(newLogin)))
     expect(blocked.body.code).toBe('PASSWORD_CHANGE_REQUIRED')
   })
 

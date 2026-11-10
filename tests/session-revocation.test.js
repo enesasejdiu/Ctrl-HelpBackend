@@ -4,7 +4,7 @@
 // fresh session straight away.
 const jwt = require('jsonwebtoken')
 const pool = require('../src/db')
-const { api, resetData, createUser, loginAs, auth, dbUser, expectError } = require('./helpers')
+const { api, resetData, createUser, loginAs, auth, dbUser, expectError, sessionOf } = require('./helpers')
 
 beforeEach(resetData)
 
@@ -48,7 +48,7 @@ describe('changing your own password', () => {
     })
     expect(res.status).toBe(200)
     const fresh = cookiesOf(res)
-    expect(fresh.tf_session).toBe(res.body.token)
+    expect(fresh.tf_session).toBe(sessionOf(res))
     expect(fresh.tf_csrf).toMatch(/^[0-9a-f]{64}$/)
 
     const freshBrowser = { session: fresh.tf_session, csrf: fresh.tf_csrf }
@@ -134,7 +134,7 @@ describe('password reset by an admin or HR', () => {
     expectError(await me(token), 401, undefined, ENDED)
     // The user logs in again with the temporary password
     const login = await api.post('/api/auth/login').send({ email: target.email, password: res.body.temporaryPassword })
-    expect((await me(login.body.token)).status).toBe(200)
+    expect((await me(sessionOf(login))).status).toBe(200)
   })
 
   test("doesn't end the resetter's own session", async () => {
@@ -199,8 +199,8 @@ describe('role change', () => {
     expectError(await me(token), 401, undefined, ENDED)
 
     const login = await api.post('/api/auth/login').send({ email: target.email, password: target.password })
-    expect(jwt.decode(login.body.token).role).toBe('employee')
-    expect((await me(login.body.token)).body.role).toBe('employee')
+    expect(jwt.decode(sessionOf(login)).role).toBe('employee')
+    expect((await me(sessionOf(login))).body.role).toBe('employee')
   })
 
   test('a promotion ends the old sessions too', async () => {
