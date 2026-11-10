@@ -27,6 +27,10 @@ function errorHandler(err, req, res, next) {
   if (err.type === 'entity.parse.failed') {
     return res.status(400).json({ message: 'Request body is not valid JSON' })
   }
+  // Bigger than the limit in app.js (express.json); the body is not read any further
+  if (err.type === 'entity.too.large') {
+    return res.status(413).json({ message: 'Request body is too large (at most 100 KB)', code: 'PAYLOAD_TOO_LARGE' })
+  }
 
   const status = err.status || 500
 

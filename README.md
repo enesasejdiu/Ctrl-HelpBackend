@@ -254,8 +254,20 @@ alone. The admin or HR person making the change keeps their own session. Otherwi
 expires, 8 hours after login. Tokens from before migration 007 have no version and count as version 0, so the
 migration logged nobody out.
 
-**CORS.** Only `CLIENT_URL` is allowed, with credentials. It's never `*`: without `CLIENT_URL`, no other origin is
-allowed at all.
+**CORS.** Only `CLIENT_URL` is allowed (compared exactly), with credentials, the methods `GET, POST, PATCH, PUT,
+DELETE` and the headers `Content-Type, X-CSRF-Token`. Any other origin gets no CORS headers at all, so the browser
+won't let other sites read the responses. It's never `*`; without `CLIENT_URL`, no origin is allowed.
+
+**Request limits and security headers** (`src/app.js`):
+
+- JSON bodies over **100 KB** get 413 `{ "message": "Request body is too large (at most 100 KB)", "code": "PAYLOAD_TOO_LARGE" }`.
+- [helmet](https://helmetjs.github.io/), set up for an API: `Content-Security-Policy: default-src 'none';
+frame-ancestors 'none'` (nothing to load, no framing), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer`, same-origin resource and opener policies, and no `X-Powered-By`.
+- **Production only** (`NODE_ENV=production`): HSTS (`max-age=15552000; includeSubDomains`, 180 days), and
+  `trust proxy` set to 1, so behind nginx `req.ip` (and with it the login rate limit) is the client's real address
+  from `X-Forwarded-For`. In development neither is set: HSTS would lock `http://localhost` out of the browser, and
+  trusting the header without a proxy would let any client pick its own IP.
 
 **Cookie only, no Bearer.** The session is only ever read from the `tf_session` cookie. No response body contains
 the token: login returns `{ user }`, change-password `{ message, user }`. An `Authorization` header is ignored, so
