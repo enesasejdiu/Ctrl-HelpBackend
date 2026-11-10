@@ -237,10 +237,23 @@
               "host": ["{{baseUrl}}"],
               "path": ["auth", "logout"]
             },
-            "description": "Clears the session cookies (204). Needs no session.",
+            "description": "Ends this session on the server (even a copy of the token stops working) and clears the cookies (204). Needs no valid session.",
             "auth": {
               "type": "noauth"
             }
+          }
+        },
+        {
+          "name": "Logout everywhere",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout-all",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "logout-all"]
+            },
+            "description": "Ends every session of the logged-in user, in every browser and device, this one included (204)."
           }
         }
       ]

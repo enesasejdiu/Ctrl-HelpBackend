@@ -9,7 +9,8 @@ const pool = require('../db')
 const { HttpError } = require('../middleware/errors')
 const { requireAuth } = require('../middleware/auth')
 const { loginRateLimit } = require('../middleware/rateLimit')
-const { SESSION_HOURS, setSessionCookies, clearSessionCookies } = require('../session')
+const { SESSION_HOURS, SESSION_COOKIE, setSessionCookies, clearSessionCookies } = require('../session')
+const { createSession, revokeSession, revokeUserSessions } = require('../sessionStore')
 const validate = require('../middleware/validate')
 const schemas = require('../schemas/auth')
 
@@ -17,11 +18,12 @@ const router = express.Router()
 
 // Signed token identifying the user. requireAuth only trusts the id from it and reloads name/role from the DB;
 // name and role are included so the frontend can show them without an extra request.
-// session_version must still match users.session_version when the token is used (see requireAuth), so raising that
-// column ends the session. Valid for 8 hours, the same as the session cookie that carries it.
-function makeToken(user) {
+// sid is the server-side session (a sessions row, see src/sessionStore.js): requireAuth refuses the token once that row
+// is revoked or expired. session_version must still match users.session_version too. Valid for 8 hours, the same as
+// the session row and the cookie that carries it.
+function makeToken(user, sid) {
   return jwt.sign(
-    { id: user.id, name: user.name, role: user.role, session_version: user.session_version },
+    { id: user.id, name: user.name, role: user.role, session_version: user.session_version, sid },
     process.env.JWT_SECRET,
     { expiresIn: `${SESSION_HOURS}h` },
   )
@@ -144,16 +146,39 @@ router.post('/login', loginRateLimit, validate(schemas.login), async (req, res) 
   const [[{ last_login_at: lastLoginAt }]] = await pool.query('SELECT last_login_at FROM users WHERE id = ?', [user.id])
 
   const loggedIn = publicUser({ ...user, last_login_at: lastLoginAt })
-  setSessionCookies(res, makeToken(user))
+  const sid = await createSession(user.id, req)
+  setSessionCookies(res, makeToken(user, sid))
   res.json({ user: loggedIn })
 })
 
-// POST /api/auth/logout → 204. Clears both session cookies. Needs no session (an expired one is fine too), so it can't
-// fail. It ends only this browser's session: session_version is not raised, so the user's other sessions keep working
-// (and the token itself stays valid until it expires, but the browser no longer has it).
+// The session id from the request's cookie, if the token is genuine (signed by us). Expired tokens count too, so their
+// row can still be revoked. A forged or garbled cookie gives null.
+function sessionIdFromCookie(req) {
+  const token = req.cookies?.[SESSION_COOKIE]
+  if (!token) return null
+  try {
+    return jwt.verify(token, process.env.JWT_SECRET, { ignoreExpiration: true }).sid || null
+  } catch {
+    return null
+  }
+}
+
+// POST /api/auth/logout → 204. Ends this browser's session on the server (revoked_at on its row, so even a copy of the
+// token stops working), then clears both cookies. Needs no valid session: with an expired, revoked or missing one it
+// only clears the cookies, and still answers 204. The user's other sessions keep working (see /logout-all).
 // No CSRF check: the worst another site could do is log you out, and sameSite "lax" already keeps the cookies off
 // cross-site POSTs.
-router.post('/logout', (req, res) => {
+router.post('/logout', async (req, res) => {
+  const sid = sessionIdFromCookie(req)
+  if (sid) await revokeSession(sid)
+  clearSessionCookies(res)
+  res.status(204).end()
+})
+
+// POST /api/auth/logout-all → 204 (logged in). "Log out everywhere": ends every session of this user, in every browser
+// and device, this one included, and clears this browser's cookies.
+router.post('/logout-all', requireAuth, async (req, res) => {
+  await revokeUserSessions(req.user.id)
   clearSessionCookies(res)
   res.status(204).end()
 })
@@ -168,12 +193,12 @@ router.get('/me', requireAuth, async (req, res) => {
   res.json(publicUser(rows[0]))
 })
 
-// POST /api/auth/change-password { currentPassword, newPassword } → { message, user }, and fresh session cookies
+// POST /api/auth/change-password { currentPassword, newPassword } → { message, user }
 // Your own account only (the token says whose). Also the way out of a temporary password: requireAuth lets a flagged
 // user reach this route, and it clears the flag.
-// Sessions: raises session_version, which ends every session of this user, including other browsers and devices.
-// The session that made the change gets fresh session cookies in the same response, so the person who changed the
-// password stays logged in.
+// Sessions: every OTHER session of this user ends (other browsers and devices: their rows are revoked). The session
+// that made the change stays as it is, cookie and all, so the person who changed the password stays logged in.
+// session_version is not raised: that would end this session too.
 router.post('/change-password', requireAuth, validate(schemas.changePassword), async (req, res) => {
   const { currentPassword, newPassword } = req.valid.body
   const [[user]] = await pool.query(`${AUTH_USER_SELECT} WHERE u.id = ?`, [req.user.id])
@@ -187,23 +212,15 @@ router.post('/change-password', requireAuth, validate(schemas.changePassword), a
   }
 
   const passwordHash = await bcrypt.hash(newPassword, 10)
-  // One statement, so the new hash, the cleared flag and the ended sessions are saved together or not at all.
-  // In a transaction with the read-back: the UPDATE keeps the row locked until commit, so the version read is exactly
-  // the one this change set. (Otherwise an admin's reset landing in between would be baked into this session's new
-  // token, and the reset would not end it.)
+  // One transaction: the new password and the ended sessions are saved together or not at all
   const conn = await pool.getConnection()
-  let sessionVersion
   try {
     await conn.beginTransaction()
     await conn.query(
-      `UPDATE users SET password_hash = ?, must_change_password = FALSE, session_version = session_version + 1,
-         updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
+      'UPDATE users SET password_hash = ?, must_change_password = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
       [passwordHash, user.id],
     )
-    ;[[{ session_version: sessionVersion }]] = await conn.query('SELECT session_version FROM users WHERE id = ?', [
-      user.id,
-    ])
+    await revokeUserSessions(user.id, { keepSid: req.sessionId, db: conn })
     await conn.commit()
   } catch (err) {
     await conn.rollback()
@@ -212,7 +229,6 @@ router.post('/change-password', requireAuth, validate(schemas.changePassword), a
     conn.release()
   }
 
-  setSessionCookies(res, makeToken({ ...user, session_version: sessionVersion }))
   res.json({ message: 'Password changed', user: publicUser({ ...user, must_change_password: false }) })
 })
 

@@ -120,5 +120,6 @@ requireAuth checks the current role and active status in the database on every r
 - [x] Configuration checked at startup; weak secrets refused in production
 - [x] Request size limit (100 KB), strict CORS, and production security headers (helmet, HSTS, trust proxy)
 - [x] Dependabot (weekly npm and GitHub Actions updates) and npm audit of production dependencies in CI
+- [x] Short sessions: 8-hour token, logout ends the session on the server, log out everywhere
 - [x] Password change/reset, deactivation and role change end other sessions
 - [x] Backend CI: Prettier, ESLint and tests on MySQL 8.4 and MariaDB 11
