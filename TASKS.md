@@ -117,5 +117,6 @@ requireAuth checks the current role and active status in the database on every r
 - [x] Admin/HR edit name, email and department (backend)
 - [x] /me returns job title, member since and last login; login records last_login_at
 - [x] httpOnly cookie sessions with CSRF protection; no token in localStorage
+- [x] Configuration checked at startup; weak secrets refused in production
 - [x] Password change/reset, deactivation and role change end other sessions
 - [x] Backend CI: Prettier, ESLint and tests on MySQL 8.4 and MariaDB 11

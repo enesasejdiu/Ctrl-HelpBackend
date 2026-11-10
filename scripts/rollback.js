@@ -61,6 +61,8 @@ async function rollback({ dbName = process.env.DB_NAME, backupFirst = true } = {
 }
 
 if (require.main === module) {
+  // Stop with a clear message before connecting if a DB_* setting is missing or malformed (src/config.js)
+  require('../src/config').checkConfig('database')
   rollback().catch((err) => {
     console.error('Rollback failed:', err.message)
     process.exitCode = 1

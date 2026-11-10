@@ -374,6 +374,8 @@ async function seed({ force = process.argv.includes('--force') } = {}) {
 
 // Run directly by npm run db:seed; tests/seed.test.js imports seed() instead
 if (require.main === module) {
+  // Stop with a clear message before connecting if a DB_* setting is missing or malformed (src/config.js)
+  require('../src/config').checkConfig('database')
   seed()
     .catch((err) => {
       console.error('Seeding failed:', err.message)

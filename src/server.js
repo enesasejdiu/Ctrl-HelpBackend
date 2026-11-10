@@ -1,10 +1,13 @@
-// Entry point: loads environment variables, then starts the HTTP server.
+// Entry point: loads environment variables, checks them, then starts the HTTP server.
 // dotenv must run before app.js is required so process.env is populated for middleware config.
 require('dotenv').config()
 
+// Refuses to start (exit 1, with a list of problems) when a setting is missing or, in production, too weak
+const config = require('./config').checkConfig('server')
+
 const app = require('./app')
 
-const PORT = process.env.PORT || 5050
+const PORT = config.PORT
 
 // Express 5 passes listen errors (e.g. port already in use) to this callback instead of throwing
 app.listen(PORT, (err) => {

@@ -31,7 +31,16 @@ cp .env.example .env
 ```
 
 Edit `.env`: set `DB_PASSWORD` to your MySQL root password (leave it empty if root has none) and set `JWT_SECRET`
-to a long random string.
+to a long random string. Generate one with:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+```
+
+`src/config.js` checks the settings whenever the server or a database script starts. A missing or malformed setting
+stops it with a list of what to fix. With `NODE_ENV=production` it also refuses to start when `JWT_SECRET` is
+shorter than 32 characters or a known placeholder (such as the one in `.env.example`), or when `CLIENT_URL` isn't
+`https`. In development these are only warnings.
 
 > **Using XAMPP?** Start MySQL from the XAMPP Control Panel. XAMPP's root user has no password by default, so
 > leave it empty: `DB_PASSWORD=` (nothing after the `=`). If you put any value there, `npm run db:migrate` cannot connect.

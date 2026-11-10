@@ -143,6 +143,8 @@ async function migrate({ dbName = process.env.DB_NAME, backupFirst = true, until
 
 // Run directly by npm run db:migrate; tests/globalSetup.js imports migrate() instead
 if (require.main === module) {
+  // Stop with a clear message before connecting if a DB_* setting is missing or malformed (src/config.js)
+  require('../src/config').checkConfig('database')
   migrate().catch((err) => {
     console.error('Migration failed:', err.message)
     process.exitCode = 1
