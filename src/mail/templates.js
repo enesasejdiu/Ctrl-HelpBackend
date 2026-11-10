@@ -99,11 +99,19 @@ const ticketSubject = (template, ticket) =>
   fill(template, { id: ticket.id, title: oneLine(ticket.title, SUBJECT_TITLE_LENGTH) })
 const ticketButton = (ticket) => fill(strings.openTicket, { id: ticket.id })
 
-// A one-time password link: purpose 'setup' (new account) or 'reset' (an admin or HR reset the password, or with
-// requested: the person asked for it with "Forgot password")
-function passwordLink({ purpose, requested = false, name, email, actor, link, hours }) {
-  let s = purpose === 'reset' ? strings.passwordReset : strings.accountSetup
-  if (requested) s = strings.passwordForgot
+// A one-time password link: purpose 'setup' (new account), 'reset' (an admin or HR reset the password) or 'forgot'
+// (the person asked for it with "Forgot password": 1 hour, and "your password hasn't changed")
+function passwordLink({ purpose, name, email, actor, link, hours }) {
+  if (purpose === 'forgot') {
+    const s = strings.passwordForgot
+    return render({
+      subject: s.subject,
+      greetingName: name,
+      blocks: [{ text: fill(s.intro, { email }) }, { button: s.button, link }, { text: s.expiry }, { text: s.ignore }],
+      reason: s.reason,
+    })
+  }
+  const s = purpose === 'reset' ? strings.passwordReset : strings.accountSetup
   return render({
     subject: s.subject,
     greetingName: name,
@@ -111,11 +119,16 @@ function passwordLink({ purpose, requested = false, name, email, actor, link, ho
       { text: fill(s.intro, { actor, email }) },
       { button: s.button, link },
       { text: fill(strings.passwordLink.expiry, { hours }) },
-      ...(requested ? [{ text: s.ignore }] : []),
       { text: strings.passwordLink.unexpected },
     ],
     reason: s.reason,
   })
+}
+
+// After a "Forgot password" link set a new password: a notice, without any link
+function passwordChanged({ name }) {
+  const s = strings.passwordChanged
+  return render({ subject: s.subject, greetingName: name, blocks: [{ text: s.body }], reason: s.reason })
 }
 
 // New ticket → IT
@@ -183,6 +196,7 @@ function ticketResolved({ recipientName, ticket, actor, link }) {
 
 module.exports = {
   passwordLink,
+  passwordChanged,
   ticketCreated,
   ticketAssigned,
   commentAdded,

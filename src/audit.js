@@ -13,6 +13,7 @@ const AUDIT_ACTIONS = [
   'password_changed', // the user changed their own password
   'password_reset', // an admin or HR reset the password (a temporary password or an emailed link)
   'password_reset_requested', // "Forgot password" sent the user a reset link (actor null: nobody is logged in)
+  'password_reset_self', // the user set a new password with their "Forgot password" link
   'password_set_with_link', // a new account set its password with the emailed link (POST /api/auth/set-password)
   'user_created', // an admin or HR created the account (a set-password link is emailed). details: { email, role, department_id }
   'invite_resent', // an admin or HR sent the account a new set-password link

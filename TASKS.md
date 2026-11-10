@@ -127,3 +127,4 @@ requireAuth checks the current role and active status in the database on every r
 - [x] Email notifications (nodemailer): set-password link for new users, new ticket → IT, assigned, comments, resolved
 - [x] One-time password links (48h) for new users and Admin/HR resets when email is set up; temporary passwords otherwise
 - [x] Self-service "Forgot password" with the same one-time reset links; email retries; daily cleanup of old links
+- [x] "Forgot password" v2: 1-hour forgot links, identical answers, per-IP and per-account limits, "password changed" notice

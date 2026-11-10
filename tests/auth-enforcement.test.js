@@ -30,6 +30,8 @@ const PUBLIC = [
   'POST /api/auth/set-password',
   // Asking for a reset link by email: for people who can't log in
   'POST /api/auth/forgot-password',
+  // What the sign-in page may offer (email_enabled)
+  'GET /api/auth/config',
 ]
 // What a user with a temporary password may still do. Pinned here so widening the list is a deliberate change.
 const ALLOWED = ['GET /api/auth/me', 'POST /api/auth/change-password']

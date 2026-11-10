@@ -232,6 +232,20 @@
           "response": []
         },
         {
+          "name": "Sign-in options",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/config",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "config"]
+            },
+            "description": "Public. { email_enabled }: whether email is set up, so the sign-in page offers \"Forgot password?\"."
+          },
+          "response": []
+        },
+        {
           "name": "Forgot password",
           "request": {
             "method": "POST",
@@ -246,7 +260,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["auth", "forgot-password"]
             },
-            "description": "Public. Always answers the same 200 { message }. When email is set up and the address belongs to an active account, that account gets a one-time reset link by email (48 hours; at most one every 5 minutes); its current password keeps working until the link is used. 409 EMAIL_NOT_CONFIGURED when email is not set up.",
+            "description": "Public. Always answers the same 200 { message }, whatever the address (and also when email is not set up). An active account that has set its own password gets a one-time reset link by email (1 hour; at most 3 per hour); its current password and sessions keep working until the link is used. 422 for a malformed email; 5 requests per IP in 15 minutes, then 429.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"email\": \"employee1@ticketflow.local\"\n}",
