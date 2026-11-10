@@ -39,4 +39,9 @@ const setPassword = {
   }),
 }
 
-module.exports = { login, changePassword, validateSetPasswordToken, setPassword }
+// POST /api/auth/forgot-password { email }
+const forgotPassword = {
+  body: z.strictObject({ email }),
+}
+
+module.exports = { login, changePassword, validateSetPasswordToken, setPassword, forgotPassword }

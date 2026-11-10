@@ -99,9 +99,11 @@ const ticketSubject = (template, ticket) =>
   fill(template, { id: ticket.id, title: oneLine(ticket.title, SUBJECT_TITLE_LENGTH) })
 const ticketButton = (ticket) => fill(strings.openTicket, { id: ticket.id })
 
-// A one-time password link: purpose 'setup' (new account) or 'reset' (an admin or HR reset the password)
-function passwordLink({ purpose, name, email, actor, link, hours }) {
-  const s = purpose === 'reset' ? strings.passwordReset : strings.accountSetup
+// A one-time password link: purpose 'setup' (new account) or 'reset' (an admin or HR reset the password, or with
+// requested: the person asked for it with "Forgot password")
+function passwordLink({ purpose, requested = false, name, email, actor, link, hours }) {
+  let s = purpose === 'reset' ? strings.passwordReset : strings.accountSetup
+  if (requested) s = strings.passwordForgot
   return render({
     subject: s.subject,
     greetingName: name,
@@ -109,6 +111,7 @@ function passwordLink({ purpose, name, email, actor, link, hours }) {
       { text: fill(s.intro, { actor, email }) },
       { button: s.button, link },
       { text: fill(strings.passwordLink.expiry, { hours }) },
+      ...(requested ? [{ text: s.ignore }] : []),
       { text: strings.passwordLink.unexpected },
     ],
     reason: s.reason,

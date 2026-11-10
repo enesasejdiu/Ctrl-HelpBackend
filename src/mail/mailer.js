@@ -36,7 +36,25 @@ function createTransport(config) {
   return null
 }
 
-function createMailer(config, { log = console } = {}) {
+// Retries for an email the SMTP server didn't take: after 30 seconds, 2 minutes and 10 minutes. They live in memory
+// only (a restart drops them; Admin/HR can resend a link). Deliberately not a table: the queued emails would hold
+// working set-password links in plain text. The test suite retries only when a test asks for it.
+const RETRY_DELAYS_MS = [30_000, 120_000, 600_000]
+
+// Worth trying again: an SMTP 4xx ("try later") or no SMTP answer at all (connection refused, timeout, DNS). A 5xx is
+// a permanent refusal (unknown address, login refused, ...): trying again won't help.
+function isTemporaryFailure(err) {
+  const code = Number(err?.responseCode)
+  return !(code >= 500 && code < 600)
+}
+
+const wait = (ms) =>
+  new Promise((resolve) => {
+    // unref: a retry waiting here never keeps the process alive on its own
+    setTimeout(resolve, ms).unref?.()
+  })
+
+function createMailer(config, { log = console, retryDelaysMs = config.mode === 'test' ? [] : RETRY_DELAYS_MS } = {}) {
   let transport = createTransport(config)
   const outbox = []
 
@@ -82,15 +100,30 @@ function createMailer(config, { log = console } = {}) {
     }
   }
 
-  // Sends and never throws: a failure is logged (recipient, template, error; never the SMTP password, the body, a link
-  // or a token) and false is returned
+  // Sends and never throws. A temporary failure is tried again after each of retryDelaysMs; when it still fails (or the
+  // failure is permanent) it is logged and false is returned. Logs say recipient, template and error; never the SMTP
+  // password, the body, a link or a token.
   async function sendMailSafe({ template = 'email', ...message }) {
-    try {
-      await sendMail(message)
-      return true
-    } catch (err) {
-      log.error(`[mail] Could not send "${template}" to ${message.to}: ${redact(err.message, config)}`)
-      return false
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await sendMail(message)
+        if (attempt > 1) log.log(`[mail] Sent "${template}" to ${message.to} on attempt ${attempt}`)
+        return true
+      } catch (err) {
+        const reason = redact(err.message, config)
+        const delay = retryDelaysMs[attempt - 1]
+        if (delay !== undefined && isTemporaryFailure(err)) {
+          log.warn(
+            `[mail] Could not send "${template}" to ${message.to} (attempt ${attempt}): ${reason}. ` +
+              `Trying again in ${Math.round(delay / 1000)} s`,
+          )
+          await wait(delay)
+          continue
+        }
+        const gaveUp = attempt > 1 ? ` (gave up after ${attempt} attempts)` : ''
+        log.error(`[mail] Could not send "${template}" to ${message.to}: ${reason}${gaveUp}`)
+        return false
+      }
     }
   }
 
@@ -121,6 +154,8 @@ function resetMailer() {
 
 module.exports = {
   createMailer,
+  isTemporaryFailure,
+  RETRY_DELAYS_MS,
   getMailer,
   resetMailer,
   redact,

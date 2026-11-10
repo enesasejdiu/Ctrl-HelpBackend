@@ -3,6 +3,9 @@
 //   loginRateLimit        POST /api/auth/login: at most LOGIN_LIMIT requests in LOGIN_WINDOW_MS, then 429. Every
 //                         attempt counts, right or wrong. It slows down password guessing across many accounts from
 //                         one address; the per-account lockout in routes/auth.js covers guessing one account's password.
+//   forgotPasswordRateLimit  POST /api/auth/forgot-password: at most FORGOT_PASSWORD_LIMIT requests in the same
+//                         window, so nobody can use it to flood inboxes (each account also gets at most one link every
+//                         5 minutes, in src/mail/notifications.js).
 //   setPasswordRateLimit  GET /api/auth/set-password/validate and POST /api/auth/set-password: at most
 //                         SET_PASSWORD_LIMIT requests in the same window. The tokens are far too long to guess; this
 //                         only keeps someone from hammering the endpoints.
@@ -13,6 +16,7 @@ const { rateLimit } = require('express-rate-limit')
 const LOGIN_LIMIT = 20
 const LOGIN_WINDOW_MS = 15 * 60 * 1000
 const SET_PASSWORD_LIMIT = 30
+const FORGOT_PASSWORD_LIMIT = 10
 
 function limiter(limit, message) {
   return rateLimit({
@@ -29,5 +33,14 @@ function limiter(limit, message) {
 
 const loginRateLimit = limiter(LOGIN_LIMIT, 'Too many login attempts. Wait a few minutes and try again.')
 const setPasswordRateLimit = limiter(SET_PASSWORD_LIMIT, 'Too many attempts. Wait a few minutes and try again.')
+const forgotPasswordRateLimit = limiter(FORGOT_PASSWORD_LIMIT, 'Too many requests. Wait a few minutes and try again.')
 
-module.exports = { loginRateLimit, setPasswordRateLimit, LOGIN_LIMIT, LOGIN_WINDOW_MS, SET_PASSWORD_LIMIT }
+module.exports = {
+  loginRateLimit,
+  setPasswordRateLimit,
+  forgotPasswordRateLimit,
+  LOGIN_LIMIT,
+  LOGIN_WINDOW_MS,
+  SET_PASSWORD_LIMIT,
+  FORGOT_PASSWORD_LIMIT,
+}

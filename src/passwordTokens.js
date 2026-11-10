@@ -11,12 +11,16 @@
 //   tests can fake the time.
 // - Issuing a new token removes the user's other unused ones (of either purpose), so only the newest link works.
 // - Tokens and links are never logged.
+// - Used and expired tokens are deleted KEEP_ENDED_DAYS later (cleanupPasswordTokens: on start, then once a day, and
+//   npm run db:password-tokens:cleanup).
 const bcrypt = require('bcryptjs')
 const crypto = require('crypto')
 
 const TOKEN_BYTES = 32
 const TOKEN_HOURS = 48
 const PURPOSES = ['setup', 'reset']
+const KEEP_ENDED_DAYS = 7
+const DAY_MS = 24 * 60 * 60 * 1000
 
 const hashToken = (token) => crypto.createHash('sha256').update(String(token)).digest('hex')
 
@@ -68,7 +72,35 @@ async function latestPurpose(db, userId) {
   return row?.purpose ?? null
 }
 
+// Deletes tokens used or expired more than KEEP_ENDED_DAYS ago (both times are the API's clock, like expiry). Unused,
+// unexpired links are never touched. Returns how many were deleted.
+async function cleanupPasswordTokens(db) {
+  const cutoff = new Date(Date.now() - KEEP_ENDED_DAYS * DAY_MS)
+  const [result] = await db.query(
+    'DELETE FROM password_tokens WHERE (used_at IS NOT NULL AND used_at < ?) OR expires_at < ?',
+    [cutoff, cutoff],
+  )
+  return result.affectedRows
+}
+
+// Runs cleanupPasswordTokens now, then every `everyMs` (a day), like the session cleanup. The timer is unref()'d, so it
+// never keeps the process alive on its own; a failure is only logged. Returns the timer.
+function startPasswordTokenCleanup(db, { everyMs = DAY_MS, log = console } = {}) {
+  const run = () =>
+    cleanupPasswordTokens(db)
+      .then((deleted) => {
+        if (deleted > 0)
+          log.log(`Password link cleanup: deleted ${deleted} links used or expired over ${KEEP_ENDED_DAYS} days ago`)
+      })
+      .catch((err) => log.error(`Password link cleanup failed: ${err.message}`))
+  run()
+  return setInterval(run, everyMs).unref()
+}
+
 module.exports = {
+  cleanupPasswordTokens,
+  startPasswordTokenCleanup,
+  KEEP_ENDED_DAYS,
   issueToken,
   lookUpToken,
   latestPurpose,

@@ -9,7 +9,9 @@ const jwt = require('jsonwebtoken')
 const pool = require('../db')
 const { HttpError } = require('../middleware/errors')
 const { requireAuth } = require('../middleware/auth')
-const { loginRateLimit, setPasswordRateLimit } = require('../middleware/rateLimit')
+const { loginRateLimit, setPasswordRateLimit, forgotPasswordRateLimit } = require('../middleware/rateLimit')
+const { isEmailConfigured } = require('../mail/mailer')
+const notify = require('../mail/notifications')
 const { lookUpToken } = require('../passwordTokens')
 const { newPassword: newPasswordRule } = require('../schemas/common')
 const { SESSION_HOURS, SESSION_COOKIE, setSessionCookies, clearSessionCookies } = require('../session')
@@ -348,6 +350,27 @@ router.post('/set-password', setPasswordRateLimit, validate(schemas.setPassword)
   }
 
   res.json({ message: 'Password set, please log in.' })
+})
+
+// The one answer POST /api/auth/forgot-password gives, whether or not the email has an account
+const FORGOT_PASSWORD_MESSAGE =
+  "If there's an active account for that email, we've sent it a link to choose a new password. It expires in 48 hours."
+
+// POST /api/auth/forgot-password { email } → 200 { message } (always the same message)
+// Public, rate-limited per IP address. Only when email is set up; otherwise 409 EMAIL_NOT_CONFIGURED (ask an admin or
+// HR for a reset). The account lookup and the email happen after the response (notifications.forgotPassword), so
+// neither the answer nor its timing tells whether an account exists. The current password keeps working: only the
+// emailed one-time link (purpose 'reset', 48 hours) can replace it, so asking for a reset can't lock anyone out.
+router.post('/forgot-password', forgotPasswordRateLimit, validate(schemas.forgotPassword), (req, res) => {
+  if (!isEmailConfigured()) {
+    throw new HttpError(
+      409,
+      "Password reset by email isn't available. Ask your administrator or HR to reset your password.",
+      'EMAIL_NOT_CONFIGURED',
+    )
+  }
+  notify.forgotPassword({ email: req.valid.body.email, ip: req.ip })
+  res.json({ message: FORGOT_PASSWORD_MESSAGE })
 })
 
 module.exports = router

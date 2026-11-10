@@ -27,3 +27,5 @@ app.listen(PORT, (err) => {
 
 // Deletes sessions that ended more than 7 days ago: now, then once a day (see src/sessionStore.js)
 startSessionCleanup()
+// The same for password links used or expired more than 7 days ago (see src/passwordTokens.js)
+require('./passwordTokens').startPasswordTokenCleanup(require('./db'))
