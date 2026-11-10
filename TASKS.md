@@ -3,6 +3,7 @@
 Node.js + Express + MySQL REST API. Work through the phases in order and tick each box when it is done and tested.
 
 ## Phase 1 – Project setup
+
 Note: the API runs on port 5050 (5000 is used by macOS AirPlay).
 
 - [x] Run `npm init` and set the name to `ticketflow-backend`
@@ -17,6 +18,7 @@ Note: the API runs on port 5050 (5000 is used by macOS AirPlay).
 - [x] `GET /api/health` returns `{ status: "ok" }`
 
 ## Phase 2 – Database
+
 - [x] `db/schema.sql` with tables: users, categories, priorities, tickets, comments, ticket_history
 - [x] Foreign keys between all related tables
 - [x] Ticket status ENUM: open, assigned, in_progress, waiting_for_user, resolved, closed, reopened
@@ -26,6 +28,7 @@ Note: the API runs on port 5050 (5000 is used by macOS AirPlay).
 - [x] Test: `npm run db:setup` creates all tables
 
 ## Phase 3 – Error handling and auth middleware
+
 - [x] `src/middleware/errors.js`: HttpError class, 404 handler, central error handler returning `{ message }`
 - [x] `src/middleware/auth.js`: `requireAuth` (reads Bearer token, sets `req.user`)
 - [x] `requireRole(...roles)` returns 403 for the wrong role
@@ -34,6 +37,7 @@ Note: the API runs on port 5050 (5000 is used by macOS AirPlay).
 requireAuth checks the current role and active status in the database on every request (added in Phase 8).
 
 ## Phase 4 – Authentication
+
 - [x] ~~`POST /api/auth/register`~~: removed in v1.0. Admins and HR create accounts with `POST /api/users`
 - [x] `POST /api/auth/login`: checks the password and that the account is active, returns `{ token, user }`
 - [x] `GET /api/auth/me`: returns the current user
@@ -41,6 +45,7 @@ requireAuth checks the current role and active status in the database on every r
 - [x] Test all three in Postman
 
 ## Phase 5 – Tickets
+
 - [x] `GET /api/meta` returns categories and priorities
 - [x] `GET /api/tickets`: employees see only their own, staff see all
 - [x] Filters: status, priority, category, assigned=me|unassigned, q (search), overdue=1
@@ -61,17 +66,20 @@ requireAuth checks the current role and active status in the database on every r
 - [x] Test the full lifecycle in Postman: open → assigned → in_progress → resolved → closed → reopened
 
 ## Phase 6 – Comments
+
 - [x] `POST /api/tickets/:id/comments` with `{ content, is_internal }`
 - [x] Only staff can create internal notes
 - [x] Empty comments are rejected
 
 ## Phase 7 – Users (admin)
+
 - [x] `GET /api/users/agents`: active agents and admins (for the assign dropdown)
 - [x] `GET /api/users`: all users (admin only)
 - [x] `PATCH /api/users/:id`: change role or activate/deactivate (admins cannot change their own account)
 - [x] Demoting or deactivating an agent/admin unassigns their unfinished tickets (logged in ticket history)
 
 ## Phase 8 – Statistics (admin)
+
 - [x] `GET /api/stats` returns:
   - [x] total tickets and count by status
   - [x] average resolution time (hours) and resolved count
@@ -82,6 +90,7 @@ requireAuth checks the current role and active status in the database on every r
   - [x] trend: created vs resolved per week (last 8 weeks)
 
 ## Phase 9 – Seed data
+
 - [x] `scripts/seed.js` clears all tables first
 - [x] 6 categories and 4 priorities (Low 120h, Medium 72h, High 24h, Critical 4h)
 - [x] 5 users, password `password123`: admin@, agent1@, agent2@, employee1@, employee2@ticketflow.local
@@ -90,6 +99,7 @@ requireAuth checks the current role and active status in the database on every r
 - [x] Test: `npm run db:seed`, then log in with every demo account
 
 ## Phase 10 – Finish
+
 - [x] Every query uses `?` placeholders (no SQL injection)
 - [x] Every route is protected with the right role
 - [x] README: setup steps, demo accounts, endpoint table

@@ -13,4 +13,4 @@ module.exports = {
   // machine (e.g. with a dev server rebuilding), so a slow but correct test isn't reported as a failure
   testTimeout: 15000,
   collectCoverageFrom: ['src/**/*.js'],
-};
+}

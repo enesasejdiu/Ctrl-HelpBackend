@@ -9,7 +9,7 @@ const categories = [
   ['Access', 'Accounts, passwords, VPN and permissions'],
   ['Email', 'Mailboxes, Outlook, calendars and suspicious emails'],
   ['Other', 'Anything that does not fit another category'],
-];
+]
 
 // [name, level, target_hours]
 const priorities = [
@@ -17,6 +17,6 @@ const priorities = [
   ['Medium', 2, 72],
   ['High', 3, 24],
   ['Critical', 4, 4],
-];
+]
 
-module.exports = { categories, priorities };
+module.exports = { categories, priorities }

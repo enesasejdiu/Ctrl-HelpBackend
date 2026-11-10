@@ -44,12 +44,8 @@
         "header": [],
         "url": {
           "raw": "{{baseUrl}}/health",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "health"
-          ]
+          "host": ["{{baseUrl}}"],
+          "path": ["health"]
         },
         "auth": {
           "type": "noauth"
@@ -72,13 +68,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/auth/login",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "auth",
-                "login"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
             },
             "description": "Logs in and stores the token in the {{token}} collection variable.",
             "auth": {
@@ -122,13 +113,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/auth/login",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "auth",
-                "login"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
             },
             "description": "Logs in and stores the token in the {{token}} collection variable.",
             "auth": {
@@ -172,13 +158,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/auth/login",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "auth",
-                "login"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
             },
             "description": "Logs in and stores the token in the {{token}} collection variable.",
             "auth": {
@@ -217,13 +198,8 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/auth/me",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "auth",
-                "me"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "me"]
             }
           },
           "response": []
@@ -240,13 +216,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/auth/change-password",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "auth",
-                "change-password"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "change-password"]
             },
             "description": "Changes your own password; also clears must_change_password after a temporary password. Body: currentPassword and newPassword (10-72 characters, a letter and a digit). Returns { message: \"Password changed\", user }. A wrong current password returns 400 with code INVALID_CURRENT_PASSWORD (not 401, the session is fine). Other sessions are not ended: tokens are stateless.",
             "body": {
@@ -270,12 +241,8 @@
         "header": [],
         "url": {
           "raw": "{{baseUrl}}/meta",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "meta"
-          ]
+          "host": ["{{baseUrl}}"],
+          "path": ["meta"]
         }
       },
       "response": []
@@ -290,12 +257,8 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/tickets",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "tickets"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["tickets"],
               "query": [
                 {
                   "key": "status",
@@ -351,12 +314,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/tickets",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "tickets"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["tickets"]
             },
             "body": {
               "mode": "raw",
@@ -377,13 +336,8 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/tickets/{{ticketId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "tickets",
-                "{{ticketId}}"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["tickets", "{{ticketId}}"]
             }
           },
           "response": []
@@ -400,14 +354,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/tickets/{{ticketId}}/comments",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "tickets",
-                "{{ticketId}}",
-                "comments"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["tickets", "{{ticketId}}", "comments"]
             },
             "description": "is_internal: true only works for agents/admins.",
             "body": {
@@ -434,14 +382,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/tickets/{{ticketId}}/status",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "tickets",
-                "{{ticketId}}",
-                "status"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["tickets", "{{ticketId}}", "status"]
             },
             "description": "resolution is required when resolving. Employees may only close a resolved ticket or reopen a resolved/closed one.",
             "body": {
@@ -468,14 +410,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/tickets/{{ticketId}}/priority",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "tickets",
-                "{{ticketId}}",
-                "priority"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["tickets", "{{ticketId}}", "priority"]
             },
             "description": "Agents and admins only.",
             "body": {
@@ -502,14 +438,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/tickets/{{ticketId}}/assign",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "tickets",
-                "{{ticketId}}",
-                "assign"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["tickets", "{{ticketId}}", "assign"]
             },
             "description": "Agents and admins. assigned_to: user id, or null to unassign. Agents can only assign themselves.",
             "body": {
@@ -536,13 +466,8 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/users/agents",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "users",
-                "agents"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "agents"]
             },
             "description": "Agents and admins only."
           },
@@ -555,12 +480,8 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/users",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "users"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["users"]
             },
             "description": "Admin only."
           },
@@ -578,12 +499,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/users",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "users"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["users"]
             },
             "description": "Admin or HR. Creates an account and returns { user, temporaryPassword }. The temporary password is only shown in this response; the new user logs in with it and has must_change_password = true. Admins must send a role (employee, agent, hr, admin); HR can only create employees and may leave role out. department_id (an existing department) and job_title are optional. Change the email to create another account.",
             "body": {
@@ -605,14 +522,8 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/users/{{userId}}/reset-password",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "users",
-                "{{userId}}",
-                "reset-password"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "{{userId}}", "reset-password"]
             },
             "description": "Admin or HR, no body (any field is refused with 400). Gives the user a new temporary password, returned once as { user, temporaryPassword }. The old password stops working immediately, and the user must change the new one at their next login (must_change_password); sessions from before the reset are blocked until then. Admins can reset anyone but themselves (403); HR only employees. Running this changes the password of user {{userId}}."
           },
@@ -630,13 +541,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/users/{{userId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "users",
-                "{{userId}}"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "{{userId}}"]
             },
             "description": "Send any of name, email, department_id, job_title, role, is_active (at least one); only those change, and null clears department_id and job_title. Admin: anyone, but not their own role or active status, and never the last active admin (409). HR: employee accounts only, and never role (403 even for the same value). 404 for an unknown user, 409 if the email is taken. The example keeps user 5 (Vjosa Hoxha) unchanged; try a new job_title or is_active false.",
             "body": {
@@ -663,12 +569,8 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/departments",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "departments"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["departments"]
             },
             "description": "Any logged-in user. Sorted by name, each with user_count."
           },
@@ -686,12 +588,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/departments",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "departments"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["departments"]
             },
             "description": "Admin or HR. The name is trimmed and inner spaces collapsed; 1-100 characters. 409 DEPARTMENT_NAME_TAKEN if the name exists in any letter case.",
             "body": {
@@ -718,13 +616,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/departments/{{departmentId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "departments",
-                "{{departmentId}}"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["departments", "{{departmentId}}"]
             },
             "description": "Admin or HR. Rename only. The same name is a no-op; 409 DEPARTMENT_NAME_TAKEN if another department has it.",
             "body": {
@@ -746,13 +639,8 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/departments/{{departmentId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "departments",
-                "{{departmentId}}"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["departments", "{{departmentId}}"]
             },
             "description": "Admin or HR. Only an empty department: 204, or 409 DEPARTMENT_NOT_EMPTY with user_count."
           },
@@ -767,12 +655,8 @@
         "header": [],
         "url": {
           "raw": "{{baseUrl}}/stats",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "stats"
-          ]
+          "host": ["{{baseUrl}}"],
+          "path": ["stats"]
         },
         "description": "Admin only."
       },

@@ -10,35 +10,35 @@ function toErrors(part, issues) {
   return issues.flatMap((issue) => {
     // One issue can list several unknown fields, so each gets its own entry
     if (issue.code === 'unrecognized_keys') {
-      return issue.keys.map((key) => ({ field: key, message: `${key} is not allowed` }));
+      return issue.keys.map((key) => ({ field: key, message: `${key} is not allowed` }))
     }
     // No path means the problem is the whole part, e.g. a JSON array where an object belongs
     if (issue.path.length === 0 && issue.code === 'invalid_type') {
-      return [{ field: part, message: `Request ${part} must be a JSON object` }];
+      return [{ field: part, message: `Request ${part} must be a JSON object` }]
     }
-    return [{ field: issue.path.join('.') || part, message: issue.message }];
-  });
+    return [{ field: issue.path.join('.') || part, message: issue.message }]
+  })
 }
 
 function validate(schemas) {
   return (req, res, next) => {
-    const valid = {};
-    const errors = [];
+    const valid = {}
+    const errors = []
 
     for (const part of ['params', 'query', 'body']) {
-      if (!schemas[part]) continue;
+      if (!schemas[part]) continue
       // Express 5 leaves req.body undefined when nothing was sent; {} reports each missing field instead
-      const result = schemas[part].safeParse(req[part] ?? {});
-      if (result.success) valid[part] = result.data;
-      else errors.push(...toErrors(part, result.error.issues));
+      const result = schemas[part].safeParse(req[part] ?? {})
+      if (result.success) valid[part] = result.data
+      else errors.push(...toErrors(part, result.error.issues))
     }
 
     if (errors.length > 0) {
-      return res.status(400).json({ message: errors[0].message, errors });
+      return res.status(400).json({ message: errors[0].message, errors })
     }
-    req.valid = { ...req.valid, ...valid };
-    next();
-  };
+    req.valid = { ...req.valid, ...valid }
+    next()
+  }
 }
 
-module.exports = validate;
+module.exports = validate
