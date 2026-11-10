@@ -7,14 +7,51 @@ const cookieParser = require('cookie-parser')
 const { notFound, errorHandler } = require('./middleware/errors')
 const apiRoutes = require('./routes')
 
+// Read once, when the app is created: production adds HSTS and trusts the reverse proxy
+const isProduction = process.env.NODE_ENV === 'production'
+
+// Largest JSON body accepted; bigger ones get 413 PAYLOAD_TOO_LARGE (see middleware/errors.js). The biggest real body
+// (a ticket description) is well under 10 KB.
+const BODY_LIMIT = '100kb'
+
 const app = express()
 
-// Global middleware
-app.use(helmet()) // sets secure HTTP headers
-// Only the frontend's origin, with cookies (credentials). Never "*": browsers refuse credentials with it anyway, and
-// without CLIENT_URL no other origin is allowed at all (origin: false) instead of falling back to "*".
-app.use(cors({ origin: process.env.CLIENT_URL || false, credentials: true }))
-app.use(express.json()) // parse JSON request bodies
+// Don't tell clients which framework this is (helmet removes the header too; this makes it explicit)
+app.disable('x-powered-by')
+
+// Behind nginx (production), the client's real IP is in X-Forwarded-For. Trust exactly one proxy hop, so req.ip (and
+// with it the login rate limit) sees the real address. Not in development: there is no proxy, and trusting the header
+// would let any client pick its own IP.
+if (isProduction) app.set('trust proxy', 1)
+
+// Security headers for a JSON API. Nothing it sends is a page, so the content security policy allows nothing at all,
+// and no site may frame it. HSTS (HTTPS only, for 180 days) only in production: on http://localhost it would make
+// the browser refuse plain http for localhost.
+app.use(
+  helmet({
+    // Only these two directives (helmet's defaults are meant for web pages: scripts, styles, fonts)
+    contentSecurityPolicy: { useDefaults: false, directives: { defaultSrc: ["'none'"], frameAncestors: ["'none'"] } },
+    frameguard: { action: 'deny' },
+    strictTransportSecurity: isProduction ? { maxAge: 180 * 24 * 60 * 60, includeSubDomains: true } : false,
+    referrerPolicy: { policy: 'no-referrer' },
+  }),
+)
+
+// CORS: only the frontend's origin, with cookies (credentials), and only the methods and headers the frontend uses.
+// The origin is compared exactly with CLIENT_URL; any other origin (and every origin when CLIENT_URL is not set) gets
+// no CORS headers at all, so the browser blocks other sites from reading responses. Never "*": browsers refuse
+// credentials with it anyway.
+const allowedOrigin = process.env.CLIENT_URL
+app.use(
+  cors({
+    origin: (origin, callback) => callback(null, Boolean(allowedOrigin) && origin === allowedOrigin),
+    credentials: true,
+    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'X-CSRF-Token'],
+    maxAge: 600, // browsers may cache a preflight answer for 10 minutes
+  }),
+)
+app.use(express.json({ limit: BODY_LIMIT })) // parse JSON request bodies
 app.use(cookieParser()) // req.cookies, for the session and CSRF cookies
 
 // Health check, used to confirm the API is up
