@@ -15,7 +15,9 @@ const CSRF_METHODS = ['POST', 'PATCH', 'PUT', 'DELETE'];
 const ALLOWED_BEFORE_PASSWORD_CHANGE = ['GET /api/auth/me', 'POST /api/auth/change-password'];
 
 // Verifies the token, then loads the user's CURRENT name, role and active status from the database,
-// so role changes and deactivation take effect immediately instead of when the token expires.
+// so role changes and deactivation take effect immediately instead of when the token expires. A token whose
+// session_version no longer matches the user's (raised by a password change or reset, deactivation or a role change)
+// is refused with 401, which ends that session.
 // A user who still has a temporary password (must_change_password) is blocked everywhere else with 403.
 // Exposes the logged-in user as req.user = { id, name, role }, and how they authenticated as req.authMethod.
 //
@@ -58,12 +60,18 @@ async function requireAuth(req, res, next) {
     }
   }
 
-  const [rows] = await pool.query('SELECT id, name, role, is_active, must_change_password FROM users WHERE id = ?', [
-    payload.id,
-  ]);
+  const [rows] = await pool.query(
+    'SELECT id, name, role, is_active, must_change_password, session_version FROM users WHERE id = ?',
+    [payload.id]
+  );
   const user = rows[0];
   // A deleted or deactivated account loses access right away, even with a still-valid token
   if (!user || !user.is_active) {
+    throw new HttpError(401, 'Session expired, please log in again');
+  }
+  // Ended sessions: a password change or reset, deactivation or a role change raises users.session_version, and every
+  // token issued before that no longer matches. Tokens from before migration 007 carry no version and count as 0.
+  if ((payload.session_version ?? 0) !== user.session_version) {
     throw new HttpError(401, 'Session expired, please log in again');
   }
 

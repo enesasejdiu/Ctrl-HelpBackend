@@ -104,11 +104,16 @@ describe('POST /api/auth/change-password', () => {
     if (message) expect(res.body.errors).toContainEqual({ field: 'newPassword', message });
   });
 
-  test('the token used for the change keeps working afterwards', async () => {
+  test('the person who changed it stays logged in: the response carries a fresh token that works everywhere', async () => {
     const user = await createUser({ mustChangePassword: true });
     const token = await loginAs(user);
-    await change(token, { currentPassword: user.password, newPassword: NEW_PASSWORD });
-    expect((await api.get('/api/tickets').set(auth(token))).status).toBe(200);
+    const res = await change(token, { currentPassword: user.password, newPassword: NEW_PASSWORD });
+    expect(res.status).toBe(200);
+    expect(res.body.token).toEqual(expect.any(String));
+    expect(res.body.token).not.toBe(token);
+    expect((await api.get('/api/tickets').set(auth(res.body.token))).status).toBe(200);
+    // The token sent with the change belonged to the old password, so it has ended like every other session
+    expect((await api.get('/api/tickets').set(auth(token))).status).toBe(401);
   });
 
   test('neither password is ever written to the console', async () => {
@@ -180,13 +185,14 @@ describe('POST /api/auth/change-password: more rules', () => {
     expect(await dbSnapshot()).toEqual(before);
   });
 
-  // Logins are stateless JWTs with no revocation list, so the app can't end other sessions. When it can, remove .skip.
-  test.skip('SKIPPED (tokens are stateless JWTs and cannot be revoked): changing the password ends the other sessions', async () => {
+  // Ended through users.session_version (migration 007); the changer continues with the fresh token from the response
+  test('changing the password ends the other sessions, and the changer stays logged in', async () => {
     const user = await createUser();
     const current = await loginAs(user);
     const other = await loginAs(user);
-    await change(current, { currentPassword: user.password, newPassword: 'Brand-new-pass1' });
-    expect((await api.get('/api/auth/me').set(auth(other))).status).toBe(401);
-    expect((await api.get('/api/auth/me').set(auth(current))).status).toBe(200);
+    const res = await change(current, { currentPassword: user.password, newPassword: 'Brand-new-pass1' });
+    expect(res.status).toBe(200);
+    expectError(await api.get('/api/auth/me').set(auth(other)), 401, undefined, 'Session expired, please log in again');
+    expect((await api.get('/api/auth/me').set(auth(res.body.token))).status).toBe(200);
   });
 });

@@ -123,9 +123,8 @@ async function checkResetAllowed(req, res, next) {
 // Replaces the password with a new temporary one (the old one stops working at once) and sets must_change_password,
 // so the user has to choose their own at the next login. Deactivated accounts can be reset too. It also unlocks an
 // account locked by too many wrong passwords.
-// Sessions: tokens are stateless JWTs and can't be revoked, but requireAuth reloads the user on every request and
-// refuses everything except /auth/me and /auth/change-password while must_change_password is set, so a session from
-// before the reset can do nothing without the new temporary password.
+// Sessions: raises session_version, so every session the user had before the reset ends at once (401 on the next
+// request); they log in again with the temporary password.
 router.post(
   '/:id/reset-password',
   requireRole('admin', 'hr'),
@@ -137,11 +136,11 @@ router.post(
 
     const temporaryPassword = makeTemporaryPassword();
     const passwordHash = await bcrypt.hash(temporaryPassword, 10);
-    // One statement, so the new hash and the flag are saved together or not at all. It also unlocks the account
+    // One statement, so the new hash, the flag and the ended sessions are saved together or not at all. It also unlocks the account
     // (wrong-password count and lock cleared), so the user can log in with the temporary password straight away.
     await pool.query(
       `UPDATE users SET password_hash = ?, must_change_password = TRUE, failed_login_count = 0, locked_until = NULL,
-         updated_at = CURRENT_TIMESTAMP
+         session_version = session_version + 1, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
       [passwordHash, id]
     );
@@ -230,6 +229,14 @@ async function editUser(req, res) {
   if (isActive !== undefined) {
     sets.push('is_active = ?');
     params.push(isActive);
+  }
+  // A role change or deactivation ends the user's sessions (requireAuth refuses tokens with the old session_version).
+  // Saving the same role, or deactivating an account that is already inactive, ends nothing. Reactivating doesn't
+  // either: the user simply logs in again.
+  const roleChanges = role !== undefined && role !== user.role;
+  const deactivates = isActive === false && Boolean(user.is_active);
+  if (roleChanges || deactivates) {
+    sets.push('session_version = session_version + 1');
   }
 
   // If this change means the user can no longer work tickets (moved to a non-staff role such as employee or HR,
