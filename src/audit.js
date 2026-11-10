@@ -11,7 +11,8 @@ const AUDIT_ACTIONS = [
   'logout', // POST /api/auth/logout ended a session
   'logout_all', // POST /api/auth/logout-all ended every session of the user
   'password_changed', // the user changed their own password
-  'password_reset', // an admin or HR gave the user a new temporary password
+  'password_reset', // an admin or HR reset the password (a temporary password or an emailed link)
+  'password_reset_requested', // "Forgot password" sent the user a reset link (actor null: nobody is logged in)
   'password_set_with_link', // a new account set its password with the emailed link (POST /api/auth/set-password)
   'user_created', // an admin or HR created the account (a set-password link is emailed). details: { email, role, department_id }
   'invite_resent', // an admin or HR sent the account a new set-password link

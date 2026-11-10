@@ -14,6 +14,7 @@
     "db:rollback": "node scripts/rollback.js",
     "db:backup": "node scripts/backup-db.js",
     "db:sessions:cleanup": "node scripts/cleanup-sessions.js",
+    "db:password-tokens:cleanup": "node scripts/cleanup-password-tokens.js",
     "db:department-report": "node scripts/department-report.js",
     "db:verify-departments": "node scripts/verify-department-migration.js",
     "test": "jest",

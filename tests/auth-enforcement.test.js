@@ -21,13 +21,15 @@ const {
 } = require('./helpers')
 
 // Routes anyone may call without logging in
-// (the set-password routes are for people who have no password yet: the emailed link's token is their proof)
+// (the set-password routes are for people who have no usable password: the emailed link's token is their proof)
 const PUBLIC = [
   'POST /api/auth/login',
   'POST /api/auth/logout',
   'GET /api/health',
   'GET /api/auth/set-password/validate',
   'POST /api/auth/set-password',
+  // Asking for a reset link by email: for people who can't log in
+  'POST /api/auth/forgot-password',
 ]
 // What a user with a temporary password may still do. Pinned here so widening the list is a deliberate change.
 const ALLOWED = ['GET /api/auth/me', 'POST /api/auth/change-password']

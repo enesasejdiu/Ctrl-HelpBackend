@@ -54,22 +54,23 @@ npm run dev          # starts the API with auto-reload
 The API runs on **http://localhost:5050**. Check it with http://localhost:5050/api/health → `{ "status": "ok" }`.
 (Port 5000 is not used because macOS AirPlay occupies it.)
 
-| Script                          | Description                                                                         |
-| ------------------------------- | ----------------------------------------------------------------------------------- |
-| `npm start`                     | Start the server                                                                    |
-| `npm run dev`                   | Start with nodemon (auto-reload)                                                    |
-| `npm run db:migrate`            | Create the database or apply new migrations                                         |
-| `npm run db:seed`               | Insert the demo data (empty database only)                                          |
-| `npm run db:rollback`           | Undo the most recent migration (backs up first)                                     |
-| `npm run db:department-report`  | Read-only: the free-text department values migration 005 will turn into departments |
-| `npm run db:verify-departments` | Read-only: checks that migration 005 linked every user correctly                    |
-| `npm run db:backup`             | Back up the database to `backups/`                                                  |
-| `npm run db:sessions:cleanup`   | Delete sessions that ended more than 7 days ago (also runs daily in the server)     |
-| `npm test`                      | Run all tests once (see [Running tests](#running-tests))                            |
-| `npm run test:coverage`         | Run the tests with a coverage report                                                |
-| `npm run lint`                  | Check the code with ESLint (fails on any error or warning)                          |
-| `npm run format`                | Format every file with Prettier                                                     |
-| `npm run format:check`          | Check that every file is formatted (what CI runs)                                   |
+| Script                               | Description                                                                                |
+| ------------------------------------ | ------------------------------------------------------------------------------------------ |
+| `npm start`                          | Start the server                                                                           |
+| `npm run dev`                        | Start with nodemon (auto-reload)                                                           |
+| `npm run db:migrate`                 | Create the database or apply new migrations                                                |
+| `npm run db:seed`                    | Insert the demo data (empty database only)                                                 |
+| `npm run db:rollback`                | Undo the most recent migration (backs up first)                                            |
+| `npm run db:department-report`       | Read-only: the free-text department values migration 005 will turn into departments        |
+| `npm run db:verify-departments`      | Read-only: checks that migration 005 linked every user correctly                           |
+| `npm run db:backup`                  | Back up the database to `backups/`                                                         |
+| `npm run db:sessions:cleanup`        | Delete sessions that ended more than 7 days ago (also runs daily in the server)            |
+| `npm run db:password-tokens:cleanup` | Delete password links used or expired more than 7 days ago (also runs daily in the server) |
+| `npm test`                           | Run all tests once (see [Running tests](#running-tests))                                   |
+| `npm run test:coverage`              | Run the tests with a coverage report                                                       |
+| `npm run lint`                       | Check the code with ESLint (fails on any error or warning)                                 |
+| `npm run format`                     | Format every file with Prettier                                                            |
+| `npm run format:check`               | Check that every file is formatted (what CI runs)                                          |
 
 ## Updating and migrations
 
@@ -413,8 +414,19 @@ email link` or `Password delivery: temporary password`. `GET /api/meta` tells th
 The links are `{APP_URL}/set-password?token=...` (`password_tokens`, migrations 010 and 011): 32 random bytes,
 URL-safe; only their SHA-256 hash is stored and looked up. A link works **once** and expires after **48 hours**, and
 issuing a new one (a reset, a resend) makes the user's other unused links stop working. Tokens and links are never
-logged. The email goes out after the change is saved; an SMTP failure is logged and doesn't fail the request (use
+logged. Links used or expired more than 7 days ago are deleted (at startup, then daily; or
+`npm run db:password-tokens:cleanup`). The email goes out after the change is saved; an SMTP failure is logged and doesn't fail the request (use
 resend). Until the link is used, the user can't log in (the usual "Wrong email or password").
+
+### "Forgot password"
+
+With email set up, the sign-in page offers "Forgot password?": `POST /api/auth/forgot-password { email }` (public, at
+most 10 requests per IP address in 15 minutes) always answers the same `200 { message }`, whether or not the address
+has an account; the lookup and the email happen after the response, so the timing doesn't tell either. An active
+account gets a one-time **reset** link ("Reset your TicketFlow password", 48 hours). Its **current password keeps
+working** until the link sets a new one, so asking for a reset can't lock anyone out; at most one link is sent per
+account every 5 minutes. Without email set up the answer is 409 `EMAIL_NOT_CONFIGURED` (ask an admin or HR). Logged
+in the audit log as `password_reset_requested`.
 
 ### Setting a password with the emailed link
 
@@ -508,14 +520,15 @@ temporary password, or with the password they set with the link. Deactivating a 
 
 The API sends these emails ([nodemailer](https://nodemailer.com/), SMTP settings from `.env`):
 
-| Event                                      | To                                                         | Never to                                    |
-| ------------------------------------------ | ---------------------------------------------------------- | ------------------------------------------- |
-| New account, Admin/HR reset (email set up) | the user: their one-time set-password link                 |                                             |
-| Ticket created                             | IT: `IT_NOTIFY_EMAIL` if set, otherwise every active agent | the creator, if they are IT                 |
-| Ticket assigned / reassigned               | the new assignee                                           | whoever assigned it, if they took it        |
-| Comment by the requester                   | the assignee, or IT if nobody is assigned                  | the author                                  |
-| Comment by IT (agent or admin)             | the requester                                              | the author. Internal notes send no email    |
-| Ticket resolved                            | the requester                                              | whoever resolved it, if it is the requester |
+| Event                                      | To                                                            | Never to                                    |
+| ------------------------------------------ | ------------------------------------------------------------- | ------------------------------------------- |
+| New account, Admin/HR reset (email set up) | the user: their one-time set-password link                    |                                             |
+| "Forgot password" (email set up)           | the account with that email, if active: a one-time reset link | at most one every 5 minutes                 |
+| Ticket created                             | IT: `IT_NOTIFY_EMAIL` if set, otherwise every active agent    | the creator, if they are IT                 |
+| Ticket assigned / reassigned               | the new assignee                                              | whoever assigned it, if they took it        |
+| Comment by the requester                   | the assignee, or IT if nobody is assigned                     | the author                                  |
+| Comment by IT (agent or admin)             | the requester                                                 | the author. Internal notes send no email    |
+| Ticket resolved                            | the requester                                                 | whoever resolved it, if it is the requester |
 
 The person who caused an event never gets an email about it, and deactivated users are skipped. Each email has an HTML
 and a plain-text version, a subject like `[TicketFlow #123] New comment: Printer not working`, a short summary (a
@@ -524,7 +537,9 @@ the HTML, and links are built from `APP_URL` only.
 
 **An email never breaks a request.** It is sent after the change is saved, in the background: the response doesn't
 wait for it, and an SMTP error is only logged (who, which email, the error; never the SMTP password or the email's
-body and links). The ticket or account stays saved. There is no retry yet: an email lost to an SMTP outage is gone.
+body and links). The ticket or account stays saved. **Retries.** An email the SMTP server didn't take for a temporary reason (no answer, a 4xx) is tried again after 30
+seconds, 2 minutes and 10 minutes; a permanent refusal (5xx) is not. The retries live in memory only, so a restart
+drops them (resend the link). That is deliberate: a queue table would hold working set-password links in plain text.
 
 ### Settings
 
@@ -722,6 +737,7 @@ Returns every action name as a JSON array of strings, in a sensible order for th
   "logout_all",
   "password_changed",
   "password_reset",
+  "password_reset_requested",
   "password_set_with_link",
   "user_created",
   "invite_resent",
@@ -734,22 +750,23 @@ Returns every action name as a JSON array of strings, in a sensible order for th
 
 ### Actions
 
-| Action                   | When                                                                                   | `actor`    | `target`                      | `details`                                                                                   |
-| ------------------------ | -------------------------------------------------------------------------------------- | ---------- | ----------------------------- | ------------------------------------------------------------------------------------------- |
-| `login_success`          | A successful login                                                                     | the user   | the user                      | `{ email }`                                                                                 |
-| `login_failure`          | A refused login (the password is never stored)                                         | `null`     | the user, if the email exists | `{ email, reason }`, reason: `unknown_email`, `wrong_password`, `locked` or `deactivated`   |
-| `account_locked`         | The wrong password that locked the account (it also logs a `login_failure`)            | `null`     | the user                      | `{ email, minutes }`                                                                        |
-| `logout`                 | `POST /api/auth/logout` ended a session (a repeated logout isn't logged)               | the user   | the user                      | `null`                                                                                      |
-| `logout_all`             | `POST /api/auth/logout-all`                                                            | the user   | the user                      | `{ sessions_ended }`                                                                        |
-| `password_changed`       | The user changed their own password                                                    | the user   | the user                      | `{ other_sessions_ended }`                                                                  |
-| `password_reset`         | An admin or HR reset the password (the temporary one is never stored)                  | admin / HR | the user                      | `{ sessions_ended }`                                                                        |
-| `password_set_with_link` | The user set their password with the emailed link (the link is never stored)           | the user   | the user                      |                                                                                             |
-| `user_created`           | An admin or HR created the account (a set-password link is emailed; never stored here) | admin / HR | the new user                  | `{ email, role, department_id }`                                                            |
-| `invite_resent`          | An admin or HR sent a new one-time link (`POST /api/users/:id/resend-link`)            | admin / HR | the user                      |                                                                                             |
-| `user_updated`           | An admin or HR edited name, email, department or job title                             | admin / HR | the user                      | `{ fields }`: the names of the fields sent, e.g. `["name", "job_title"]` (not their values) |
-| `role_changed`           | The role changed to a different one                                                    | admin      | the user                      | `{ from, to }`                                                                              |
-| `user_activated`         | The account was activated again                                                        | admin / HR | the user                      | `null`                                                                                      |
-| `user_deactivated`       | The account was deactivated                                                            | admin / HR | the user                      | `null`                                                                                      |
+| Action                     | When                                                                                   | `actor`    | `target`                      | `details`                                                                                   |
+| -------------------------- | -------------------------------------------------------------------------------------- | ---------- | ----------------------------- | ------------------------------------------------------------------------------------------- |
+| `login_success`            | A successful login                                                                     | the user   | the user                      | `{ email }`                                                                                 |
+| `login_failure`            | A refused login (the password is never stored)                                         | `null`     | the user, if the email exists | `{ email, reason }`, reason: `unknown_email`, `wrong_password`, `locked` or `deactivated`   |
+| `account_locked`           | The wrong password that locked the account (it also logs a `login_failure`)            | `null`     | the user                      | `{ email, minutes }`                                                                        |
+| `logout`                   | `POST /api/auth/logout` ended a session (a repeated logout isn't logged)               | the user   | the user                      | `null`                                                                                      |
+| `logout_all`               | `POST /api/auth/logout-all`                                                            | the user   | the user                      | `{ sessions_ended }`                                                                        |
+| `password_changed`         | The user changed their own password                                                    | the user   | the user                      | `{ other_sessions_ended }`                                                                  |
+| `password_reset`           | An admin or HR reset the password (the temporary one is never stored)                  | admin / HR | the user                      | `{ sessions_ended }`                                                                        |
+| `password_reset_requested` | "Forgot password" sent the user a reset link (the link is never stored)                | `null`     | the user                      |                                                                                             |
+| `password_set_with_link`   | The user set their password with the emailed link (the link is never stored)           | the user   | the user                      |                                                                                             |
+| `user_created`             | An admin or HR created the account (a set-password link is emailed; never stored here) | admin / HR | the new user                  | `{ email, role, department_id }`                                                            |
+| `invite_resent`            | An admin or HR sent a new one-time link (`POST /api/users/:id/resend-link`)            | admin / HR | the user                      |                                                                                             |
+| `user_updated`             | An admin or HR edited name, email, department or job title                             | admin / HR | the user                      | `{ fields }`: the names of the fields sent, e.g. `["name", "job_title"]` (not their values) |
+| `role_changed`             | The role changed to a different one                                                    | admin      | the user                      | `{ from, to }`                                                                              |
+| `user_activated`           | The account was activated again                                                        | admin / HR | the user                      | `null`                                                                                      |
+| `user_deactivated`         | The account was deactivated                                                            | admin / HR | the user                      | `null`                                                                                      |
 
 A role or active-status change is logged as its own event, not as `user_updated`. Saving the role or status a user
 already has logs nothing, and neither does a refused request. Account changes are logged in the same transaction
@@ -799,6 +816,7 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | POST   | `/api/users/:id/resend-link`      | admin, hr    | `{ purpose? }`. A new one-time link by email (the old one stops working) → `{ user, password_delivery }`; 409 when email isn't set up, the user already set a password, or is deactivated (HR: employees only)                                                                                                                                                                                                                                                                                                                |
 | GET    | `/api/auth/set-password/validate` | anyone       | `?token=` → `{ status: valid \| expired \| used \| invalid, purpose }` for the set-password page                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | POST   | `/api/auth/set-password`          | anyone       | `{ token, new_password }` → sets the password with an emailed link (400 `TOKEN_INVALID` / `TOKEN_EXPIRED` / `TOKEN_USED`, 422 `WEAK_PASSWORD`). See [Setting a password with the emailed link](#setting-a-password-with-the-emailed-link)                                                                                                                                                                                                                                                                                     |
+| POST   | `/api/auth/forgot-password`       | anyone       | `{ email }` → always the same `200 { message }`; an active account gets a one-time reset link by email, its current password keeps working (409 `EMAIL_NOT_CONFIGURED` when email isn't set up; 10 requests per IP in 15 minutes). See ["Forgot password"](#forgot-password)                                                                                                                                                                                                                                                  |
 | POST   | `/api/users/:id/reset-password`   | admin, hr    | No body. Email set up: the old password stops working and a one-time reset link is emailed → `{ user, password_delivery: "email" }`. Otherwise a new temporary password → `{ user, temporaryPassword, password_delivery }`. Sets `must_change_password`, ends the user's sessions and unlocks a locked account (not your own account: 403; HR: employees only). See [Resetting a password](#resetting-a-password-post-apiusersidreset-password)                                                                               |
 | PATCH  | `/api/users/:id`                  | admin, hr    | Change `{ name?, email?, department_id?, job_title?, role?, is_active? }` (at least one). Admin: anyone, but not their own role/active status, and never the last active admin. HR: employees only, never `role`. See [Editing an account](#editing-an-account-patch-apiusersid)                                                                                                                                                                                                                                              |
 | GET    | `/api/stats`                      | admin        | Dashboard statistics: totals, by status/priority/category/agent, 8-week trend                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -876,6 +894,7 @@ tests/
   auth-enforcement.test.js  Login, no self-signup, and the temporary-password block on every route
   departments.test.js     Departments, including deleting while a user is being assigned
   set-password.test.js    Both delivery modes for create and reset; links: hashed, one use, 48 hours, resend-link
+  password-followups.test.js  Forgot password, email retries, and the cleanup of old links
   notifications.test.js   Every email event: right template, right people, never the actor; escaping; SMTP failures
   mailer.test.js          Log mode, the startup SMTP check, the outbox folder, redaction
   migrations.test.js      Schema, up/down/up, and migration 005 on messy data

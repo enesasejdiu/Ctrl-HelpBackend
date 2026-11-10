@@ -391,6 +391,7 @@ describe('GET /api/audit/actions', () => {
       'logout_all',
       'password_changed',
       'password_reset',
+      'password_reset_requested',
       'password_set_with_link',
       'user_created',
       'invite_resent',
