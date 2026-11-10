@@ -4,7 +4,7 @@
 const pool = require('../src/db')
 const { getMailer, resetMailer } = require('../src/mail/mailer')
 const { EXCERPT_LENGTH } = require('../src/mail/templates')
-const { api, resetData, createUser, loginAs, auth, sentMail } = require('./helpers')
+const { api, resetData, createUser, loginAs, auth, sentMail, useEmail } = require('./helpers')
 
 let people
 let categoryId
@@ -37,7 +37,7 @@ afterEach(async () => {
   process.env.IT_NOTIFY_EMAIL = ''
   process.env.SMTP_USER = ''
   process.env.SMTP_PASS = ''
-  resetMailer()
+  useEmail(false) // also resets the mailer
 })
 
 const post = (path, who, body) => api.post(path).set(auth(people[who].token)).send(body)
@@ -227,10 +227,10 @@ describe('ticket resolved → the requester', () => {
   })
 })
 
-describe('new user → set-password link', () => {
+describe('new user → set-password link (email set up)', () => {
   test('goes to the new user only, with a link built from APP_URL', async () => {
     process.env.APP_URL = 'https://desk.example.com/'
-    resetMailer()
+    useEmail(true)
     try {
       const res = await api
         .post('/api/users')
@@ -241,10 +241,10 @@ describe('new user → set-password link', () => {
       expect(res.status).toBe(201)
       const mail = await takeMail()
       expect(recipientsOf(mail)).toEqual(['nora@test.local'])
-      expect(mail[0].subject).toBe('Set your TicketFlow password')
+      expect(mail[0].subject).toBe('Set up your TicketFlow account')
       expect(mail[0].link).toMatch(/^https:\/\/desk\.example\.com\/set-password\?token=[A-Za-z0-9_-]{43}$/)
       expect(mail[0].text).toContain('Hana HR created a TicketFlow account for you (nora@test.local).')
-      expect(mail[0].text).toContain('expires in 72 hours')
+      expect(mail[0].text).toContain('expires in 48 hours')
       expect(`${mail[0].text}${mail[0].html}`).not.toContain('evil.example')
     } finally {
       process.env.APP_URL = 'http://localhost:5173'
@@ -292,7 +292,7 @@ describe('when the SMTP server fails', () => {
     // Test mode with SMTP credentials set, so the redaction has a password to hide
     process.env.SMTP_USER = 'mailer'
     process.env.SMTP_PASS = 'smtp-pass-do-not-log'
-    resetMailer()
+    useEmail(true) // so a new account gets a link (and resets the mailer)
     getMailer().setTransport({
       sendMail: async () => {
         throw new Error('Invalid login: 535 for mailer/smtp-pass-do-not-log (http://x/set-password?token=abc123)')
@@ -329,7 +329,7 @@ describe('when the SMTP server fails', () => {
 
     await sentMail()
     const logged = errors.mock.calls.map((call) => call.join(' ')).join('\n')
-    expect(logged).toContain('Could not send "invite" to una@test.local')
+    expect(logged).toContain('Could not send "accountSetup" to una@test.local')
     expect(logged).not.toMatch(/set-password\?token=[A-Za-z0-9_-]{20,}/)
     expect(logged).not.toContain('smtp-pass-do-not-log')
   })

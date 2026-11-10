@@ -63,11 +63,12 @@ describe('a good configuration', () => {
 })
 
 describe('email settings', () => {
-  test('production sends real email by default, with the settings parsed', () => {
-    const { config, notices } = loadConfig(prod())
+  test('production with MAIL_ENABLED=true sends real email (email set up), with the settings parsed', () => {
+    const { config, notices } = loadConfig(prod({ MAIL_ENABLED: 'true' }))
     expect(notices).toEqual([])
     expect(config.mail).toMatchObject({
       mode: 'smtp',
+      emailConfigured: true,
       host: 'smtp.example.com',
       port: 587,
       secure: false,
@@ -78,8 +79,16 @@ describe('email settings', () => {
     })
   })
 
-  test('production without SMTP_HOST, MAIL_FROM or APP_URL refuses to start and lists all three', () => {
-    const { exited, exitCode, log } = run(prod({ SMTP_HOST: '', MAIL_FROM: undefined, APP_URL: undefined }))
+  test('email is off unless MAIL_ENABLED=true, even in production with every SMTP setting', () => {
+    for (const env of [prod(), dev(), prod({ MAIL_ENABLED: 'false' })]) {
+      expect(loadConfig(env).config.mail).toMatchObject({ mode: 'log', emailConfigured: false })
+    }
+  })
+
+  test('production with MAIL_ENABLED=true but without SMTP_HOST, MAIL_FROM or APP_URL refuses to start, listing all three', () => {
+    const { exited, exitCode, log } = run(
+      prod({ MAIL_ENABLED: 'true', SMTP_HOST: '', MAIL_FROM: undefined, APP_URL: undefined }),
+    )
     expect({ exited, exitCode }).toEqual({ exited: true, exitCode: 1 })
     const message = log.error.mock.calls[0][0]
     expect(message).toMatch(/SMTP_HOST is missing/)
@@ -89,18 +98,16 @@ describe('email settings', () => {
   })
 
   test('production refuses an http APP_URL', () => {
-    expect(() => loadConfig(prod({ APP_URL: 'http://helpdesk.example.com' }))).toThrow(
+    expect(() => loadConfig(prod({ MAIL_ENABLED: 'true', APP_URL: 'http://helpdesk.example.com' }))).toThrow(
       /APP_URL must use https in production/,
     )
   })
 
-  test('production with MAIL_ENABLED=false starts without SMTP, but says new users get no link', () => {
-    const { config, exited, log } = run({ ...withoutMail(prod()), MAIL_ENABLED: 'false' })
+  test('production without any email settings starts (passwords are temporary ones), with no warning', () => {
+    const { config, exited, log } = run(withoutMail(prod()))
     expect(exited).toBe(false)
-    expect(config.mail.mode).toBe('log')
-    expect(log.warn.mock.calls.map(([line]) => line).join('\n')).toMatch(
-      /MAIL_ENABLED=false: no emails are sent, so new users never receive their set-password link/,
-    )
+    expect(config.mail).toMatchObject({ mode: 'log', emailConfigured: false })
+    expect(log.warn).not.toHaveBeenCalled()
   })
 
   test('development without SMTP settings logs emails instead of sending, with links from CLIENT_URL', () => {
@@ -109,12 +116,16 @@ describe('email settings', () => {
     expect(config.mail).toMatchObject({ mode: 'log', appUrl: 'http://localhost:5173', itNotifyEmail: null })
   })
 
-  test('development sends only with MAIL_ENABLED=true and an SMTP host (e.g. Mailpit)', () => {
-    expect(loadConfig(dev()).config.mail.mode).toBe('log') // off by default outside production
-    expect(loadConfig(dev({ MAIL_ENABLED: 'true' })).config.mail.mode).toBe('smtp')
-    const noHost = loadConfig(dev({ MAIL_ENABLED: 'true', SMTP_HOST: '' }))
-    expect(noHost.config.mail.mode).toBe('log')
-    expect(noHost.notices).toEqual(['MAIL_ENABLED=true but SMTP_HOST is empty: emails are logged instead of sent'])
+  test('development sends only with MAIL_ENABLED=true, an SMTP host and MAIL_FROM (e.g. Mailpit)', () => {
+    expect(loadConfig(dev()).config.mail.mode).toBe('log')
+    expect(loadConfig(dev({ MAIL_ENABLED: 'true' })).config.mail).toMatchObject({ mode: 'smtp', emailConfigured: true })
+    for (const missing of [{ SMTP_HOST: '' }, { MAIL_FROM: '' }]) {
+      const half = loadConfig(dev({ MAIL_ENABLED: 'true', ...missing }))
+      expect(half.config.mail).toMatchObject({ mode: 'log', emailConfigured: false })
+      expect(half.notices).toEqual([
+        'MAIL_ENABLED=true but SMTP_HOST or MAIL_FROM is empty: emails are logged instead of sent, and passwords are temporary ones',
+      ])
+    }
   })
 
   test('the test suite never sends, whatever is set', () => {
@@ -262,8 +273,11 @@ describe('the real entry points', () => {
     expect(res.stdout).not.toMatch(/API running/)
   })
 
-  test('src/server.js refuses to start in production without SMTP settings, and never prints the SMTP password', () => {
-    const res = spawnNode('src/server.js', prod({ SMTP_HOST: '', PORT: '5999', DB_NAME: 'ticketflow_test_never_used' }))
+  test('src/server.js refuses to start in production with MAIL_ENABLED=true but no SMTP host, and never prints the SMTP password', () => {
+    const res = spawnNode(
+      'src/server.js',
+      prod({ MAIL_ENABLED: 'true', SMTP_HOST: '', PORT: '5999', DB_NAME: 'ticketflow_test_never_used' }),
+    )
     expect(res.status).toBe(1)
     expect(res.stderr).toMatch(/Invalid configuration/)
     expect(res.stderr).toMatch(/SMTP_HOST is missing/)

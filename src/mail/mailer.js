@@ -1,11 +1,12 @@
-// The one place that talks to nodemailer. Everything else sends with sendMail({ to, subject, html, text }) (usually
-// through src/mail/notifications.js, which never lets an email failure reach a request).
+// The one place that talks to nodemailer. Everything else sends with sendMailSafe({ to, subject, html, text, template })
+// (usually through src/mail/notifications.js), which logs a failure instead of throwing, so an email never fails a
+// request. isEmailConfigured() says whether email is set up (then passwords go out as one-time links).
 //
 // What happens to an email depends on config.mail.mode (from src/config.js loadMailConfig):
 //   smtp  real SMTP (SMTP_HOST, ...). The server checks the connection once at startup (verify) and only warns if it
 //         fails, so a mail outage never stops the API.
-//   log   MAIL_ENABLED=false, or no SMTP_HOST in development: the email is printed (to, subject and, outside
-//         production, the link) instead of sent. A local catcher like Mailpit or MailHog is the alternative (README).
+//   log   email is not set up (MAIL_ENABLED is not true, or SMTP_HOST / MAIL_FROM is missing): to and subject are
+//         printed instead of sending; never the body, a link or a token. A local catcher like Mailpit or MailHog is the alternative (README).
 //   test  the test suite: nodemailer's jsonTransport (nothing leaves the process), and every email lands in
 //         getMailer().outbox for assertions.
 // With MAIL_OUTBOX_DIR set (development and tests only), every email is also saved there as a .json file.
@@ -35,7 +36,25 @@ function createTransport(config) {
   return null
 }
 
-function createMailer(config, { log = console } = {}) {
+// Retries for an email the SMTP server didn't take: after 30 seconds, 2 minutes and 10 minutes. They live in memory
+// only (a restart drops them; Admin/HR can resend a link). Deliberately not a table: the queued emails would hold
+// working set-password links in plain text. The test suite retries only when a test asks for it.
+const RETRY_DELAYS_MS = [30_000, 120_000, 600_000]
+
+// Worth trying again: an SMTP 4xx ("try later") or no SMTP answer at all (connection refused, timeout, DNS). A 5xx is
+// a permanent refusal (unknown address, login refused, ...): trying again won't help.
+function isTemporaryFailure(err) {
+  const code = Number(err?.responseCode)
+  return !(code >= 500 && code < 600)
+}
+
+const wait = (ms) =>
+  new Promise((resolve) => {
+    // unref: a retry waiting here never keeps the process alive on its own
+    setTimeout(resolve, ms).unref?.()
+  })
+
+function createMailer(config, { log = console, retryDelaysMs = config.mode === 'test' ? [] : RETRY_DELAYS_MS } = {}) {
   let transport = createTransport(config)
   const outbox = []
 
@@ -46,15 +65,14 @@ function createMailer(config, { log = console } = {}) {
     fs.writeFileSync(path.join(config.outboxDir, file), JSON.stringify(message, null, 2))
   }
 
-  // Sends one email. Rejects if the SMTP server refuses it; callers decide what that means (notifications.js logs it).
-  // `link` is optional and only used for the log line in log mode.
+  // Sends one email. Rejects if the SMTP server refuses it; use sendMailSafe() unless the caller handles that itself.
+  // `link` is optional and only kept in the test outbox / MAIL_OUTBOX_DIR, never logged.
   async function sendMail({ to, subject, html, text, link }) {
     const message = { from: config.from, to, subject, text, html }
     saveToOutboxDir({ ...message, link })
 
     if (config.mode === 'log') {
-      const shownLink = link && !config.production ? ` link=${link}` : ''
-      log.log(`[mail] Not sent (email is off): to=${to} subject="${subject}"${shownLink}`)
+      log.log(`[mail] Not sent (email is off): to=${to} subject="${subject}"`)
       return { logged: true }
     }
 
@@ -82,10 +100,38 @@ function createMailer(config, { log = console } = {}) {
     }
   }
 
+  // Sends and never throws. A temporary failure is tried again after each of retryDelaysMs; when it still fails (or the
+  // failure is permanent) it is logged and false is returned. Logs say recipient, template and error; never the SMTP
+  // password, the body, a link or a token.
+  async function sendMailSafe({ template = 'email', ...message }) {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await sendMail(message)
+        if (attempt > 1) log.log(`[mail] Sent "${template}" to ${message.to} on attempt ${attempt}`)
+        return true
+      } catch (err) {
+        const reason = redact(err.message, config)
+        const delay = retryDelaysMs[attempt - 1]
+        if (delay !== undefined && isTemporaryFailure(err)) {
+          log.warn(
+            `[mail] Could not send "${template}" to ${message.to} (attempt ${attempt}): ${reason}. ` +
+              `Trying again in ${Math.round(delay / 1000)} s`,
+          )
+          await wait(delay)
+          continue
+        }
+        const gaveUp = attempt > 1 ? ` (gave up after ${attempt} attempts)` : ''
+        log.error(`[mail] Could not send "${template}" to ${message.to}: ${reason}${gaveUp}`)
+        return false
+      }
+    }
+  }
+
   return {
     config,
     outbox,
     sendMail,
+    sendMailSafe,
     verify,
     // Tests: swap in a transport that fails, to check that a failed email never breaks a request
     setTransport(replacement) {
@@ -108,8 +154,13 @@ function resetMailer() {
 
 module.exports = {
   createMailer,
+  isTemporaryFailure,
+  RETRY_DELAYS_MS,
   getMailer,
   resetMailer,
   redact,
   sendMail: (message) => getMailer().sendMail(message),
+  sendMailSafe: (message) => getMailer().sendMailSafe(message),
+  // Email is set up (MAIL_ENABLED=true, SMTP_HOST and MAIL_FROM): decided from the server's settings only
+  isEmailConfigured: () => getMailer().config.emailConfigured,
 }

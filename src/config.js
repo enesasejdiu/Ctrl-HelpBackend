@@ -7,9 +7,10 @@
 // .env with a short secret and http://localhost still works.
 //
 // The email settings (SMTP_*, MAIL_*, APP_URL, IT_NOTIFY_EMAIL) are checked by loadMailConfig() below, which the
-// mailer (src/mail/mailer.js) also uses. Malformed values always stop the program. In production email is on unless
-// MAIL_ENABLED=false, and then SMTP_HOST, MAIL_FROM and an https APP_URL are required; in development a missing SMTP
-// host only means emails are logged instead of sent.
+// mailer (src/mail/mailer.js) also uses. Malformed values always stop the program. Email is off unless MAIL_ENABLED=true;
+// in production MAIL_ENABLED=true then also needs SMTP_HOST, MAIL_FROM and an https APP_URL.
+// "Email is set up" (mail.emailConfigured, isEmailConfigured() in the mailer) = MAIL_ENABLED=true, SMTP_HOST and
+// MAIL_FROM set. Only then do passwords go out as emailed links; otherwise admins see a temporary password, as before.
 const { z } = require('zod')
 
 const MIN_SECRET_LENGTH = 32
@@ -138,8 +139,8 @@ function loadMailConfig(env = process.env) {
   if (!result.success) throw new ConfigError(result.error.issues.map((issue) => issue.message))
   const settings = result.data
 
-  // On by default in production (a new user's only way in is the emailed link), off by default elsewhere
-  const enabled = settings.MAIL_ENABLED ? settings.MAIL_ENABLED === 'true' : production
+  // Off unless switched on: without email, passwords are temporary ones shown to the admin (the fallback)
+  const enabled = settings.MAIL_ENABLED === 'true'
   const problems = []
   if (Boolean(settings.SMTP_USER) !== Boolean(settings.SMTP_PASS)) {
     problems.push('SMTP_USER and SMTP_PASS must be set together (or both left empty for a server without login)')
@@ -155,18 +156,22 @@ function loadMailConfig(env = process.env) {
   if (problems.length > 0) throw new ConfigError(problems)
 
   const notices = []
-  if (production && !enabled) {
-    notices.push('MAIL_ENABLED=false: no emails are sent, so new users never receive their set-password link')
-  } else if (!production && nodeEnv !== 'test' && enabled && !settings.SMTP_HOST) {
-    notices.push('MAIL_ENABLED=true but SMTP_HOST is empty: emails are logged instead of sent')
+  if (nodeEnv !== 'test' && enabled && (!settings.SMTP_HOST || !settings.MAIL_FROM)) {
+    notices.push(
+      'MAIL_ENABLED=true but SMTP_HOST or MAIL_FROM is empty: emails are logged instead of sent, and passwords are temporary ones',
+    )
   }
 
-  let mode = enabled && settings.SMTP_HOST ? 'smtp' : 'log'
+  const emailConfigured = enabled && Boolean(settings.SMTP_HOST) && Boolean(settings.MAIL_FROM)
+  let mode = emailConfigured ? 'smtp' : 'log'
   if (nodeEnv === 'test') mode = 'test'
   return {
     mail: {
       mode,
       production,
+      // Email is set up: passwords for new and reset accounts go out as one-time links (see src/passwordTokens.js).
+      // Decided here, from the server's settings only. In tests it can be true while mode is 'test' (nothing is sent).
+      emailConfigured,
       host: settings.SMTP_HOST ?? null,
       port: settings.SMTP_PORT ?? DEFAULT_SMTP_PORT,
       secure: settings.SMTP_SECURE === 'true',

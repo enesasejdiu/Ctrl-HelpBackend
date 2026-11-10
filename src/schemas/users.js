@@ -25,10 +25,12 @@ const resetPasswordBody = {
   body: z.strictObject({}),
 }
 
-// POST /api/users/:id/resend-invite: no body
-const resendInvite = {
+// POST /api/users/:id/resend-link { purpose? }: which kind of link to send again (default: the last one sent)
+const resendLink = {
   params: z.object({ id: id('User id') }),
-  body: z.strictObject({}),
+  body: z.strictObject({
+    purpose: z.enum(['setup', 'reset'], { error: 'purpose must be setup or reset' }).optional(),
+  }),
 }
 
 // PATCH /api/users/:id is checked in two steps: the id first, then (once the user is known to exist and the caller
@@ -53,4 +55,4 @@ const updateUser = {
     }),
 }
 
-module.exports = { createUser, resetPassword, resetPasswordBody, resendInvite, updateUserParams, updateUser }
+module.exports = { createUser, resetPassword, resetPasswordBody, resendLink, updateUserParams, updateUser }

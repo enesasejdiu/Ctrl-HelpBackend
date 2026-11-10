@@ -15,6 +15,11 @@ process.env.IT_NOTIFY_EMAIL = ''
 process.env.MAIL_OUTBOX_DIR = ''
 process.env.SMTP_USER = ''
 process.env.SMTP_PASS = ''
+// Email is not set up by default, so passwords are temporary ones (the fallback). Tests for the emailed links switch it
+// on with useEmail() from helpers.js; nothing is sent either way.
+process.env.MAIL_ENABLED = ''
+process.env.SMTP_HOST = ''
+process.env.MAIL_FROM = ''
 
 // Host, user and password from .env. dotenv never overwrites variables that are already set, so DB_NAME stays.
 require('dotenv').config({ quiet: true })

@@ -1,9 +1,11 @@
-// Set-password links (src/passwordSetup.js): a new account gets an emailed link instead of a temporary password.
-// GET /api/auth/set-password/validate and POST /api/auth/set-password (public), and
-// POST /api/users/:id/resend-invite (admin and HR, HR only for employees).
+// One-time password links (src/passwordTokens.js) and the two ways a password reaches someone (password_delivery):
+// with email set up, new accounts ('setup') and Admin/HR resets ('reset') get an emailed link; without, a temporary
+// password is returned as before. Also GET /api/auth/set-password/validate and POST /api/auth/set-password (public),
+// and POST /api/users/:id/resend-link (admin and HR, HR only for employees).
 const crypto = require('crypto')
 const pool = require('../src/db')
-const { issueToken, INVITE_HOURS } = require('../src/passwordSetup')
+const { getMailer } = require('../src/mail/mailer')
+const { issueToken, TOKEN_HOURS } = require('../src/passwordTokens')
 const {
   api,
   resetData,
@@ -15,9 +17,12 @@ const {
   expectError,
   sentMail,
   inviteTokenFor,
+  useEmail,
+  withEmail,
 } = require('./helpers')
 
 const HOUR = 60 * 60 * 1000
+const MINUTE = 60 * 1000
 const realNow = Date.now
 
 let admin
@@ -41,55 +46,226 @@ function travel(ms) {
 }
 
 let emailCount = 0
-// Creates an account through the API (as the admin, or as `by`) and returns { user, token } from its email
-async function invite(by = admin, extra = {}) {
+const nextEmail = () => {
   emailCount += 1
-  const res = await api
+  return `person.${emailCount}@test.local`
+}
+const create = (by = admin, extra = {}) =>
+  api
     .post('/api/users')
     .set(auth(by.token))
-    .send({ name: `Invited ${emailCount}`, email: `invited.${emailCount}@test.local`, role: 'employee', ...extra })
+    .send({ name: `Person ${emailCount}`, email: nextEmail(), role: 'employee', ...extra })
+const reset = (id, by = admin) => api.post(`/api/users/${id}/reset-password`).set(auth(by.token))
+const resend = (id, by = admin, body) => api.post(`/api/users/${id}/resend-link`).set(auth(by.token)).send(body)
+const validateToken = (token) => api.get('/api/auth/set-password/validate').query({ token })
+const setPassword = (token, password = 'my-own-pass1') =>
+  api.post('/api/auth/set-password').send({ token, new_password: password })
+const login = (email, password) => api.post('/api/auth/login').send({ email, password })
+const tokenRows = async (userId) =>
+  (await pool.query('SELECT * FROM password_tokens WHERE user_id = ? ORDER BY id', [userId]))[0]
+const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex')
+
+// Creates an account with email set up and returns { user, token } from its setup email
+async function invite(by = admin, extra = {}) {
+  const res = await create(by, extra)
   expect(res.status).toBe(201)
   return { user: res.body.user, token: await inviteTokenFor(res.body.user.email) }
 }
 
-const validateToken = (token) => api.get('/api/auth/set-password/validate').query({ token })
-const setPassword = (token, password = 'my-own-pass1') =>
-  api.post('/api/auth/set-password').send({ token, new_password: password })
-const tokenRows = async (userId) =>
-  (await pool.query('SELECT * FROM password_setup_tokens WHERE user_id = ? ORDER BY id', [userId]))[0]
+describe('POST /api/users: how the password is delivered', () => {
+  test('email not set up: a temporary password in the response, no email', async () => {
+    const res = await create()
+    expect(res.status).toBe(201)
+    expect(res.body).toEqual({
+      user: expect.objectContaining({ must_change_password: true }),
+      temporaryPassword: expect.stringMatching(/^[A-Za-z0-9]{12,}$/),
+      password_delivery: 'temporary_password',
+    })
+    expect(await sentMail()).toEqual([])
+    expect(await tokenRows(res.body.user.id)).toEqual([])
+    expect((await login(res.body.user.email, res.body.temporaryPassword)).status).toBe(200)
+  })
+
+  describe('email set up', () => {
+    withEmail()
+
+    test('no password in the response; the setup link is emailed to the new user only', async () => {
+      const res = await create()
+      expect(res.status).toBe(201)
+      expect(res.body).toEqual({
+        user: expect.objectContaining({ must_change_password: true }),
+        password_delivery: 'email',
+      })
+      expect(res.body).not.toHaveProperty('temporaryPassword')
+      expect(res.body).not.toHaveProperty('temporary_password')
+
+      const mail = await sentMail()
+      expect(mail.map((m) => [m.to, m.subject])).toEqual([[res.body.user.email, 'Set up your TicketFlow account']])
+      expect(mail[0].link).toMatch(/^http:\/\/localhost:5173\/set-password\?token=[A-Za-z0-9_-]{43}$/)
+      expect(mail[0].text).toContain('This link expires in 48 hours and can be used once.')
+      expect(mail[0].text).toContain("If you didn't expect this, contact your administrator.")
+      expect((await tokenRows(res.body.user.id)).map((t) => t.purpose)).toEqual(['setup'])
+    })
+
+    test('the new account cannot log in before the link is used; afterwards it logs in normally', async () => {
+      const { user, token } = await invite()
+      for (const password of ['password123', 'anything-at-all1']) {
+        expectError(await login(user.email, password), 401, undefined, 'Wrong email or password')
+      }
+      await setPassword(token, 'my-own-pass1').expect(200)
+      const res = await login(user.email, 'my-own-pass1')
+      expect(res.status).toBe(200)
+      expect(res.body.user.must_change_password).toBe(false)
+    })
+
+    test('a failing SMTP server does not fail the request; the account is saved', async () => {
+      const errors = jest.spyOn(console, 'error').mockImplementation(() => {})
+      getMailer().setTransport({
+        sendMail: async () => {
+          throw new Error('connect ECONNREFUSED')
+        },
+      })
+      const res = await create()
+      expect(res.status).toBe(201)
+      expect(await dbUser(res.body.user.id)).toBeDefined()
+      await sentMail()
+      expect(errors.mock.calls.flat().join('\n')).toContain(`Could not send "accountSetup" to ${res.body.user.email}`)
+    })
+  })
+})
+
+describe('POST /api/users/:id/reset-password: how the password is delivered', () => {
+  test('email not set up: the temporary password, unchanged; no email, no link', async () => {
+    const target = await createUser()
+    const res = await reset(target.id)
+    expect(res.status).toBe(200)
+    expect(res.body).toMatchObject({ password_delivery: 'temporary_password' })
+    expect(res.body.temporaryPassword).toMatch(/^[A-Za-z0-9]{12,}$/)
+    expect(await sentMail()).toEqual([])
+    expect(await tokenRows(target.id)).toEqual([])
+  })
+
+  describe('email set up', () => {
+    withEmail()
+
+    test('the old password stops working, sessions end, and a reset link is emailed; no password in the response', async () => {
+      const target = await createUser()
+      const session = await loginAs(target)
+      const res = await reset(target.id)
+      expect(res.status).toBe(200)
+      expect(res.body).toEqual({ user: expect.objectContaining({ id: target.id }), password_delivery: 'email' })
+
+      expectError(await login(target.email, target.password), 401, undefined, 'Wrong email or password')
+      expectError(await api.get('/api/auth/me').set(auth(session)), 401, undefined)
+      const [open] = await pool.query('SELECT id FROM sessions WHERE user_id = ? AND revoked_at IS NULL', [target.id])
+      expect(open).toHaveLength(0)
+
+      const mail = await sentMail()
+      expect(mail.map((m) => [m.to, m.subject])).toEqual([[target.email, 'Reset your TicketFlow password']])
+      expect(mail[0].text).toContain('This link expires in 48 hours and can be used once.')
+      expect((await tokenRows(target.id)).map((t) => t.purpose)).toEqual(['reset'])
+
+      const token = await inviteTokenFor(target.email)
+      expect((await validateToken(token)).body).toMatchObject({ status: 'valid', purpose: 'reset' })
+      await setPassword(token, 'brand-new-pass2').expect(200)
+      expect((await login(target.email, 'brand-new-pass2')).body.user.must_change_password).toBe(false)
+    })
+
+    test('the same permissions as before: HR only employees, nobody themselves, and refusals send nothing', async () => {
+      const agent = await createUser({ role: 'agent' })
+      expectError(await reset(agent.id, hr), 403, undefined, 'HR can only reset passwords of employee accounts')
+      expectError(await reset(admin.id, admin), 403, undefined, 'Use Change password for your own account')
+      expect(await sentMail()).toEqual([])
+      expect(await tokenRows(agent.id)).toEqual([])
+      await reset((await createUser()).id, hr).expect(200)
+    })
+
+    test('a failing SMTP server does not fail the reset', async () => {
+      jest.spyOn(console, 'error').mockImplementation(() => {})
+      getMailer().setTransport({
+        sendMail: async () => {
+          throw new Error('connect ECONNREFUSED')
+        },
+      })
+      const target = await createUser()
+      await reset(target.id).expect(200)
+      expect(await tokenRows(target.id)).toHaveLength(1)
+    })
+  })
+})
 
 describe('the token', () => {
-  test('is 32 random bytes (43 base64url characters); only its SHA-256 hash is stored, expiring in 72 hours', async () => {
+  withEmail()
+
+  test('is 32 random bytes (43 base64url characters); only its SHA-256 hash is stored, expiring in 48 hours', async () => {
     const before = realNow()
     const { user, token } = await invite()
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/)
     expect(Buffer.from(token, 'base64url')).toHaveLength(32)
 
     const [row] = await tokenRows(user.id)
-    expect(row.token_hash).toBe(crypto.createHash('sha256').update(token).digest('hex'))
+    expect(row.token_hash).toBe(sha256(token))
     expect(JSON.stringify(await dbSnapshot())).not.toContain(token)
-    expect(INVITE_HOURS).toBe(72)
+    expect(TOKEN_HOURS).toBe(48)
     const expiresIn = new Date(row.expires_at) - before
-    expect(expiresIn).toBeGreaterThan(72 * HOUR - 5000)
-    expect(expiresIn).toBeLessThanOrEqual(72 * HOUR + 5000)
+    expect(expiresIn).toBeGreaterThan(48 * HOUR - 5000)
+    expect(expiresIn).toBeLessThanOrEqual(48 * HOUR + 5000)
+  })
+
+  test('works at 47h59m; at 48h01m it is 400 TOKEN_EXPIRED and nothing changes', async () => {
+    const { user, token } = await invite()
+
+    travel(47 * HOUR + 59 * MINUTE)
+    expect((await validateToken(token)).body.status).toBe('valid')
+
+    travel(48 * HOUR + MINUTE)
+    expect((await validateToken(token)).body).toMatchObject({ status: 'expired', code: 'TOKEN_EXPIRED' })
+    const before = await dbSnapshot()
+    const res = await setPassword(token)
+    expectError(res, 400, 'TOKEN_EXPIRED', 'This link has expired. Ask your administrator or HR for a new link.')
+    expect(await dbSnapshot()).toEqual(before)
+    expect((await dbUser(user.id)).must_change_password).toBe(1)
+  })
+
+  test('a new token (reset, or resend) makes the older ones stop working', async () => {
+    const { user, token: setupToken } = await invite()
+    await reset(user.id).expect(200)
+    const resetToken = await inviteTokenFor(user.email)
+    expect(resetToken).not.toBe(setupToken)
+    expectError(await setPassword(setupToken), 400, 'TOKEN_INVALID')
+    expect(await tokenRows(user.id)).toHaveLength(1)
+    await issueToken(pool, user.id, 'reset')
+    expectError(await setPassword(resetToken), 400, 'TOKEN_INVALID')
   })
 })
 
 describe('GET /api/auth/set-password/validate', () => {
-  test('a fresh link is valid and names the account', async () => {
+  withEmail()
+
+  test('a fresh link is valid and says its purpose and whose it is', async () => {
     const { user, token } = await invite()
     const res = await validateToken(token)
     expect(res.status).toBe(200)
-    expect(res.body).toMatchObject({ status: 'valid', name: user.name, email: user.email })
+    expect(res.body).toMatchObject({ status: 'valid', purpose: 'setup', email: user.email })
   })
 
-  test('an unknown token is "invalid"; a missing one is a 400', async () => {
-    expect((await validateToken('not-a-real-token')).body).toMatchObject({ status: 'invalid', code: 'TOKEN_INVALID' })
-    const missing = await api.get('/api/auth/set-password/validate')
-    expectError(missing, 400, undefined, 'Token is required')
+  test('an unknown token and one of a deactivated account answer exactly the same', async () => {
+    const { user, token } = await invite()
+    await api.patch(`/api/users/${user.id}`).set(auth(admin.token)).send({ is_active: false }).expect(200)
+    const unknown = await validateToken('x'.repeat(43))
+    const deactivated = await validateToken(token)
+    expect(unknown.body).toEqual({
+      status: 'invalid',
+      purpose: null,
+      message: 'This link is not valid. Ask your administrator or HR for a new link.',
+      code: 'TOKEN_INVALID',
+    })
+    expect(deactivated.body).toEqual(unknown.body)
+    expect(deactivated.status).toBe(unknown.status)
   })
 
-  test('needs no login, and changes nothing', async () => {
+  test('a missing token is a 400; checking changes nothing and needs no login', async () => {
+    expectError(await api.get('/api/auth/set-password/validate'), 400, undefined, 'Token is required')
     const { token } = await invite()
     const before = await dbSnapshot()
     await validateToken(token).expect(200)
@@ -98,28 +274,22 @@ describe('GET /api/auth/set-password/validate', () => {
 })
 
 describe('POST /api/auth/set-password', () => {
-  test('sets the password, clears must_change_password, marks the link used; the user can log in', async () => {
-    const { user, token } = await invite()
-    expect((await dbUser(user.id)).must_change_password).toBe(1)
+  withEmail()
 
+  test('sets the password, clears must_change_password and marks the link used; no session is started', async () => {
+    const { user, token } = await invite()
     const res = await setPassword(token, 'my-own-pass1')
     expect(res.status).toBe(200)
     expect(res.body).toEqual({ message: 'Password set, please log in.' })
-
+    expect(res.headers['set-cookie']).toBeUndefined()
     expect((await dbUser(user.id)).must_change_password).toBe(0)
-    const [row] = await tokenRows(user.id)
-    expect(row.used_at).not.toBeNull()
-
-    const login = await api.post('/api/auth/login').send({ email: user.email, password: 'my-own-pass1' })
-    expect(login.status).toBe(200)
-    expect(login.body.user.must_change_password).toBe(false)
+    expect((await tokenRows(user.id))[0].used_at).not.toBeNull()
   })
 
   test('works once: a second use is 400 TOKEN_USED, and validate says "used"', async () => {
     const { token } = await invite()
     await setPassword(token).expect(200)
-    const again = await setPassword(token, 'another-pass2')
-    expectError(again, 400, 'TOKEN_USED')
+    expectError(await setPassword(token, 'another-pass2'), 400, 'TOKEN_USED')
     expect((await validateToken(token)).body).toMatchObject({ status: 'used', code: 'TOKEN_USED' })
   })
 
@@ -130,21 +300,6 @@ describe('POST /api/auth/set-password', () => {
     expect(results.find((r) => r.status === 400).body.code).toBe('TOKEN_USED')
   })
 
-  test('expires after 72 hours: still valid just before, 400 TOKEN_EXPIRED after', async () => {
-    const { user, token } = await invite()
-
-    travel(71 * HOUR + 59 * 60 * 1000)
-    expect((await validateToken(token)).body.status).toBe('valid')
-
-    travel(72 * HOUR + 1000)
-    expect((await validateToken(token)).body).toMatchObject({ status: 'expired', code: 'TOKEN_EXPIRED' })
-    const before = await dbSnapshot()
-    const res = await setPassword(token)
-    expectError(res, 400, 'TOKEN_EXPIRED', 'This link has expired. Ask an admin or HR to send you a new one.')
-    expect(await dbSnapshot()).toEqual(before)
-    expect((await dbUser(user.id)).must_change_password).toBe(1)
-  })
-
   test('an unknown token is 400 TOKEN_INVALID and changes nothing', async () => {
     await invite()
     const before = await dbSnapshot()
@@ -152,174 +307,163 @@ describe('POST /api/auth/set-password', () => {
     expect(await dbSnapshot()).toEqual(before)
   })
 
-  test("a deactivated account's link doesn't work", async () => {
-    const { user, token } = await invite()
-    await api.patch(`/api/users/${user.id}`).set(auth(admin.token)).send({ is_active: false }).expect(200)
-    expectError(await setPassword(token), 400, 'TOKEN_INVALID')
-    expect((await validateToken(token)).body.status).toBe('invalid')
-  })
-
-  // The project answers every validation problem with 400 (see middleware/validate.js), not 422
   test.each([
     ['too short', 'short1', 'New password must be at least 10 characters'],
     ['no number', 'onlyletters', 'New password must contain at least one number'],
     ['no letter', '12345678901', 'New password must contain at least one letter'],
     ['too long', `a1${'x'.repeat(71)}`, 'New password must be 72 characters or less'],
-  ])(
-    'a weak password (%s) is 400 naming new_password; the link still works afterwards',
-    async (_, password, message) => {
-      const { token } = await invite()
-      const res = await setPassword(token, password)
-      expectError(res, 400, undefined, message)
-      expect(res.body.errors).toContainEqual({ field: 'new_password', message })
-      expect((await validateToken(token)).body.status).toBe('valid')
-    },
-  )
+  ])('a weak password (%s) is 422 naming new_password; the token stays unused', async (_, password, message) => {
+    const { user, token } = await invite()
+    const res = await setPassword(token, password)
+    expectError(res, 422, 'WEAK_PASSWORD', message)
+    expect(res.body.errors).toEqual([{ field: 'new_password', message }])
+    expect((await tokenRows(user.id))[0].used_at).toBeNull()
+    expect((await validateToken(token)).body.status).toBe('valid')
+    await setPassword(token, 'good-pass-123').expect(200)
+  })
 
-  test('unknown fields are refused', async () => {
+  test('a malformed body is 400: missing fields or unknown ones', async () => {
     const { token } = await invite()
-    const res = await api.post('/api/auth/set-password').send({ token, new_password: 'my-own-pass1', role: 'admin' })
-    expectError(res, 400, undefined, 'role is not allowed')
+    expectError(await api.post('/api/auth/set-password').send({ token }), 400, undefined, 'New password is required')
+    const extra = await api.post('/api/auth/set-password').send({ token, new_password: 'my-own-pass1', role: 'admin' })
+    expectError(extra, 400, undefined, 'role is not allowed')
   })
 
   test("removes the user's other unused links", async () => {
     const { user, token } = await invite()
-    // A second link issued straight in the database (the API itself only ever keeps the newest)
-    const [tokenRow] = await tokenRows(user.id)
+    const [row] = await tokenRows(user.id)
     const extra = crypto.randomBytes(32).toString('base64url')
-    await pool.query('INSERT INTO password_setup_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)', [
+    await pool.query('INSERT INTO password_tokens (user_id, token_hash, purpose, expires_at) VALUES (?, ?, ?, ?)', [
       user.id,
-      crypto.createHash('sha256').update(extra).digest('hex'),
-      tokenRow.expires_at,
+      sha256(extra),
+      'reset',
+      row.expires_at,
     ])
-
     await setPassword(token).expect(200)
-    const rows = await tokenRows(user.id)
-    expect(rows).toHaveLength(1)
-    expect(rows[0].used_at).not.toBeNull()
+    expect(await tokenRows(user.id)).toHaveLength(1)
     expectError(await setPassword(extra), 400, 'TOKEN_INVALID')
   })
 
-  test('ends any session the user still had (e.g. one opened with a temporary password)', async () => {
+  test('works without a login, and a session with must_change_password does not get in the way', async () => {
     const flagged = await createUser({ mustChangePassword: true })
     const session = await loginAs(flagged)
-    expect((await api.get('/api/auth/me').set(auth(session))).status).toBe(200)
-
-    await api.post(`/api/users/${flagged.id}/resend-invite`).set(auth(admin.token)).expect(200)
-    await setPassword(await inviteTokenFor(flagged.email)).expect(200)
-
-    expectError(await api.get('/api/auth/me').set(auth(session)), 401, undefined)
-    const [open] = await pool.query('SELECT id FROM sessions WHERE user_id = ? AND revoked_at IS NULL', [flagged.id])
-    expect(open).toHaveLength(0)
-  })
-
-  test('needs no session and no CSRF header', async () => {
-    const { token } = await invite()
-    const res = await api.post('/api/auth/set-password').send({ token, new_password: 'my-own-pass1' })
-    expect(res.status).toBe(200)
-  })
-})
-
-describe('POST /api/users/:id/resend-invite', () => {
-  const resend = (id, token = admin.token) => api.post(`/api/users/${id}/resend-invite`).set(auth(token))
-
-  test('sends a new link; the old one stops working and the new one works', async () => {
-    const { user, token: oldToken } = await invite()
-    const res = await resend(user.id)
-    expect(res.status).toBe(200)
-    expect(res.body.user.id).toBe(user.id)
-    expect(res.body).toHaveProperty('inviteExpiresAt')
-    expect(res.body).not.toHaveProperty('temporaryPassword')
-
-    const newToken = await inviteTokenFor(user.email)
-    expect(newToken).not.toBe(oldToken)
-    expect(await tokenRows(user.id)).toHaveLength(1)
-    expectError(await setPassword(oldToken), 400, 'TOKEN_INVALID')
-    await setPassword(newToken).expect(200)
-  })
-
-  test('replaces an expired link', async () => {
-    const { user, token: oldToken } = await invite()
-    travel(73 * HOUR)
-    expectError(await setPassword(oldToken), 400, 'TOKEN_EXPIRED')
-    // The admin's own 8-hour session has run out by then too
-    await resend(user.id, await loginAs(admin)).expect(200)
-    await setPassword(await inviteTokenFor(user.email)).expect(200)
-  })
-
-  test('HR may resend to an employee', async () => {
-    const { user } = await invite(hr)
-    await resend(user.id, hr.token).expect(200)
-  })
-
-  test.each(['agent', 'admin', 'hr'])('HR resending to a(n) %s is 403, nothing is sent', async (role) => {
-    const { user } = await invite(admin, { role })
-    await sentMail() // the invitation itself
-    const before = await tokenRows(user.id)
-    const res = await resend(user.id, hr.token)
-    expectError(res, 403, undefined, 'HR can only send invitations to employee accounts')
-    expect(await tokenRows(user.id)).toEqual(before)
-  })
-
-  test.each(['employee', 'agent'])('a(n) %s gets 403', async (role) => {
-    const { user } = await invite()
-    const caller = await createUser({ role })
-    expect((await resend(user.id, await loginAs(caller))).status).toBe(403)
-  })
-
-  test('without a login it is 401', async () => {
-    const { user } = await invite()
-    expect((await api.post(`/api/users/${user.id}/resend-invite`)).status).toBe(401)
-  })
-
-  test('a user who has set a password is 409 PASSWORD_ALREADY_SET (use reset-password instead)', async () => {
-    const { user, token } = await invite()
-    await setPassword(token).expect(200)
-    const res = await resend(user.id)
-    expectError(res, 409, 'PASSWORD_ALREADY_SET')
-    const existing = await createUser()
-    expectError(await resend(existing.id), 409, 'PASSWORD_ALREADY_SET')
-  })
-
-  test('a deactivated account is 409 ACCOUNT_DEACTIVATED, and no link is issued', async () => {
-    const { user } = await invite()
-    await api.patch(`/api/users/${user.id}`).set(auth(admin.token)).send({ is_active: false }).expect(200)
-    const before = await tokenRows(user.id)
-    expectError(await resend(user.id), 409, 'ACCOUNT_DEACTIVATED')
-    expect(await tokenRows(user.id)).toEqual(before)
-  })
-
-  test('an unknown user is 404; a body is refused', async () => {
-    expectError(await resend(999999), 404, undefined, 'User not found')
-    const { user } = await invite()
+    await resend(flagged.id).expect(200)
+    const token = await inviteTokenFor(flagged.email)
+    // Sent with the flagged user's own cookies: the must_change_password middleware doesn't apply here
     const res = await api
-      .post(`/api/users/${user.id}/resend-invite`)
-      .set(auth(admin.token))
-      .send({ email: 'other@test.local' })
-    expectError(res, 400, undefined, 'email is not allowed')
-  })
-
-  test('issueToken keeps only the newest unused link', async () => {
-    const { user } = await invite()
-    await issueToken(pool, user.id)
-    await issueToken(pool, user.id)
-    expect(await tokenRows(user.id)).toHaveLength(1)
+      .post('/api/auth/set-password')
+      .set(auth(session))
+      .send({ token, new_password: 'my-own-pass1' })
+    expect(res.status).toBe(200)
+    // …and it ended that session, like any password change by someone else
+    expectError(await api.get('/api/auth/me').set(auth(session)), 401, undefined)
   })
 })
 
-describe('audit log', () => {
-  const entries = async (userId) =>
-    (
-      await pool.query('SELECT action, actor_id, details FROM audit_log WHERE target_user_id = ? ORDER BY id', [userId])
-    )[0]
+describe('POST /api/users/:id/resend-link', () => {
+  describe('email set up', () => {
+    withEmail()
 
-  test('creating, resending and using a link are logged, never with the link or its token', async () => {
+    test('sends a new link of the same purpose; the old one stops working', async () => {
+      const { user, token: oldToken } = await invite()
+      const res = await resend(user.id)
+      expect(res.status).toBe(200)
+      expect(res.body).toEqual({ user: expect.objectContaining({ id: user.id }), password_delivery: 'email' })
+      const newToken = await inviteTokenFor(user.email)
+      expect(newToken).not.toBe(oldToken)
+      expectError(await setPassword(oldToken), 400, 'TOKEN_INVALID')
+      expect((await tokenRows(user.id)).map((t) => t.purpose)).toEqual(['setup'])
+
+      const target = await createUser()
+      await reset(target.id).expect(200)
+      await resend(target.id).expect(200)
+      expect((await tokenRows(target.id)).map((t) => t.purpose)).toEqual(['reset'])
+      expect((await sentMail()).filter((m) => m.to === target.email).map((m) => m.subject)).toEqual([
+        'Reset your TicketFlow password',
+        'Reset your TicketFlow password',
+      ])
+    })
+
+    test('replaces an expired link', async () => {
+      const { user, token: oldToken } = await invite()
+      travel(49 * HOUR)
+      expectError(await setPassword(oldToken), 400, 'TOKEN_EXPIRED')
+      // The admin's own 8-hour session has run out by then too
+      await resend(user.id, { token: await loginAs(admin) }).expect(200)
+      await setPassword(await inviteTokenFor(user.email)).expect(200)
+    })
+
+    test('a setup link for someone who already has their own password is 409 PASSWORD_ALREADY_SET', async () => {
+      const { user, token } = await invite()
+      await setPassword(token).expect(200)
+      expectError(await resend(user.id), 409, 'PASSWORD_ALREADY_SET')
+      expectError(await resend((await createUser()).id, admin, { purpose: 'setup' }), 409, 'PASSWORD_ALREADY_SET')
+    })
+
+    test('HR may resend to employees only; employees and agents may not; no login is 401', async () => {
+      const { user } = await invite(hr)
+      await resend(user.id, hr).expect(200)
+      const { user: agent } = await invite(admin, { role: 'agent' })
+      const before = await tokenRows(agent.id)
+      expectError(await resend(agent.id, hr), 403, undefined, 'HR can only send links to employee accounts')
+      expect(await tokenRows(agent.id)).toEqual(before)
+      for (const role of ['employee', 'agent']) {
+        expect((await resend(user.id, { token: await loginAs(await createUser({ role })) })).status).toBe(403)
+      }
+      expect((await api.post(`/api/users/${user.id}/resend-link`)).status).toBe(401)
+    })
+
+    test('deactivated → 409 ACCOUNT_DEACTIVATED; unknown → 404; yourself → 403; a bad purpose → 400', async () => {
+      const { user } = await invite()
+      await api.patch(`/api/users/${user.id}`).set(auth(admin.token)).send({ is_active: false }).expect(200)
+      expectError(await resend(user.id), 409, 'ACCOUNT_DEACTIVATED')
+      expectError(await resend(999999), 404, undefined, 'User not found')
+      expectError(await resend(admin.id), 403, undefined, 'Use Change password for your own account')
+      const { user: other } = await invite()
+      expectError(await resend(other.id, admin, { purpose: 'login' }), 400, undefined, 'purpose must be setup or reset')
+    })
+  })
+
+  test('email not set up: 409 EMAIL_NOT_CONFIGURED, and nothing is issued or sent', async () => {
+    useEmail(false)
+    const flagged = await createUser({ mustChangePassword: true })
+    expectError(await resend(flagged.id), 409, 'EMAIL_NOT_CONFIGURED')
+    expect(await tokenRows(flagged.id)).toEqual([])
+    expect(await sentMail()).toEqual([])
+  })
+})
+
+describe('logs and audit', () => {
+  withEmail()
+
+  test('tokens and links never reach the console, through create, reset, resend, validate and set', async () => {
+    const spies = ['log', 'info', 'warn', 'error', 'debug'].map((level) =>
+      jest.spyOn(console, level).mockImplementation(() => {}),
+    )
     const { user, token: first } = await invite()
-    await api.post(`/api/users/${user.id}/resend-invite`).set(auth(admin.token)).expect(200)
+    await resend(user.id).expect(200)
+    const second = await inviteTokenFor(user.email)
+    await validateToken(second).expect(200)
+    await setPassword(second).expect(200)
+    const target = await createUser()
+    await reset(target.id).expect(200)
+    const third = await inviteTokenFor(target.email)
+
+    const written = spies.flatMap((spy) => spy.mock.calls.flat().map(String)).join('\n')
+    for (const token of [first, second, third]) expect(written).not.toContain(token)
+    expect(written).not.toContain('set-password?token=')
+  })
+
+  test('creating, resending and using a link are audited, never with the link or its token', async () => {
+    const { user, token: first } = await invite()
+    await resend(user.id).expect(200)
     const second = await inviteTokenFor(user.email)
     await setPassword(second).expect(200)
 
-    const logged = await entries(user.id)
+    const [logged] = await pool.query(
+      'SELECT action, actor_id, details FROM audit_log WHERE target_user_id = ? ORDER BY id',
+      [user.id],
+    )
     expect(logged.map((e) => [e.action, e.actor_id])).toEqual([
       ['user_created', admin.id],
       ['invite_resent', admin.id],
@@ -328,12 +472,6 @@ describe('audit log', () => {
     const text = JSON.stringify(logged)
     expect(text).not.toContain(first)
     expect(text).not.toContain(second)
-    expect(text).not.toMatch(/set-password?token=/)
-  })
-
-  test('a refused link logs nothing', async () => {
-    const { user } = await invite()
-    await setPassword('x'.repeat(43)).expect(400)
-    expect((await entries(user.id)).map((e) => e.action)).toEqual(['user_created'])
+    expect(text).toContain('email') // delivery: 'email'
   })
 })

@@ -2,7 +2,9 @@
 // the commit) and don't await them: the work runs in the background, and an error (a database problem while picking
 // recipients, an SMTP failure) is logged and never reaches the request. A failed email never undoes the change.
 //
-//   userInvited      new account            → the new user (set-password link)
+//   passwordLink     new account or reset   → the user (one-time set-password link; only when email is set up)
+//   forgotPassword   "Forgot password"      → the account with that email, if any (a reset link; at most one
+//                                             every FORGOT_EVERY_MINUTES per account)
 //   ticketCreated    new ticket             → IT: IT_NOTIFY_EMAIL if set, otherwise every active agent
 //   ticketAssigned   assigned / reassigned  → the new assignee
 //   commentAdded     comment by the requester → the assignee, or IT if unassigned
@@ -13,9 +15,13 @@
 // an email address are skipped; each address gets at most one copy.
 // Logs say who, which template and what went wrong, never the SMTP password or the email body (links, tokens).
 const pool = require('../db')
-const { getMailer, redact } = require('./mailer')
+const { getMailer, redact, sendMailSafe } = require('./mailer')
 const templates = require('./templates')
-const { INVITE_HOURS } = require('../passwordSetup')
+const { TOKEN_HOURS, issueToken } = require('../passwordTokens')
+const { recordAudit } = require('../audit')
+
+// "Forgot password" sends an account at most one link this often, so it can't be used to flood someone's inbox
+const FORGOT_EVERY_MINUTES = 5
 
 const pending = new Set()
 
@@ -37,13 +43,9 @@ async function settle() {
   while (pending.size > 0) await Promise.all([...pending])
 }
 
-// Sends one email and logs (instead of throwing) if it fails
+// Sends one email; sendMailSafe logs (instead of throwing) if it fails
 async function deliver(template, to, message) {
-  try {
-    await getMailer().sendMail({ to, ...message })
-  } catch (err) {
-    console.error(`[mail] Could not send "${template}" to ${to}: ${redact(err.message, getMailer().config)}`)
-  }
+  await sendMailSafe({ template, to, ...message })
 }
 
 async function loadUser(id) {
@@ -92,20 +94,22 @@ function recipients(people, actor) {
 
 const appUrl = () => getMailer().config.appUrl
 
-// New account → the set-password link, to the new user. `token` is the plain token, which only this email carries.
-function userInvited({ userId, token, actorId }) {
-  inBackground('userInvited', async () => {
+// A one-time password link to the user: purpose 'setup' (new account) or 'reset' (an admin or HR reset it). token is
+// the plain token, which only this email carries. Deactivated users get nothing. Only called when email is set up.
+function passwordLink({ userId, token, purpose, actorId }) {
+  inBackground('passwordLink', async () => {
     const [user, actor] = [await loadUser(userId), await loadUser(actorId)]
     for (const person of recipients([user], null)) {
       const link = templates.links.setPassword(appUrl(), token)
-      const message = templates.invite({
+      const message = templates.passwordLink({
+        purpose,
         name: person.name,
         email: person.email,
         actor: actor?.name ?? 'An administrator',
         link,
-        hours: INVITE_HOURS,
+        hours: TOKEN_HOURS,
       })
-      await deliver('invite', person.email, { ...message, link })
+      await deliver(purpose === 'reset' ? 'passwordReset' : 'accountSetup', person.email, { ...message, link })
     }
   })
 }
@@ -188,4 +192,62 @@ function ticketResolved({ ticketId, actorId }) {
   })
 }
 
-module.exports = { userInvited, ticketCreated, ticketAssigned, commentAdded, ticketResolved, settle }
+// "Forgot password" for this email address. Runs entirely in the background, after the response, so the answer and
+// its timing are the same whether or not the account exists. An active account gets a 'reset' link (its current
+// password keeps working until a new one is set); unknown and deactivated addresses get nothing. A link already sent
+// in the last FORGOT_EVERY_MINUTES means nothing new is sent. `ip` is only for the audit log.
+function forgotPassword({ email, ip }) {
+  inBackground('forgotPassword', async () => {
+    const conn = await pool.getConnection()
+    let user = null
+    let link = null
+    try {
+      await conn.beginTransaction()
+      // Locks the user row: two requests at once can't both send a link
+      const [[row]] = await conn.query(
+        'SELECT id, name, email, is_active FROM users WHERE email = ? AND is_active = TRUE FOR UPDATE',
+        [email],
+      )
+      if (row) {
+        const [[recent]] = await conn.query(
+          `SELECT COUNT(*) AS n FROM password_tokens
+           WHERE user_id = ? AND purpose = 'reset' AND used_at IS NULL AND created_at > NOW() - INTERVAL ? MINUTE`,
+          [row.id, FORGOT_EVERY_MINUTES],
+        )
+        if (recent.n === 0) {
+          user = row
+          link = await issueToken(conn, row.id, 'reset')
+          await recordAudit('password_reset_requested', { targetUserId: row.id, req: { ip }, db: conn })
+        }
+      }
+      await conn.commit()
+    } catch (err) {
+      await conn.rollback()
+      throw err
+    } finally {
+      conn.release()
+    }
+    if (!user) return
+    const url = templates.links.setPassword(appUrl(), link.token)
+    const message = templates.passwordLink({
+      purpose: 'reset',
+      requested: true,
+      name: user.name,
+      email: user.email,
+      link: url,
+      hours: TOKEN_HOURS,
+    })
+    await deliver('passwordForgot', user.email, { ...message, link: url })
+  })
+}
+
+module.exports = {
+  passwordLink,
+  forgotPassword,
+  ticketCreated,
+  ticketAssigned,
+  commentAdded,
+  ticketResolved,
+  settle,
+  FORGOT_EVERY_MINUTES,
+}

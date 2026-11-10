@@ -54,22 +54,23 @@ npm run dev          # starts the API with auto-reload
 The API runs on **http://localhost:5050**. Check it with http://localhost:5050/api/health → `{ "status": "ok" }`.
 (Port 5000 is not used because macOS AirPlay occupies it.)
 
-| Script                          | Description                                                                         |
-| ------------------------------- | ----------------------------------------------------------------------------------- |
-| `npm start`                     | Start the server                                                                    |
-| `npm run dev`                   | Start with nodemon (auto-reload)                                                    |
-| `npm run db:migrate`            | Create the database or apply new migrations                                         |
-| `npm run db:seed`               | Insert the demo data (empty database only)                                          |
-| `npm run db:rollback`           | Undo the most recent migration (backs up first)                                     |
-| `npm run db:department-report`  | Read-only: the free-text department values migration 005 will turn into departments |
-| `npm run db:verify-departments` | Read-only: checks that migration 005 linked every user correctly                    |
-| `npm run db:backup`             | Back up the database to `backups/`                                                  |
-| `npm run db:sessions:cleanup`   | Delete sessions that ended more than 7 days ago (also runs daily in the server)     |
-| `npm test`                      | Run all tests once (see [Running tests](#running-tests))                            |
-| `npm run test:coverage`         | Run the tests with a coverage report                                                |
-| `npm run lint`                  | Check the code with ESLint (fails on any error or warning)                          |
-| `npm run format`                | Format every file with Prettier                                                     |
-| `npm run format:check`          | Check that every file is formatted (what CI runs)                                   |
+| Script                               | Description                                                                                |
+| ------------------------------------ | ------------------------------------------------------------------------------------------ |
+| `npm start`                          | Start the server                                                                           |
+| `npm run dev`                        | Start with nodemon (auto-reload)                                                           |
+| `npm run db:migrate`                 | Create the database or apply new migrations                                                |
+| `npm run db:seed`                    | Insert the demo data (empty database only)                                                 |
+| `npm run db:rollback`                | Undo the most recent migration (backs up first)                                            |
+| `npm run db:department-report`       | Read-only: the free-text department values migration 005 will turn into departments        |
+| `npm run db:verify-departments`      | Read-only: checks that migration 005 linked every user correctly                           |
+| `npm run db:backup`                  | Back up the database to `backups/`                                                         |
+| `npm run db:sessions:cleanup`        | Delete sessions that ended more than 7 days ago (also runs daily in the server)            |
+| `npm run db:password-tokens:cleanup` | Delete password links used or expired more than 7 days ago (also runs daily in the server) |
+| `npm test`                           | Run all tests once (see [Running tests](#running-tests))                                   |
+| `npm run test:coverage`              | Run the tests with a coverage report                                                       |
+| `npm run lint`                       | Check the code with ESLint (fails on any error or warning)                                 |
+| `npm run format`                     | Format every file with Prettier                                                            |
+| `npm run format:check`               | Check that every file is formatted (what CI runs)                                          |
 
 ## Updating and migrations
 
@@ -363,9 +364,8 @@ Admins and HR only (anyone else gets 403, no token gets 401).
 | `department_id` | no                                     | Must be the id of a row in `departments`                                         |
 | `job_title`     | no                                     | Up to 255 characters                                                             |
 
-Any other field (such as `password`) is refused. No password is returned or shown to anyone: the account starts with a
-password nobody knows (so it can't be logged into yet), and the new user gets an email with a **set-password link**
-that works once, for 72 hours. See [Email](#email). The response says when the link expires.
+Any other field (such as `password`) is refused. How the password reaches the new user depends on whether
+[email is set up](#how-passwords-are-delivered), and the response says which in `password_delivery`:
 
 ```http
 POST /api/users
@@ -376,39 +376,80 @@ X-CSRF-Token: <csrf>
 ```
 
 ```json
-201 Created
+201 Created (email set up: a one-time link is emailed; no password anywhere)
 {
   "user": {
     "id": 12, "name": "Teuta Krasniqi", "email": "teuta@ticketflow.local", "role": "employee",
     "department_id": 2, "department_name": "Finance", "job_title": "Accountant",
     "is_active": true, "must_change_password": true, "created_at": "2026-11-08T15:40:12.000Z"
   },
-  "inviteExpiresAt": "2026-11-11T15:40:12.000Z"
+  "password_delivery": "email"
+}
+```
+
+```json
+201 Created (email not set up: a temporary password, shown only in this response)
+{
+  "user": { "id": 12, "email": "teuta@ticketflow.local", "must_change_password": true, ... },
+  "temporaryPassword": "k7RmQ2xWp9aHtB",
+  "password_delivery": "temporary_password"
 }
 ```
 
 Errors: 409 if the email is taken (any letter case), and 400 `{ message, errors: [{ field, message }] }` for invalid
 fields, a missing role from an admin, or a `department_id` that doesn't exist.
 
-The account and its link are saved together; the email goes out afterwards. If it never arrives (or the link expires),
-send a new one with `POST /api/users/:id/resend-invite`.
+### How passwords are delivered
+
+**Email is set up** when `MAIL_ENABLED=true` and `SMTP_HOST` and `MAIL_FROM` are set (`isEmailConfigured()` in
+`src/mail/mailer.js`). The server decides from its own settings only, and logs the mode at startup: `Password delivery:
+email link` or `Password delivery: temporary password`. `GET /api/meta` tells the frontend (`password_delivery`).
+
+|                | Email set up (`password_delivery: "email"`)                                                                                   | Not set up (`"temporary_password"`)                 |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| New account    | No usable password; a one-time **setup** link is emailed ("Set up your TicketFlow account")                                   | A temporary password in the response, as before     |
+| Admin/HR reset | The old password stops working, all sessions end, and a one-time **reset** link is emailed ("Reset your TicketFlow password") | A new temporary password in the response, as before |
+| Resend link    | `POST /api/users/:id/resend-link`                                                                                             | 409 `EMAIL_NOT_CONFIGURED`                          |
+
+The links are `{APP_URL}/set-password?token=...` (`password_tokens`, migrations 010 and 011): 32 random bytes,
+URL-safe; only their SHA-256 hash is stored and looked up. A link works **once** and expires after **48 hours**, and
+issuing a new one (a reset, a resend) makes the user's other unused links stop working. Tokens and links are never
+logged. Links used or expired more than 7 days ago are deleted (at startup, then daily; or
+`npm run db:password-tokens:cleanup`). The email goes out after the change is saved; an SMTP failure is logged and doesn't fail the request (use
+resend). Until the link is used, the user can't log in (the usual "Wrong email or password").
+
+### "Forgot password"
+
+With email set up, the sign-in page offers "Forgot password?": `POST /api/auth/forgot-password { email }` (public, at
+most 10 requests per IP address in 15 minutes) always answers the same `200 { message }`, whether or not the address
+has an account; the lookup and the email happen after the response, so the timing doesn't tell either. An active
+account gets a one-time **reset** link ("Reset your TicketFlow password", 48 hours). Its **current password keeps
+working** until the link sets a new one, so asking for a reset can't lock anyone out; at most one link is sent per
+account every 5 minutes. Without email set up the answer is 409 `EMAIL_NOT_CONFIGURED` (ask an admin or HR). Logged
+in the audit log as `password_reset_requested`.
 
 ### Setting a password with the emailed link
 
-The link is `{APP_URL}/set-password?token=...`. The frontend's page calls two public endpoints (no login, no CSRF
-header; at most 30 requests per IP address in 15 minutes):
+The frontend's `/set-password` page calls two public endpoints (no login, no CSRF header, not affected by
+`must_change_password`; at most 30 requests per IP address in 15 minutes):
 
-- `GET /api/auth/set-password/validate?token=...` → `200 { status: "valid", name, email, expires_at }`, or
-  `200 { status: "expired" | "used" | "invalid", message, code }`. Changes nothing.
-- `POST /api/auth/set-password { token, new_password }` → `200 { message: "Password set, please log in." }`. The
-  password follows the same rule as everywhere else (10–72 characters, a letter and a number; otherwise 400 naming
-  `new_password`). It clears `must_change_password`, marks the link used and removes the user's other unused links.
-  A link that can't be used is 400 `TOKEN_INVALID` (unknown, replaced by a newer link, or the account is deactivated),
-  `TOKEN_EXPIRED` or `TOKEN_USED`. The same link sent twice at once works only once.
+- `GET /api/auth/set-password/validate?token=...` → `200 { status: "valid", purpose: "setup" | "reset", email,
+expires_at }`, or `200 { status: "expired" | "used" | "invalid", purpose: null, message, code }`. Changes nothing.
+  An unknown token, one replaced by a newer link and one of a deactivated account all answer the same `invalid`.
+- `POST /api/auth/set-password { token, new_password }` → `200 { message: "Password set, please log in." }`. In one
+  transaction: the token is checked (and locked, so the same link sent twice at once works only once), the password
+  rule applied, the password set, `must_change_password` cleared, the token marked used and the user's other unused
+  tokens removed. It also ends the user's sessions. The user is **not** logged in; they log in afterwards.
+  - 400 `TOKEN_INVALID` / `TOKEN_EXPIRED` / `TOKEN_USED` for a link that can't be used
+  - **422** `WEAK_PASSWORD` `{ message, errors: [{ field: "new_password", message }] }` when the password breaks the
+    rule (10–72 characters, a letter and a number); the link stays unused
+  - 400 for a malformed body (missing fields, unknown fields), like everywhere else
 
-`POST /api/users/:id/resend-invite` (admins and HR; HR only for employees; no body) issues a new link and emails it;
-the old link stops working → `200 { user, inviteExpiresAt }`. Only for accounts that haven't set a password yet:
-otherwise 409 `PASSWORD_ALREADY_SET` (use reset-password), and 409 `ACCOUNT_DEACTIVATED` for a deactivated account.
+`POST /api/users/:id/resend-link { purpose? }` (admins and HR; HR only for employees; not for yourself) issues a new
+link and emails it; the old one stops working → `200 { user, password_delivery: "email" }`. `purpose` is `setup` or
+`reset`; left out, it is the purpose of the user's last link. 409 `EMAIL_NOT_CONFIGURED` when email isn't set up,
+409 `PASSWORD_ALREADY_SET` when the user already has a password of their own (use reset-password), 409
+`ACCOUNT_DEACTIVATED` for a deactivated account.
 
 ### Editing an account: `PATCH /api/users/:id`
 
@@ -456,34 +497,38 @@ Admins and HR only, with no request body. Checks, in order:
 4. 403 when HR resets anyone who isn't an employee
 5. 400 if a body with any field is sent (the server always makes the password)
 
-The new temporary password is made like the one for a new account. Only its bcrypt hash is stored, together with
-`must_change_password = true` and a new `updated_at`, in one statement. The old password stops working at once.
-Deactivated accounts can be reset too.
+Email set up: the password becomes one nobody knows and the user gets a one-time reset link (see
+[How passwords are delivered](#how-passwords-are-delivered)) → `200 { user, password_delivery: "email" }`.
+Not set up: a new temporary password, made like the one for a new account; only its bcrypt hash is stored →
+`200 { user, temporaryPassword, password_delivery: "temporary_password" }`. Either way `must_change_password` is set,
+the account is unlocked, and the old password stops working at once. Deactivated accounts can be reset too.
 
 ```json
-200 OK
+200 OK (email not set up)
 {
   "user": { "id": 12, "email": "teuta@ticketflow.local", "role": "employee", "must_change_password": true, ... },
-  "temporaryPassword": "Hq4wZr8NpT2kXa"
+  "temporaryPassword": "Hq4wZr8NpT2kXa",
+  "password_delivery": "temporary_password"
 }
 ```
 
 **Sessions.** A reset ends every session the user had (401 on their next request). They log in again with the
-temporary password. Deactivating a user or changing their role ends their sessions in the same way; see
+temporary password, or with the password they set with the link. Deactivating a user or changing their role ends their sessions in the same way; see
 [When sessions end](#sessions-cookies-and-csrf).
 
 ## Email
 
 The API sends these emails ([nodemailer](https://nodemailer.com/), SMTP settings from `.env`):
 
-| Event                          | To                                                         | Never to                                    |
-| ------------------------------ | ---------------------------------------------------------- | ------------------------------------------- |
-| New account                    | the new user: their set-password link                      |                                             |
-| Ticket created                 | IT: `IT_NOTIFY_EMAIL` if set, otherwise every active agent | the creator, if they are IT                 |
-| Ticket assigned / reassigned   | the new assignee                                           | whoever assigned it, if they took it        |
-| Comment by the requester       | the assignee, or IT if nobody is assigned                  | the author                                  |
-| Comment by IT (agent or admin) | the requester                                              | the author. Internal notes send no email    |
-| Ticket resolved                | the requester                                              | whoever resolved it, if it is the requester |
+| Event                                      | To                                                            | Never to                                    |
+| ------------------------------------------ | ------------------------------------------------------------- | ------------------------------------------- |
+| New account, Admin/HR reset (email set up) | the user: their one-time set-password link                    |                                             |
+| "Forgot password" (email set up)           | the account with that email, if active: a one-time reset link | at most one every 5 minutes                 |
+| Ticket created                             | IT: `IT_NOTIFY_EMAIL` if set, otherwise every active agent    | the creator, if they are IT                 |
+| Ticket assigned / reassigned               | the new assignee                                              | whoever assigned it, if they took it        |
+| Comment by the requester                   | the assignee, or IT if nobody is assigned                     | the author                                  |
+| Comment by IT (agent or admin)             | the requester                                                 | the author. Internal notes send no email    |
+| Ticket resolved                            | the requester                                                 | whoever resolved it, if it is the requester |
 
 The person who caused an event never gets an email about it, and deactivated users are skipped. Each email has an HTML
 and a plain-text version, a subject like `[TicketFlow #123] New comment: Printer not working`, a short summary (a
@@ -492,30 +537,33 @@ the HTML, and links are built from `APP_URL` only.
 
 **An email never breaks a request.** It is sent after the change is saved, in the background: the response doesn't
 wait for it, and an SMTP error is only logged (who, which email, the error; never the SMTP password or the email's
-body and links). The ticket or account stays saved. There is no retry yet: an email lost to an SMTP outage is gone.
+body and links). The ticket or account stays saved. **Retries.** An email the SMTP server didn't take for a temporary reason (no answer, a 4xx) is tried again after 30
+seconds, 2 minutes and 10 minutes; a permanent refusal (5xx) is not. The retries live in memory only, so a restart
+drops them (resend the link). That is deliberate: a queue table would hold working set-password links in plain text.
 
 ### Settings
 
 | Setting           | Example                             | Notes                                                                                         |
 | ----------------- | ----------------------------------- | --------------------------------------------------------------------------------------------- |
-| `MAIL_ENABLED`    | `true`                              | `true`/`false`. Default: `true` in production, `false` elsewhere                              |
-| `SMTP_HOST`       | `smtp.example.com`                  | Required in production (unless `MAIL_ENABLED=false`)                                          |
+| `MAIL_ENABLED`    | `true`                              | `true`/`false`, default `false`. With `true`, `SMTP_HOST` and `MAIL_FROM`, email is set up    |
+| `SMTP_HOST`       | `smtp.example.com`                  | Required in production when `MAIL_ENABLED=true`                                               |
 | `SMTP_PORT`       | `587`                               | Default 587                                                                                   |
 | `SMTP_SECURE`     | `false`                             | `true` = TLS from the start (usually port 465); `false` = STARTTLS when offered (587)         |
 | `SMTP_USER`       | `apikey`                            | `SMTP_USER` and `SMTP_PASS` go together; leave both empty for a server without login          |
 | `SMTP_PASS`       | `...`                               | Never logged                                                                                  |
-| `MAIL_FROM`       | `TicketFlow <no-reply@example.com>` | Required in production                                                                        |
+| `MAIL_FROM`       | `TicketFlow <no-reply@example.com>` | Required for email to count as set up                                                         |
 | `APP_URL`         | `https://helpdesk.example.com`      | The frontend address for links. Required (https) in production; development uses `CLIENT_URL` |
 | `IT_NOTIFY_EMAIL` | `it@example.com`                    | Optional shared IT inbox for new tickets; empty = every active agent                          |
 
 `src/config.js` checks them at startup like the other settings: a malformed value always stops the server, and in
-production a missing `SMTP_HOST`, `MAIL_FROM` or `APP_URL` does too. With `MAIL_ENABLED=false` production starts, with
-a warning that new users get no set-password link. The server also tests the SMTP connection once at startup and only
-logs a warning if it fails.
+production `MAIL_ENABLED=true` without `SMTP_HOST`, `MAIL_FROM` or an https `APP_URL` does too. Without
+`MAIL_ENABLED=true` the server starts as before, in temporary-password mode. The server also tests the SMTP connection
+once at startup and only logs a warning if it fails.
 
-**In development** email is off by default: each email is printed to the console instead (to, subject and the link),
-so you can copy a set-password link from there. To see real emails without sending any, run a local mail catcher such
-as [Mailpit](https://mailpit.axllent.org/) or [MailHog](https://github.com/mailhog/MailHog) and point the API at it:
+When email isn't set up, emails are not sent: each one is printed to the console instead, as `to` and `subject` only
+(never the body, a link or a token). New and reset passwords are temporary ones then, so nothing is lost. To see
+real emails without sending any, run a local mail catcher such as [Mailpit](https://mailpit.axllent.org/) or
+[MailHog](https://github.com/mailhog/MailHog) and point the API at it (this also switches to email links):
 
 ```bash
 docker run -d -p 1025:1025 -p 8025:8025 axllent/mailpit   # web inbox at http://localhost:8025
@@ -525,11 +573,13 @@ docker run -d -p 1025:1025 -p 8025:8025 axllent/mailpit   # web inbox at http://
 MAIL_ENABLED=true
 SMTP_HOST=localhost
 SMTP_PORT=1025
+MAIL_FROM="TicketFlow <no-reply@localhost>"
 ```
 
 With `MAIL_OUTBOX_DIR=some/folder` (development and tests only), every email is also saved there as a `.json` file;
 the frontend's e2e tests read set-password links that way. **In the tests** (`NODE_ENV=test`) nothing is ever sent:
-nodemailer's `jsonTransport` keeps every email in memory for the assertions.
+nodemailer's `jsonTransport` keeps every email in memory for the assertions. Email is off by default there too, and
+`useEmail(true)` (tests/helpers.js) switches a test to email mode.
 
 ## Departments
 
@@ -687,6 +737,7 @@ Returns every action name as a JSON array of strings, in a sensible order for th
   "logout_all",
   "password_changed",
   "password_reset",
+  "password_reset_requested",
   "password_set_with_link",
   "user_created",
   "invite_resent",
@@ -699,22 +750,23 @@ Returns every action name as a JSON array of strings, in a sensible order for th
 
 ### Actions
 
-| Action                   | When                                                                                   | `actor`    | `target`                      | `details`                                                                                   |
-| ------------------------ | -------------------------------------------------------------------------------------- | ---------- | ----------------------------- | ------------------------------------------------------------------------------------------- |
-| `login_success`          | A successful login                                                                     | the user   | the user                      | `{ email }`                                                                                 |
-| `login_failure`          | A refused login (the password is never stored)                                         | `null`     | the user, if the email exists | `{ email, reason }`, reason: `unknown_email`, `wrong_password`, `locked` or `deactivated`   |
-| `account_locked`         | The wrong password that locked the account (it also logs a `login_failure`)            | `null`     | the user                      | `{ email, minutes }`                                                                        |
-| `logout`                 | `POST /api/auth/logout` ended a session (a repeated logout isn't logged)               | the user   | the user                      | `null`                                                                                      |
-| `logout_all`             | `POST /api/auth/logout-all`                                                            | the user   | the user                      | `{ sessions_ended }`                                                                        |
-| `password_changed`       | The user changed their own password                                                    | the user   | the user                      | `{ other_sessions_ended }`                                                                  |
-| `password_reset`         | An admin or HR reset the password (the temporary one is never stored)                  | admin / HR | the user                      | `{ sessions_ended }`                                                                        |
-| `password_set_with_link` | The user set their password with the emailed link (the link is never stored)           | the user   | the user                      |                                                                                             |
-| `user_created`           | An admin or HR created the account (a set-password link is emailed; never stored here) | admin / HR | the new user                  | `{ email, role, department_id }`                                                            |
-| `invite_resent`          | An admin or HR sent a new set-password link (`POST /api/users/:id/resend-invite`)      | admin / HR | the user                      |                                                                                             |
-| `user_updated`           | An admin or HR edited name, email, department or job title                             | admin / HR | the user                      | `{ fields }`: the names of the fields sent, e.g. `["name", "job_title"]` (not their values) |
-| `role_changed`           | The role changed to a different one                                                    | admin      | the user                      | `{ from, to }`                                                                              |
-| `user_activated`         | The account was activated again                                                        | admin / HR | the user                      | `null`                                                                                      |
-| `user_deactivated`       | The account was deactivated                                                            | admin / HR | the user                      | `null`                                                                                      |
+| Action                     | When                                                                                   | `actor`    | `target`                      | `details`                                                                                   |
+| -------------------------- | -------------------------------------------------------------------------------------- | ---------- | ----------------------------- | ------------------------------------------------------------------------------------------- |
+| `login_success`            | A successful login                                                                     | the user   | the user                      | `{ email }`                                                                                 |
+| `login_failure`            | A refused login (the password is never stored)                                         | `null`     | the user, if the email exists | `{ email, reason }`, reason: `unknown_email`, `wrong_password`, `locked` or `deactivated`   |
+| `account_locked`           | The wrong password that locked the account (it also logs a `login_failure`)            | `null`     | the user                      | `{ email, minutes }`                                                                        |
+| `logout`                   | `POST /api/auth/logout` ended a session (a repeated logout isn't logged)               | the user   | the user                      | `null`                                                                                      |
+| `logout_all`               | `POST /api/auth/logout-all`                                                            | the user   | the user                      | `{ sessions_ended }`                                                                        |
+| `password_changed`         | The user changed their own password                                                    | the user   | the user                      | `{ other_sessions_ended }`                                                                  |
+| `password_reset`           | An admin or HR reset the password (the temporary one is never stored)                  | admin / HR | the user                      | `{ sessions_ended }`                                                                        |
+| `password_reset_requested` | "Forgot password" sent the user a reset link (the link is never stored)                | `null`     | the user                      |                                                                                             |
+| `password_set_with_link`   | The user set their password with the emailed link (the link is never stored)           | the user   | the user                      |                                                                                             |
+| `user_created`             | An admin or HR created the account (a set-password link is emailed; never stored here) | admin / HR | the new user                  | `{ email, role, department_id }`                                                            |
+| `invite_resent`            | An admin or HR sent a new one-time link (`POST /api/users/:id/resend-link`)            | admin / HR | the user                      |                                                                                             |
+| `user_updated`             | An admin or HR edited name, email, department or job title                             | admin / HR | the user                      | `{ fields }`: the names of the fields sent, e.g. `["name", "job_title"]` (not their values) |
+| `role_changed`             | The role changed to a different one                                                    | admin      | the user                      | `{ from, to }`                                                                              |
+| `user_activated`           | The account was activated again                                                        | admin / HR | the user                      | `null`                                                                                      |
+| `user_deactivated`         | The account was deactivated                                                            | admin / HR | the user                      | `null`                                                                                      |
 
 A role or active-status change is logged as its own event, not as `user_updated`. Saving the role or status a user
 already has logs nothing, and neither does a refused request. Account changes are logged in the same transaction
@@ -750,7 +802,7 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | POST   | `/api/auth/logout-all`            | logged in    | Ends every session of the user, this one included, and clears the cookies → 204                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | GET    | `/api/auth/me`                    | logged in    | The current user: `{ id, name, email, role, department_id, department_name, job_title, created_at, last_login_at, must_change_password }` (`null` when empty; never the password hash). Login returns the same user object                                                                                                                                                                                                                                                                                                    |
 | POST   | `/api/auth/change-password`       | logged in    | Change your password `{ currentPassword, newPassword }` → `{ message, user }`, with fresh session cookies; clears `must_change_password` and ends the user's other sessions (400 `INVALID_CURRENT_PASSWORD` if the current password is wrong). See [Changing your own password](#changing-your-own-password-post-apiauthchange-password)                                                                                                                                                                                      |
-| GET    | `/api/meta`                       | logged in    | Categories and priorities (for dropdowns)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| GET    | `/api/meta`                       | logged in    | Categories and priorities (for dropdowns), and `password_delivery` (`email` or `temporary_password`)                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | GET    | `/api/tickets`                    | logged in    | List tickets (employees: own only). Filters: `status`, `priority`, `category`, `assigned=me\|unassigned`, `q`, `overdue=1`                                                                                                                                                                                                                                                                                                                                                                                                    |
 | POST   | `/api/tickets`                    | logged in    | Create a ticket `{ title, description, category_id, priority_id }`                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | GET    | `/api/tickets/:id`                | logged in    | One ticket with comments and history (employees: own tickets, no internal notes)                                                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -760,11 +812,12 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | PATCH  | `/api/tickets/:id/assign`         | agent, admin | Assign `{ assigned_to }` (`null` = unassign; agents can only assign themselves)                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | GET    | `/api/users/agents`               | agent, admin | Active agents and admins (for the "Assign to" dropdown)                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | GET    | `/api/users`                      | admin, hr    | All users                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| POST   | `/api/users`                      | admin, hr    | Create an account `{ name, email, role, department_id?, job_title? }` → `{ user, inviteExpiresAt }`; the new user gets a set-password link by email (HR: employees only, role optional). See [Creating an account](#creating-an-account-post-apiusers)                                                                                                                                                                                                                                                                        |
-| POST   | `/api/users/:id/resend-invite`    | admin, hr    | No body. A new set-password link by email (the old one stops working) → `{ user, inviteExpiresAt }`; 409 if the user already set a password or is deactivated (HR: employees only)                                                                                                                                                                                                                                                                                                                                            |
-| GET    | `/api/auth/set-password/validate` | anyone       | `?token=` → `{ status: valid \| expired \| used \| invalid }` for the set-password page                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| POST   | `/api/auth/set-password`          | anyone       | `{ token, new_password }` → sets the password with an emailed link (400 `TOKEN_INVALID` / `TOKEN_EXPIRED` / `TOKEN_USED`). See [Setting a password with the emailed link](#setting-a-password-with-the-emailed-link)                                                                                                                                                                                                                                                                                                          |
-| POST   | `/api/users/:id/reset-password`   | admin, hr    | No body. New temporary password → `{ user, temporaryPassword }`; sets `must_change_password` and unlocks a locked account (not your own account: 403; HR: employees only). See [Resetting a password](#resetting-a-password-post-apiusersidreset-password)                                                                                                                                                                                                                                                                    |
+| POST   | `/api/users`                      | admin, hr    | Create an account `{ name, email, role, department_id?, job_title? }` → `{ user, password_delivery }`, plus `temporaryPassword` when email isn't set up; with email set up the user gets a one-time setup link (HR: employees only, role optional). See [Creating an account](#creating-an-account-post-apiusers)                                                                                                                                                                                                             |
+| POST   | `/api/users/:id/resend-link`      | admin, hr    | `{ purpose? }`. A new one-time link by email (the old one stops working) → `{ user, password_delivery }`; 409 when email isn't set up, the user already set a password, or is deactivated (HR: employees only)                                                                                                                                                                                                                                                                                                                |
+| GET    | `/api/auth/set-password/validate` | anyone       | `?token=` → `{ status: valid \| expired \| used \| invalid, purpose }` for the set-password page                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| POST   | `/api/auth/set-password`          | anyone       | `{ token, new_password }` → sets the password with an emailed link (400 `TOKEN_INVALID` / `TOKEN_EXPIRED` / `TOKEN_USED`, 422 `WEAK_PASSWORD`). See [Setting a password with the emailed link](#setting-a-password-with-the-emailed-link)                                                                                                                                                                                                                                                                                     |
+| POST   | `/api/auth/forgot-password`       | anyone       | `{ email }` → always the same `200 { message }`; an active account gets a one-time reset link by email, its current password keeps working (409 `EMAIL_NOT_CONFIGURED` when email isn't set up; 10 requests per IP in 15 minutes). See ["Forgot password"](#forgot-password)                                                                                                                                                                                                                                                  |
+| POST   | `/api/users/:id/reset-password`   | admin, hr    | No body. Email set up: the old password stops working and a one-time reset link is emailed → `{ user, password_delivery: "email" }`. Otherwise a new temporary password → `{ user, temporaryPassword, password_delivery }`. Sets `must_change_password`, ends the user's sessions and unlocks a locked account (not your own account: 403; HR: employees only). See [Resetting a password](#resetting-a-password-post-apiusersidreset-password)                                                                               |
 | PATCH  | `/api/users/:id`                  | admin, hr    | Change `{ name?, email?, department_id?, job_title?, role?, is_active? }` (at least one). Admin: anyone, but not their own role/active status, and never the last active admin. HR: employees only, never `role`. See [Editing an account](#editing-an-account-patch-apiusersid)                                                                                                                                                                                                                                              |
 | GET    | `/api/stats`                      | admin        | Dashboard statistics: totals, by status/priority/category/agent, 8-week trend                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | GET    | `/api/departments`                | logged in    | All departments, sorted by name, with `user_count`                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -803,9 +856,9 @@ src/
   db.js                   MySQL connection pool
   overdue.js              The shared "is this ticket overdue?" SQL rule
   temporaryPassword.js    Random temporary passwords for password resets
-  passwordSetup.js        Set-password links for new accounts: tokens (hashed), 72-hour expiry, one use
+  passwordTokens.js       One-time password links (setup and reset): tokens (hashed), 48-hour expiry, one use
   mail/
-    mailer.js             The only code that uses nodemailer: sendMail(), SMTP / log / test modes, startup check
+    mailer.js             The only code that uses nodemailer: sendMailSafe(), isEmailConfigured(), SMTP / log / test modes
     notifications.js      Who gets which email for each event; runs after the response, never fails a request
     templates.js          One template per email (HTML + plain text) in a shared layout; escapes user content
     strings.js            Every email text, in one place
@@ -840,7 +893,8 @@ tests/
   change-password.test.js Changing your own password and the password rule
   auth-enforcement.test.js  Login, no self-signup, and the temporary-password block on every route
   departments.test.js     Departments, including deleting while a user is being assigned
-  set-password.test.js    Set-password links: hashed, one use, 72-hour expiry, resend-invite permissions
+  set-password.test.js    Both delivery modes for create and reset; links: hashed, one use, 48 hours, resend-link
+  password-followups.test.js  Forgot password, email retries, and the cleanup of old links
   notifications.test.js   Every email event: right template, right people, never the actor; escaping; SMTP failures
   mailer.test.js          Log mode, the startup SMTP check, the outbox folder, redaction
   migrations.test.js      Schema, up/down/up, and migration 005 on messy data
@@ -852,16 +906,16 @@ TASKS.md                  Development task list
 
 ## Database tables
 
-| Table                   | Contents                                                                                                                                                                                                                                                                                                        |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `users`                 | Accounts: name, email, password hash, role (employee/agent/hr/admin), department_id, job title, active flag, last login, wrong-password count and lock (`failed_login_count`, `locked_until`), `session_version` (raising it ends the user's sessions). `department` is the old free-text value, no longer used |
-| `departments`           | Departments people belong to; `users.department_id` links to them (see [Departments](#departments))                                                                                                                                                                                                             |
-| `categories`            | Ticket categories (Hardware, Software, Network, Access, Email, Other)                                                                                                                                                                                                                                           |
-| `priorities`            | Priority levels with their target resolution time in hours                                                                                                                                                                                                                                                      |
-| `tickets`               | Tickets: requester, assignee, category, priority, status, resolution note, timestamps                                                                                                                                                                                                                           |
-| `comments`              | Comments on tickets; `is_internal` marks staff-only notes                                                                                                                                                                                                                                                       |
-| `ticket_history`        | Audit trail: who changed which field (status, priority, assignee) from what to what, and when                                                                                                                                                                                                                   |
-| `sessions`              | One row per login (migration 008): `user_id`, `created_at`, `expires_at`, `revoked_at`, `last_seen_at`, `ip`, `user_agent`. The token's `sid` is the row id. Rows are deleted 7 days after they end                                                                                                             |
-| `audit_log`             | Security events (migration 009): `created_at`, `actor_id`, `action`, `target_user_id`, `details` (JSON), `ip`. Never a secret. See [Audit log](#audit-log)                                                                                                                                                      |
-| `password_setup_tokens` | Set-password links for new accounts: the SHA-256 hash of each token (never the token), `expires_at` (72 hours), `used_at`. See [Email](#email)                                                                                                                                                                  |
-| `schema_migrations`     | Which migrations this database has run, and when                                                                                                                                                                                                                                                                |
+| Table               | Contents                                                                                                                                                                                                                                                                                                        |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `users`             | Accounts: name, email, password hash, role (employee/agent/hr/admin), department_id, job title, active flag, last login, wrong-password count and lock (`failed_login_count`, `locked_until`), `session_version` (raising it ends the user's sessions). `department` is the old free-text value, no longer used |
+| `departments`       | Departments people belong to; `users.department_id` links to them (see [Departments](#departments))                                                                                                                                                                                                             |
+| `categories`        | Ticket categories (Hardware, Software, Network, Access, Email, Other)                                                                                                                                                                                                                                           |
+| `priorities`        | Priority levels with their target resolution time in hours                                                                                                                                                                                                                                                      |
+| `tickets`           | Tickets: requester, assignee, category, priority, status, resolution note, timestamps                                                                                                                                                                                                                           |
+| `comments`          | Comments on tickets; `is_internal` marks staff-only notes                                                                                                                                                                                                                                                       |
+| `ticket_history`    | Audit trail: who changed which field (status, priority, assignee) from what to what, and when                                                                                                                                                                                                                   |
+| `sessions`          | One row per login (migration 008): `user_id`, `created_at`, `expires_at`, `revoked_at`, `last_seen_at`, `ip`, `user_agent`. The token's `sid` is the row id. Rows are deleted 7 days after they end                                                                                                             |
+| `audit_log`         | Security events (migration 009): `created_at`, `actor_id`, `action`, `target_user_id`, `details` (JSON), `ip`. Never a secret. See [Audit log](#audit-log)                                                                                                                                                      |
+| `password_tokens`   | One-time password links (migrations 010, 011): the SHA-256 hash of each token (never the token), `purpose` (`setup` / `reset`), `expires_at` (48 hours), `used_at`. See [How passwords are delivered](#how-passwords-are-delivered)                                                                             |
+| `schema_migrations` | Which migrations this database has run, and when                                                                                                                                                                                                                                                                |

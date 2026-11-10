@@ -232,6 +232,34 @@
           "response": []
         },
         {
+          "name": "Forgot password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/forgot-password",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "forgot-password"]
+            },
+            "description": "Public. Always answers the same 200 { message }. When email is set up and the address belongs to an active account, that account gets a one-time reset link by email (48 hours; at most one every 5 minutes); its current password keeps working until the link is used. 409 EMAIL_NOT_CONFIGURED when email is not set up.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"employee1@ticketflow.local\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
           "name": "Check set-password link",
           "request": {
             "method": "GET",
@@ -247,7 +275,7 @@
                 }
               ]
             },
-            "description": "Public. Put the token from a set-password email (the part after ?token=) in the setPasswordToken variable. Returns { status: \"valid\", name, email, expires_at } or { status: \"expired\" | \"used\" | \"invalid\", message, code }. Changes nothing."
+            "description": "Public. Put the token from a set-password email (the part after ?token=) in the setPasswordToken variable. Returns { status: \"valid\", purpose: \"setup\" | \"reset\", email, expires_at } or { status: \"expired\" | \"used\" | \"invalid\", purpose: null, message, code }. Changes nothing."
           },
           "response": []
         },
@@ -266,7 +294,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["auth", "set-password"]
             },
-            "description": "Public (no login). Sets the password of the account the link belongs to, clears must_change_password and uses up the link. new_password: 10-72 characters with a letter and a number. 400 TOKEN_INVALID / TOKEN_EXPIRED / TOKEN_USED for a link that cannot be used. Log in afterwards with the new password.",
+            "description": "Public (no login). Sets the password of the account the link belongs to, clears must_change_password and uses up the link; the user then logs in. 400 TOKEN_INVALID / TOKEN_EXPIRED / TOKEN_USED for a link that cannot be used; 422 WEAK_PASSWORD when new_password breaks the rule (10-72 characters, a letter and a number), and the link stays unused.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"token\": \"{{setPasswordToken}}\",\n  \"new_password\": \"MyOwnPassword1\"\n}",
@@ -578,7 +606,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["users"]
             },
-            "description": "Admin or HR. Creates an account and returns { user, inviteExpiresAt }. No password is returned: the new user gets an email with a set-password link ({APP_URL}/set-password?token=...) that works once, for 72 hours (in development with email off, the link is printed in the API console instead). Admins must send a role (employee, agent, hr, admin); HR can only create employees and may leave role out. department_id (an existing department) and job_title are optional. Change the email to create another account.",
+            "description": "Admin or HR. Creates an account. The response says how the password reaches the user: { user, password_delivery: \"email\" } when email is set up (the user gets a one-time setup link, 48 hours; no password anywhere), or { user, temporaryPassword, password_delivery: \"temporary_password\" } otherwise (the temporary password is only shown in this response). Admins must send a role (employee, agent, hr, admin); HR can only create employees and may leave role out. department_id (an existing department) and job_title are optional. Change the email to create another account.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"name\": \"New Employee\",\n  \"email\": \"new.employee@ticketflow.local\",\n  \"role\": \"employee\",\n  \"job_title\": \"Marketing Assistant\",\n  \"department_id\": 1\n}",
@@ -592,16 +620,30 @@
           "response": []
         },
         {
-          "name": "Resend invite",
+          "name": "Resend link",
           "request": {
             "method": "POST",
-            "header": [],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "url": {
-              "raw": "{{baseUrl}}/users/{{userId}}/resend-invite",
+              "raw": "{{baseUrl}}/users/{{userId}}/resend-link",
               "host": ["{{baseUrl}}"],
-              "path": ["users", "{{userId}}", "resend-invite"]
+              "path": ["users", "{{userId}}", "resend-link"]
             },
-            "description": "Admin or HR (HR: employees only), no body. Emails the user a new set-password link; the old link stops working. Returns { user, inviteExpiresAt }. 409 PASSWORD_ALREADY_SET if the user already set a password (use Reset password), 409 ACCOUNT_DEACTIVATED for a deactivated account."
+            "description": "Admin or HR (HR: employees only). Optional body { purpose: \"setup\" | \"reset\" } (default: the purpose of the last link). Emails a new one-time link; the old one stops working → { user, password_delivery: \"email\" }. 409 EMAIL_NOT_CONFIGURED when email is not set up, 409 PASSWORD_ALREADY_SET when the user already has a password of their own, 409 ACCOUNT_DEACTIVATED.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
           },
           "response": []
         },
@@ -615,7 +657,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["users", "{{userId}}", "reset-password"]
             },
-            "description": "Admin or HR, no body (any field is refused with 400). Gives the user a new temporary password, returned once as { user, temporaryPassword }. The old password stops working immediately, and the user must change the new one at their next login (must_change_password); sessions from before the reset are blocked until then. Admins can reset anyone but themselves (403); HR only employees. Running this changes the password of user {{userId}}."
+            "description": "Admin or HR, no body (any field is refused with 400). Email set up: the old password stops working, the user's sessions end, and a one-time reset link (48 hours) is emailed → { user, password_delivery: \"email\" }. Not set up: a new temporary password, returned once → { user, temporaryPassword, password_delivery: \"temporary_password\" }; the user must change it at the next login. Admins can reset anyone but themselves (403); HR only employees. Running this changes the password of user {{userId}}."
           },
           "response": []
         },

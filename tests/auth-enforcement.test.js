@@ -17,16 +17,19 @@ const {
   auth,
   sessionOf,
   inviteTokenFor,
+  useEmail,
 } = require('./helpers')
 
 // Routes anyone may call without logging in
-// (the set-password routes are for people who have no password yet: the emailed link's token is their proof)
+// (the set-password routes are for people who have no usable password: the emailed link's token is their proof)
 const PUBLIC = [
   'POST /api/auth/login',
   'POST /api/auth/logout',
   'GET /api/health',
   'GET /api/auth/set-password/validate',
   'POST /api/auth/set-password',
+  // Asking for a reset link by email: for people who can't log in
+  'POST /api/auth/forgot-password',
 ]
 // What a user with a temporary password may still do. Pinned here so widening the list is a deliberate change.
 const ALLOWED = ['GET /api/auth/me', 'POST /api/auth/change-password']
@@ -233,7 +236,31 @@ describe('blocking until a temporary password is changed', () => {
     expect((await get('/api/tickets', token)).status).toBe(200)
   })
 
-  test('an account created by an admin has no usable password until the emailed link sets one', async () => {
+  test('an account created by an admin (email not set up) is blocked until its temporary password is changed', async () => {
+    const admin = await createUser({ role: 'admin' })
+    const created = await api
+      .post('/api/users')
+      .set(auth(await loginAs(admin)))
+      .send({ name: 'Temp Person', email: 'temp.person@test.local', role: 'employee' })
+    const { temporaryPassword } = created.body
+    expect(created.body.password_delivery).toBe('temporary_password')
+
+    const login = await api
+      .post('/api/auth/login')
+      .send({ email: 'temp.person@test.local', password: temporaryPassword })
+    expect((await get('/api/tickets', sessionOf(login))).body.code).toBe('PASSWORD_CHANGE_REQUIRED')
+
+    const changed = await api
+      .post('/api/auth/change-password')
+      .set(auth(sessionOf(login)))
+      .send({ currentPassword: temporaryPassword, newPassword: 'chosen-by-me1' })
+    expect(changed.status).toBe(200)
+    // The same session continues, now unblocked
+    expect((await get('/api/tickets', sessionOf(login))).status).toBe(200)
+  })
+
+  test('an account created by an admin (email set up) has no usable password until the emailed link sets one', async () => {
+    useEmail(true)
     const admin = await createUser({ role: 'admin' })
     const created = await api
       .post('/api/users')

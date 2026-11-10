@@ -8,12 +8,32 @@ module.exports = {
   footer: "You're receiving this because {reason}.",
   footerAutomatic: 'This is an automatic message from TicketFlow. Replies to this email are not read.',
 
-  invite: {
-    subject: 'Set your TicketFlow password',
-    intro: '{actor} created a TicketFlow account for you ({email}). Choose your password to sign in.',
+  // The two one-time password links (src/passwordTokens.js)
+  passwordLink: {
+    expiry: 'This link expires in {hours} hours and can be used once.',
+    unexpected: "If you didn't expect this, contact your administrator.",
+  },
+  accountSetup: {
+    subject: 'Set up your TicketFlow account',
+    intro: '{actor} created a TicketFlow account for you ({email}). Choose a password to sign in.',
     button: 'Set your password',
-    expiry: 'The link works once and expires in {hours} hours. If it has expired, ask {actor} to send you a new one.',
     reason: 'an account was created for you in TicketFlow',
+  },
+  // "Forgot password" on the sign-in page: the current password keeps working until a new one is chosen
+  passwordForgot: {
+    subject: 'Reset your TicketFlow password',
+    intro:
+      'Someone asked to reset the password of your TicketFlow account ({email}). If it was you, choose a new password below. Your current password keeps working until you do.',
+    button: 'Choose a new password',
+    ignore: "If you didn't ask for this, you can ignore this email: your password stays as it is.",
+    reason: 'a password reset was requested for your TicketFlow account',
+  },
+  passwordReset: {
+    subject: 'Reset your TicketFlow password',
+    intro:
+      '{actor} reset the password of your TicketFlow account ({email}). Your old password no longer works. Choose a new one to sign in.',
+    button: 'Choose a new password',
+    reason: 'the password of your TicketFlow account was reset',
   },
   ticketCreated: {
     subject: '[TicketFlow #{id}] New ticket: {title}',

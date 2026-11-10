@@ -5,7 +5,7 @@ const app = require('../src/app')
 const pool = require('../src/db')
 const { assertTestDbName } = require('./testDb')
 const notifications = require('../src/mail/notifications')
-const { getMailer } = require('../src/mail/mailer')
+const { getMailer, resetMailer } = require('../src/mail/mailer')
 
 // A supertest client for the app (src/app.js has no app.listen), e.g. await api.get('/api/health')
 const api = request(app)
@@ -13,7 +13,7 @@ const api = request(app)
 const DEFAULT_PASSWORD = 'password123'
 let userCount = 0
 
-// Empties audit_log, sessions, password_setup_tokens, users, departments, tickets, comments and ticket_history.
+// Empties audit_log, sessions, password_tokens, users, departments, tickets, comments and ticket_history.
 // Categories, priorities and schema_migrations stay.
 async function resetData() {
   assertTestDbName(process.env.DB_NAME) // second safety net: never empty a real database
@@ -24,7 +24,7 @@ async function resetData() {
     for (const table of [
       'audit_log',
       'sessions',
-      'password_setup_tokens',
+      'password_tokens',
       'ticket_history',
       'comments',
       'tickets',
@@ -151,7 +151,7 @@ function expectNoPasswordHash(body) {
 // expect(await dbSnapshot()).toEqual(before)
 async function dbSnapshot() {
   const snapshot = {}
-  for (const table of ['users', 'departments', 'tickets', 'comments', 'ticket_history', 'password_setup_tokens']) {
+  for (const table of ['users', 'departments', 'tickets', 'comments', 'ticket_history', 'password_tokens']) {
     const [rows] = await pool.query(`SELECT * FROM ${table} ORDER BY id`)
     snapshot[table] = rows
   }
@@ -173,7 +173,25 @@ async function inviteTokenFor(email) {
   return new URL(invites.at(-1).link).searchParams.get('token')
 }
 
+// Email set up (on) or not (off, the default in tests): with it on, new and reset passwords go out as one-time links
+// (password_delivery 'email'); off, they are temporary passwords. Nothing is ever sent: NODE_ENV=test keeps
+// nodemailer's jsonTransport either way. Call it in a beforeEach/beforeAll, or use emailModeFor(describe-block).
+function useEmail(on) {
+  process.env.MAIL_ENABLED = on ? 'true' : ''
+  process.env.SMTP_HOST = on ? 'smtp.test.invalid' : ''
+  process.env.MAIL_FROM = on ? 'TicketFlow <no-reply@test.invalid>' : ''
+  resetMailer()
+}
+
+// In a describe block: email is set up for its tests, and off again afterwards
+function withEmail() {
+  beforeEach(() => useEmail(true))
+  afterEach(() => useEmail(false))
+}
+
 module.exports = {
+  useEmail,
+  withEmail,
   sentMail,
   inviteTokenFor,
   api,
