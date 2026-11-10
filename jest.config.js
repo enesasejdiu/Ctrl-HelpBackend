@@ -13,4 +13,9 @@ module.exports = {
   // machine (e.g. with a dev server rebuilding), so a slow but correct test isn't reported as a failure
   testTimeout: 15000,
   collectCoverageFrom: ['src/**/*.js'],
+  // npm run test:coverage (and CI) fails if coverage drops below these. They are today's numbers rounded down, so
+  // coverage can only go up: raise them when new tests push the numbers higher. (Branches is still below 80%.)
+  coverageThreshold: {
+    global: { statements: 88, branches: 77, functions: 95, lines: 88 },
+  },
 }

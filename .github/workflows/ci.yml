@@ -1,6 +1,6 @@
 # Backend CI: formatting, lint and the full test suite (with coverage) on every push to main and every pull request.
 # The tests run against a real database server in a service container, on both databases the app supports
-# (MySQL 8.4 and MariaDB 11) and on Node 20 and 22: 4 jobs. A pull request should only be merged when all 4 are green.
+# (MySQL 8.4 and MariaDB 11) and on Node 22 and 24: 4 jobs. A pull request should only be merged when all 4 are green.
 name: Backend CI
 
 on:
@@ -19,14 +19,16 @@ permissions:
 jobs:
   test:
     name: ${{ matrix.db.name }} · Node ${{ matrix.node }}
-    runs-on: ubuntu-latest
+    # Pinned, so a new Ubuntu image (ubuntu-latest moving on) never changes the build without a commit
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     strategy:
       # Let every combination finish, so one failure doesn't hide whether the others pass
       fail-fast: false
       matrix:
-        node: [20, 22]
+        # The supported Node versions (Node 20 has reached end of life); same as "engines" in package.json
+        node: [22, 24]
         db:
           # MySQL 8.4 runs with its default sql_mode, which includes ONLY_FULL_GROUP_BY
           - name: MySQL 8.4
@@ -64,10 +66,10 @@ jobs:
       NODE_ENV: test
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Node from the matrix; npm's download cache is kept between runs, keyed on package-lock.json
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -91,7 +93,7 @@ jobs:
       # The coverage report, also when tests failed, so a failure can be looked into; kept 7 days
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-${{ matrix.db.image == 'mysql:8.4' && 'mysql-8.4' || 'mariadb-11' }}-node-${{ matrix.node }}
           path: coverage/
