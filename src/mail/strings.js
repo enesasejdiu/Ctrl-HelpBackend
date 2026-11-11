@@ -19,7 +19,6 @@ module.exports = {
     button: 'Set your password',
     reason: 'an account was created for you in TicketFlow',
   },
-  // "Forgot password" on the sign-in page: the current password keeps working until a new one is chosen
   // "Forgot password" on the sign-in page (purpose 'forgot': 1 hour; the current password keeps working)
   passwordForgot: {
     subject: 'Reset your TicketFlow password',

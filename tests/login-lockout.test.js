@@ -200,3 +200,53 @@ describe('login lockout', () => {
     }
   })
 })
+
+describe('LOCKOUT_MINUTES (test environment only)', () => {
+  const { lockoutMinutes } = require('../src/lockout')
+  const before = process.env.LOCKOUT_MINUTES
+  afterEach(() => {
+    if (before === undefined) delete process.env.LOCKOUT_MINUTES
+    else process.env.LOCKOUT_MINUTES = before
+  })
+
+  test('shortens the lock: the database lock, message, retryAfterMinutes, Retry-After and audit entry all use it', async () => {
+    process.env.LOCKOUT_MINUTES = '1'
+    const user = await createUser()
+    const wrong = await wrongLogins(user, 5)
+    expect(wrong[4].status).toBe(423)
+    expect(wrong[4].body).toEqual({
+      message: 'Too many wrong passwords. Try again in 1 minute.',
+      code: 'ACCOUNT_LOCKED',
+      retryAfterMinutes: 1,
+    })
+    expect(wrong[4].headers['retry-after']).toBe('60')
+    const [[{ seconds }]] = await pool.query(
+      'SELECT TIMESTAMPDIFF(SECOND, NOW(), locked_until) AS seconds FROM users WHERE id = ?',
+      [user.id],
+    )
+    expect(Number(seconds)).toBeGreaterThan(50)
+    expect(Number(seconds)).toBeLessThanOrEqual(60)
+    const [[audit]] = await pool.query(
+      "SELECT details FROM audit_log WHERE action = 'account_locked' AND target_user_id = ? ORDER BY id DESC LIMIT 1",
+      [user.id],
+    )
+    const details = typeof audit.details === 'string' ? JSON.parse(audit.details) : audit.details
+    expect(details).toMatchObject({ minutes: 1 })
+  })
+
+  test('is 15 minutes when not set, or set to something invalid', () => {
+    delete process.env.LOCKOUT_MINUTES
+    expect(lockoutMinutes()).toBe(15)
+    for (const value of ['', 'abc', '0', '-5', '1.5', '1441']) {
+      process.env.LOCKOUT_MINUTES = value
+      expect([value, lockoutMinutes()]).toEqual([value, 15])
+    }
+  })
+
+  test('is ignored outside the test environment: always 15', () => {
+    for (const NODE_ENV of ['production', 'development', undefined]) {
+      expect(lockoutMinutes({ NODE_ENV, LOCKOUT_MINUTES: '1' })).toBe(15)
+    }
+    expect(lockoutMinutes({ NODE_ENV: 'test', LOCKOUT_MINUTES: '3' })).toBe(3)
+  })
+})

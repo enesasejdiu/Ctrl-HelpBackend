@@ -9,6 +9,7 @@ const fs = require('fs')
 const path = require('path')
 const mysql = require('mysql2/promise')
 const { backup } = require('./backup-db')
+const { migrationLockName } = require('./migrationLock')
 
 const MIGRATIONS_DIR = path.join(__dirname, '..', 'migrations')
 const FILE_NAME = /^(\d{3})_[a-z0-9_]+\.sql$/
@@ -89,10 +90,11 @@ async function migrate({ dbName = process.env.DB_NAME, backupFirst = true, until
   })
 
   try {
-    // Two runs at once could apply the same migration twice; the lock ends with this connection
-    const [[{ locked }]] = await connection.query("SELECT GET_LOCK('ticketflow_migrate', 0) AS locked")
+    // Two runs at once on the same database could apply a migration twice; the lock ends with this connection.
+    // One lock per database, so migrations of other databases on the same server never get in the way.
+    const [[{ locked }]] = await connection.query('SELECT GET_LOCK(?, 0) AS locked', [migrationLockName(dbName)])
     if (!locked) {
-      throw new Error('Another db:migrate is running. Wait for it to finish')
+      throw new Error(`Another db:migrate is running on "${dbName}". Wait for it to finish`)
     }
 
     // A database name can't be a ? placeholder; it comes from .env (not user input) and is quoted with backticks

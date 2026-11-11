@@ -11,7 +11,9 @@
 // in production MAIL_ENABLED=true then also needs SMTP_HOST, MAIL_FROM and an https APP_URL.
 // "Email is set up" (mail.emailConfigured, isEmailConfigured() in the mailer) = MAIL_ENABLED=true, SMTP_HOST and
 // MAIL_FROM set. Only then do passwords go out as emailed links; otherwise admins see a temporary password, as before.
+const path = require('path')
 const { z } = require('zod')
+const { DEFAULT_LOCKOUT_MINUTES, MAX_LOCKOUT_MINUTES, parseLockoutMinutes } = require('./lockout')
 
 const MIN_SECRET_LENGTH = 32
 
@@ -60,7 +62,29 @@ const serverSchema = databaseSchema.extend({
     error: 'CLIENT_URL must be the frontend address, e.g. https://helpdesk.example.com',
   }),
   JWT_SECRET: required('JWT_SECRET'),
+  // Where attachment files are kept (src/attachments.js). Optional: default ./uploads in the backend folder.
+  UPLOAD_DIR: z
+    .string()
+    .trim()
+    .min(1, 'UPLOAD_DIR is empty: remove it to use the default ./uploads, or set a folder')
+    .optional(),
 })
+
+// Folder names that web servers commonly serve as static files. Attachments must never be inside one: anyone could
+// then download them by URL, without the visibility check of GET /api/attachments/:id/download.
+const SERVED_FOLDERS = ['public', 'dist', 'static', 'www', 'htdocs', 'html']
+
+function uploadDirProblems(env) {
+  const raw = env.UPLOAD_DIR?.trim()
+  if (!raw) return []
+  const resolved = path.resolve(__dirname, '..', raw)
+  const served = resolved.split(path.sep).find((part) => SERVED_FOLDERS.includes(part.toLowerCase()))
+  return served
+    ? [
+        `UPLOAD_DIR (${resolved}) is inside a "${served}" folder, which web servers often serve as static files. Keep attachments outside anything served statically`,
+      ]
+    : []
+}
 
 // The email settings. A blank value (SMTP_HOST=) counts as not set.
 const MAIL_KEYS = [
@@ -192,6 +216,23 @@ function loadMailConfig(env = process.env) {
 
 // Validates env for 'server' (everything, including config.mail) or 'database' (the DB_* settings only).
 // Returns { config, warnings, notices }. Throws ConfigError when the program must not start.
+// LOCKOUT_MINUTES (src/lockout.js) may only shorten or lengthen the lockout in the test environment. Anywhere else a
+// value other than 15 is refused (in production the lock is always 15 minutes), and in tests it must be a valid number.
+function lockoutProblems(env) {
+  const raw = env.LOCKOUT_MINUTES
+  if (raw === undefined || raw === '') return []
+  if (env.NODE_ENV !== 'test') {
+    return Number(raw) === DEFAULT_LOCKOUT_MINUTES
+      ? []
+      : [
+          `LOCKOUT_MINUTES can only be changed when NODE_ENV=test; the lockout is always ${DEFAULT_LOCKOUT_MINUTES} minutes here (got ${raw}). Remove it from .env`,
+        ]
+  }
+  return parseLockoutMinutes(raw) === null
+    ? [`LOCKOUT_MINUTES must be a whole number of minutes from 1 to ${MAX_LOCKOUT_MINUTES} (got ${raw})`]
+    : []
+}
+
 function loadConfig(env = process.env, { scope = 'server' } = {}) {
   const schema = scope === 'database' ? databaseSchema : serverSchema
   const result = schema.safeParse(env)
@@ -199,6 +240,7 @@ function loadConfig(env = process.env, { scope = 'server' } = {}) {
   let mail = null
   let notices = []
   if (scope === 'server') {
+    issues.push(...lockoutProblems(env), ...uploadDirProblems(env))
     // Collected together with the other problems, so one start lists everything that is wrong
     try {
       ;({ mail, notices } = loadMailConfig(env))

@@ -9,6 +9,7 @@ const mysql = require('mysql2/promise')
 const { migrate } = require('../scripts/migrate')
 const { rollback } = require('../scripts/rollback')
 const { verify } = require('../scripts/verify-department-migration')
+const { migrationLockName } = require('../scripts/migrationLock')
 const { assertTestDbName, loadServerSettings } = require('./testDb')
 
 const FILE = '005_link_users_to_departments.sql'
@@ -103,7 +104,7 @@ describe('schema', () => {
     expect(String(version.dflt)).toBe('0')
   })
 
-  test('password_tokens stores a unique 64-character hash and a purpose per token, deleted with its user (migrations 010, 011, 012)', async () => {
+  test('password_tokens stores a unique 64-character hash and a purpose per token, deleted with its user (migrations 010, 011, 013)', async () => {
     expect(await column('password_tokens', 'token_hash')).toMatchObject({ type: 'char(64)', nullable: 'NO' })
     expect(await column('password_tokens', 'purpose')).toMatchObject({
       type: "enum('setup','reset','forgot')",
@@ -139,8 +140,8 @@ describe('schema', () => {
 })
 
 describe('up → down → up', () => {
-  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 012 down to 003
-  test('rolling back 012, 011, 010, 009, 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
+  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 013 down to 003
+  test('rolling back 013, 012, 011, 010, 009, 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
     const { db, dbName } = await newDatabase()
     const schema = async () => {
       const tables = {}
@@ -156,18 +157,18 @@ describe('up → down → up', () => {
       (await db.query('SELECT filename FROM schema_migrations ORDER BY filename'))[0].map((r) => r.filename)
 
     const before = await schema()
-    for (let i = 0; i < 10; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
+    for (let i = 0; i < 11; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
     expect(await applied()).toEqual(['001_initial.sql', '002_hr_role_and_password_change.sql'])
     const [departments] = await db.query("SHOW TABLES LIKE 'departments'")
     expect(departments).toHaveLength(0)
-    for (const table of ['password_setup_tokens', 'password_tokens']) {
+    for (const table of ['password_setup_tokens', 'password_tokens', 'attachments']) {
       const [tokens] = await db.query(`SHOW TABLES LIKE '${table}'`)
       expect(tokens).toHaveLength(0)
     }
 
     await quietly(() => migrate({ dbName, backupFirst: false }))
     expect(await schema()).toEqual(before)
-    expect((await applied()).at(-1)).toBe('012_forgot_password_tokens.sql')
+    expect((await applied()).at(-1)).toBe('013_forgot_password_tokens.sql')
   })
 
   test('011 keeps the links issued under 010 as setup links; rolling it back drops only reset links', async () => {
@@ -180,6 +181,7 @@ describe('up → down → up', () => {
       'b'.repeat(64),
     ])
 
+    // Only up to 011, so the rollback below undoes 011 (not a later migration)
     await quietly(() => migrate({ dbName, backupFirst: false, until: '011' }))
     const [[kept]] = await db.query('SELECT purpose FROM password_tokens WHERE user_id = ?', [userId])
     expect(kept.purpose).toBe('setup')
@@ -193,10 +195,10 @@ describe('up → down → up', () => {
     expect(left.map((r) => r.token_hash)).toEqual(['b'.repeat(64)])
   })
 
-  test("012 adds 'forgot' and keeps the other links; rolling it back drops only forgot links", async () => {
-    const { db, dbName } = await newDatabase('011')
+  test("013 adds 'forgot' and keeps the other links; rolling it back drops only forgot links", async () => {
+    const { db, dbName } = await newDatabase('012')
     const [{ insertId: userId }] = await db.query(
-      "INSERT INTO users (name, email, password_hash) VALUES ('T', 't.012@test.local', 'x')",
+      "INSERT INTO users (name, email, password_hash) VALUES ('T', 't.013@test.local', 'x')",
     )
     await db.query(
       "INSERT INTO password_tokens (user_id, token_hash, purpose, expires_at) VALUES (?, ?, 'reset', NOW())",
@@ -353,5 +355,58 @@ describe('migration 005 on messy data', () => {
     expect(await departmentNames(db)).toEqual(['Engineering', 'Sales Team'])
     const linked = Object.fromEntries((await users(db)).map((u) => [u.name, u.linked]))
     expect(linked).toMatchObject({ Dua: null, Ela: 'Sales Team', Kujtim: 'Engineering', Ana: null })
+  })
+})
+
+describe('the migration lock (one per database)', () => {
+  // Holds the lock for a database name on a separate connection, like a migration running in another process
+  async function holdLock(name) {
+    const holder = await mysql.createConnection(server)
+    const [[{ locked }]] = await holder.query('SELECT GET_LOCK(?, 0) AS locked', [migrationLockName(name)])
+    expect(locked).toBe(1)
+    return holder
+  }
+
+  test('a migration of another database on the same server never gets in the way', async () => {
+    const holder = await holdLock('ticketflow_someone_else')
+    try {
+      // The old single server-wide lock made this throw "Another db:migrate is running"
+      await expect(newDatabase()).resolves.toBeDefined()
+    } finally {
+      await holder.end()
+    }
+  })
+
+  test('two migrations of the same database still exclude each other', async () => {
+    dbCount += 1
+    const dbName = assertTestDbName(`${process.env.DB_NAME}_mig${dbCount}`)
+    opened.push({ db: { end: async () => {} }, dbName })
+    const holder = await holdLock(dbName)
+    try {
+      await expect(quietly(() => migrate({ dbName, backupFirst: false }))).rejects.toThrow(
+        `Another db:migrate is running on "${dbName}"`,
+      )
+    } finally {
+      await holder.end()
+    }
+  })
+
+  test('a rollback uses the same per-database lock', async () => {
+    const { dbName } = await newDatabase()
+    const holder = await holdLock(dbName)
+    try {
+      await expect(quietly(() => rollback({ dbName, backupFirst: false }))).rejects.toThrow(
+        `Another db:migrate or db:rollback is running on "${dbName}"`,
+      )
+    } finally {
+      await holder.end()
+    }
+  })
+
+  test('lock names fit MySQL and MariaDB (64 characters), and different databases never share one', () => {
+    expect(migrationLockName('ticketflow')).toBe('ticketflow_migrate:ticketflow')
+    const long = 'ticketflow_test_' + 'x'.repeat(80)
+    expect(migrationLockName(long).length).toBeLessThanOrEqual(64)
+    expect(migrationLockName(long)).not.toBe(migrationLockName(long + 'y'))
   })
 })

@@ -400,6 +400,8 @@ describe('GET /api/audit/actions', () => {
       'role_changed',
       'user_activated',
       'user_deactivated',
+      'attachment_uploaded',
+      'attachment_deleted',
     ])
     expect(res.body).toEqual(AUDIT_ACTIONS)
   })
