@@ -1,5 +1,8 @@
 // Jest setupFilesAfterEnv: closes this test file's MySQL pool when its tests finish, so Jest exits cleanly
 // (no "open handles" warning). Each test file gets its own copy of src/db.js, so each closes its own pool.
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
 const pool = require('../src/db')
 const notifications = require('../src/mail/notifications')
 const { getMailer, resetMailer } = require('../src/mail/mailer')
@@ -19,4 +22,9 @@ afterAll(async () => {
   // Emails go out in the background after a response; let them finish before the pool they read from closes
   await notifications.settle()
   await pool.end()
+  // This file's attachments folder (setupEnv.js); only ever a ticketflow-uploads-* folder in the OS temp folder
+  const dir = process.env.UPLOAD_DIR
+  if (dir && path.basename(dir).startsWith('ticketflow-uploads-') && dir.startsWith(os.tmpdir())) {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })

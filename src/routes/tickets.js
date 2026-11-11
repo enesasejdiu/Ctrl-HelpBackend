@@ -13,6 +13,8 @@ const { OVERDUE_SQL } = require('../overdue')
 const schemas = require('../schemas/tickets')
 const { addComment } = require('../schemas/comments')
 const notify = require('../mail/notifications')
+const { canSeeTicket, listAttachments } = require('../attachments')
+const { receiveFiles, uploadAttachments, listTicketAttachments } = require('./attachments')
 
 const router = express.Router()
 
@@ -52,7 +54,7 @@ async function loadTicket(id, user) {
     throw new HttpError(404, 'Ticket not found')
   }
   const ticket = formatTicket(rows[0])
-  if (!isStaff(user) && ticket.requester_id !== user.id) {
+  if (!canSeeTicket(user, ticket.requester_id)) {
     throw new HttpError(403, 'You can only view your own tickets')
   }
   return ticket
@@ -155,8 +157,23 @@ router.get('/:id', validate(schemas.getTicket), async (req, res) => {
     ...ticket,
     comments: comments.map((c) => ({ ...c, is_internal: Boolean(c.is_internal) })),
     history,
+    attachments: await listAttachments(pool, ticket.id),
   })
 })
+
+// Attachments belong to a ticket, so the same rule decides who may list or add them: the requester and staff.
+// The ticket is checked BEFORE the upload is read, so nobody can make the server read files for a ticket they can't see.
+async function loadVisibleTicket(req, res, next) {
+  req.ticket = await loadTicket(req.valid.params.id, req.user)
+  next()
+}
+
+// GET /api/tickets/:id/attachments → [{ id, ticket_id, original_name, mime_type, size_bytes, uploaded_by, created_at }]
+router.get('/:id/attachments', validate(schemas.getTicket), loadVisibleTicket, listTicketAttachments)
+
+// POST /api/tickets/:id/attachments (multipart, field "files", 1–5 files of up to 10 MB) → 201 the new attachments.
+// See routes/attachments.js for the checks and errors.
+router.post('/:id/attachments', validate(schemas.getTicket), loadVisibleTicket, receiveFiles, uploadAttachments)
 
 // POST /api/tickets/:id/comments { content, is_internal }
 router.post('/:id/comments', validate(addComment), async (req, res) => {

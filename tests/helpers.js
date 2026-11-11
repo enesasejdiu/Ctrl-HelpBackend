@@ -23,6 +23,7 @@ async function resetData() {
     await connection.query('SET FOREIGN_KEY_CHECKS = 0')
     for (const table of [
       'audit_log',
+      'attachments',
       'sessions',
       'password_tokens',
       'ticket_history',

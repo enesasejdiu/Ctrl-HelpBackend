@@ -21,5 +21,9 @@ process.env.MAIL_ENABLED = ''
 process.env.SMTP_HOST = ''
 process.env.MAIL_FROM = ''
 
+// Attachment files go to a new, empty folder for each test file, deleted when that file's tests are done
+// (setupAfterEnv.js), so tests never write into the real ./uploads
+process.env.UPLOAD_DIR = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'ticketflow-uploads-'))
+
 // Host, user and password from .env. dotenv never overwrites variables that are already set, so DB_NAME stays.
 require('dotenv').config({ quiet: true })

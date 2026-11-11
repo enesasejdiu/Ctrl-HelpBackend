@@ -20,6 +20,8 @@ const AUDIT_ACTIONS = [
   'role_changed', // details: { from, to }
   'user_activated',
   'user_deactivated',
+  'attachment_uploaded', // a file was added to a ticket. details: { ticket_id, file_name, mime_type, size_bytes }
+  'attachment_deleted', // details: { ticket_id, file_name, size_bytes } (never the file's content)
 ]
 
 // Keys that could carry a secret; never stored, whatever a caller passes
