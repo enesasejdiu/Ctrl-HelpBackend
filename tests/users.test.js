@@ -994,10 +994,9 @@ describe('DIAG: two admins removing each other, 20 times each', () => {
             serverErrors: serverErrors.slice(errorsBefore),
           }
           summary.push(entry)
-           
+
           console.log(`DIAG ${variant} ${JSON.stringify(entry)}`)
           if (dump) {
-             
             console.log(`DIAG-DUMP ${variant} run ${run} ${JSON.stringify(dump)}`)
           }
         }
@@ -1005,7 +1004,7 @@ describe('DIAG: two admins removing each other, 20 times each', () => {
         errorSpy.mockRestore()
       }
       const counts = summary.reduce((acc, e) => ({ ...acc, [e.admins]: (acc[e.admins] || 0) + 1 }), {})
-       
+
       console.log(
         `DIAG-SUMMARY ${variant} admins-after-run ${JSON.stringify(counts)} waiting<2 in ${summary.filter((e) => e.waiting < 2).length}/20 statuses ${JSON.stringify(
           summary.reduce((acc, e) => {
