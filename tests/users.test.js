@@ -677,14 +677,21 @@ describe('PATCH /api/users/:id never removes the last active admin', () => {
       await blocker.query("SELECT id FROM users WHERE role = 'admin' FOR UPDATE")
 
       const requests = Promise.all([patch(b.id, tokenA, body), patch(a.id, tokenB, body)])
-      // Wait until both requests are queued behind the lock
-      for (let i = 0; i < 100; i += 1) {
-        const [[{ waiting }]] = await blocker.query(
-          "SELECT COUNT(*) AS waiting FROM information_schema.INNODB_TRX WHERE trx_state = 'LOCK WAIT'",
-        )
-        if (waiting >= 2) break
+      // Wait until both requests are queued behind the lock. Only lock waits in this test's own database count (the
+      // MySQL server is shared), and if they don't both get there in time the test fails here: letting them go one
+      // after the other would test something else (the second admin would just be logged out, 401/403, not 409).
+      const deadline = Date.now() + 10000
+      let waiting = 0
+      while (waiting < 2 && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 20))
+        ;[[{ waiting }]] = await blocker.query(
+          `SELECT COUNT(*) AS waiting
+           FROM information_schema.INNODB_TRX t
+           JOIN information_schema.PROCESSLIST p ON p.ID = t.trx_mysql_thread_id
+           WHERE t.trx_state = 'LOCK WAIT' AND p.DB = DATABASE()`,
+        )
       }
+      expect(waiting).toBe(2)
       await blocker.commit()
       results = await requests
     } finally {

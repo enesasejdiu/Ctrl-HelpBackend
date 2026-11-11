@@ -7,6 +7,7 @@ const fs = require('fs')
 const path = require('path')
 const mysql = require('mysql2/promise')
 const { backup } = require('./backup-db')
+const { migrationLockName } = require('./migrationLock')
 
 const DOWN_DIR = path.join(__dirname, '..', 'migrations', 'down')
 
@@ -26,10 +27,10 @@ async function rollback({ dbName = process.env.DB_NAME, backupFirst = true } = {
   })
 
   try {
-    // The same lock as db:migrate, so a migrate and a rollback can't run at the same time
-    const [[{ locked }]] = await connection.query("SELECT GET_LOCK('ticketflow_migrate', 0) AS locked")
+    // The same per-database lock as db:migrate, so a migrate and a rollback of this database can't run at the same time
+    const [[{ locked }]] = await connection.query('SELECT GET_LOCK(?, 0) AS locked', [migrationLockName(dbName)])
     if (!locked) {
-      throw new Error('Another db:migrate or db:rollback is running. Wait for it to finish')
+      throw new Error(`Another db:migrate or db:rollback is running on "${dbName}". Wait for it to finish`)
     }
 
     const [[latest]] = await connection.query('SELECT filename FROM schema_migrations ORDER BY filename DESC LIMIT 1')
