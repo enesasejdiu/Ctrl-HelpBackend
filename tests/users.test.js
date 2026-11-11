@@ -887,3 +887,136 @@ describe('PATCH /api/users/:id: refusals change nothing', () => {
     expect(await dbSnapshot()).toEqual(before)
   })
 })
+
+// ---------------------------------------------------------------------------------------------------------------------
+// DIAGNOSTIC ONLY (branch diag/admin-race, never merged): runs the "two admins at the same moment" scenario 20 times per
+// variant, counts the active admins directly after every run, and dumps what every connection waits on whenever fewer
+// than 2 requests are seen waiting for a row lock.
+describe('DIAG: two admins removing each other, 20 times each', () => {
+  const patch = (id, token, body) => api.patch(`/api/users/${id}`).set(auth(token)).send(body)
+  const tryQuery = async (conn, sql) => {
+    try {
+      const [rows] = await conn.query(sql)
+      return rows
+    } catch (err) {
+      return `unavailable: ${err.code || err.message}`
+    }
+  }
+
+  async function snapshot(conn) {
+    const [[server]] = await conn.query('SELECT VERSION() AS version, @@transaction_isolation AS isolation')
+    return {
+      server,
+      snapshotIsolation: await tryQuery(conn, 'SELECT @@innodb_snapshot_isolation AS value'),
+      processlist: await tryQuery(
+        conn,
+        `SELECT ID, COMMAND, TIME, STATE, LEFT(INFO, 160) AS INFO FROM information_schema.PROCESSLIST WHERE DB = DATABASE()`,
+      ),
+      innodbTrx: await tryQuery(
+        conn,
+        `SELECT trx_id, trx_state, trx_mysql_thread_id, trx_operation_state, trx_rows_locked, LEFT(trx_query, 160) AS q
+         FROM information_schema.INNODB_TRX`,
+      ),
+      mariadbLockWaits: await tryQuery(conn, 'SELECT * FROM information_schema.INNODB_LOCK_WAITS'),
+      mariadbLocks: await tryQuery(conn, 'SELECT * FROM information_schema.INNODB_LOCKS'),
+      mysqlLockWaits: await tryQuery(conn, 'SELECT * FROM performance_schema.data_lock_waits'),
+      metadataLockInfo: await tryQuery(conn, 'SELECT * FROM information_schema.METADATA_LOCK_INFO'),
+      psMetadataLocks: await tryQuery(
+        conn,
+        `SELECT OBJECT_TYPE, OBJECT_SCHEMA, OBJECT_NAME, LOCK_TYPE, LOCK_STATUS, OWNER_THREAD_ID
+         FROM performance_schema.metadata_locks WHERE OBJECT_SCHEMA = DATABASE()`,
+      ),
+      innodbStatus: await (async () => {
+        const rows = await tryQuery(conn, 'SHOW ENGINE INNODB STATUS')
+        if (typeof rows === 'string') return rows
+        const text = rows[0].Status
+        const start = text.indexOf('TRANSACTIONS')
+        return text.slice(start, start + 4000)
+      })(),
+    }
+  }
+
+  test.each([
+    ['role', { role: 'agent' }],
+    ['active status', { is_active: false }],
+  ])(
+    '%s: 20 runs',
+    async (variant, body) => {
+      const summary = []
+      let dumps = 0
+      const serverErrors = []
+      const errorSpy = jest.spyOn(console, 'error').mockImplementation((...args) => {
+        serverErrors.push(args.map((a) => (a && a.message ? `${a.code || ''} ${a.message}` : String(a))).join(' '))
+      })
+      try {
+        for (let run = 1; run <= 20; run += 1) {
+          await pool.query("UPDATE users SET role = 'employee' WHERE role = 'admin'")
+          const a = await createUser({ role: 'admin' })
+          const b = await createUser({ role: 'admin' })
+          const [tokenA, tokenB] = [await loginAs(a), await loginAs(b)]
+          const blocker = await pool.getConnection()
+          let waiting = 0
+          let dump = null
+          let results
+          const errorsBefore = serverErrors.length
+          try {
+            await blocker.beginTransaction()
+            await blocker.query("SELECT id FROM users WHERE role = 'admin' FOR UPDATE")
+            const requests = Promise.all([patch(b.id, tokenA, body), patch(a.id, tokenB, body)])
+            const deadline = Date.now() + 4000
+            while (waiting < 2 && Date.now() < deadline) {
+              await new Promise((resolve) => setTimeout(resolve, 20))
+              ;[[{ waiting }]] = await blocker.query(
+                `SELECT COUNT(*) AS waiting
+               FROM information_schema.INNODB_TRX t
+               JOIN information_schema.PROCESSLIST p ON p.ID = t.trx_mysql_thread_id
+               WHERE t.trx_state = 'LOCK WAIT' AND p.DB = DATABASE()`,
+              )
+            }
+            if (waiting < 2 && dumps < 3) {
+              dumps += 1
+              dump = await snapshot(blocker)
+            }
+            await blocker.commit()
+            results = await requests
+          } finally {
+            blocker.release()
+          }
+          const [[{ admins }]] = await pool.query(
+            "SELECT COUNT(*) AS admins FROM users WHERE role = 'admin' AND is_active = TRUE",
+          )
+          const entry = {
+            run,
+            waiting: Number(waiting),
+            statuses: results.map((r) => r.status),
+            admins: Number(admins),
+            bodies: results.filter((r) => r.status !== 200).map((r) => r.body),
+            serverErrors: serverErrors.slice(errorsBefore),
+          }
+          summary.push(entry)
+           
+          console.log(`DIAG ${variant} ${JSON.stringify(entry)}`)
+          if (dump) {
+             
+            console.log(`DIAG-DUMP ${variant} run ${run} ${JSON.stringify(dump)}`)
+          }
+        }
+      } finally {
+        errorSpy.mockRestore()
+      }
+      const counts = summary.reduce((acc, e) => ({ ...acc, [e.admins]: (acc[e.admins] || 0) + 1 }), {})
+       
+      console.log(
+        `DIAG-SUMMARY ${variant} admins-after-run ${JSON.stringify(counts)} waiting<2 in ${summary.filter((e) => e.waiting < 2).length}/20 statuses ${JSON.stringify(
+          summary.reduce((acc, e) => {
+            const key = [...e.statuses].sort().join('+')
+            return { ...acc, [key]: (acc[key] || 0) + 1 }
+          }, {}),
+        )}`,
+      )
+      // Visible in CI: no run may end with zero active admins
+      expect(summary.filter((e) => e.admins === 0)).toEqual([])
+    },
+    300000,
+  )
+})
