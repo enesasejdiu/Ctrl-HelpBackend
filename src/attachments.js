@@ -15,7 +15,8 @@ const fs = require('fs/promises')
 const path = require('path')
 const { isStaff } = require('./middleware/auth')
 
-const MAX_FILE_BYTES = 10 * 1024 * 1024 // 10 MB per file
+const { DEFAULT_MAX_FILE_BYTES, maxFileBytes, parseMaxFileBytes, formatBytes } = require('./attachmentLimit')
+
 const MAX_FILES_PER_UPLOAD = 5
 const MAX_FILES_PER_TICKET = 20
 const DEFAULT_UPLOAD_DIR = 'uploads'
@@ -175,7 +176,10 @@ async function listAttachments(db, ticketId) {
 }
 
 module.exports = {
-  MAX_FILE_BYTES,
+  DEFAULT_MAX_FILE_BYTES,
+  maxFileBytes,
+  parseMaxFileBytes,
+  formatBytes,
   MAX_FILES_PER_UPLOAD,
   MAX_FILES_PER_TICKET,
   DEFAULT_UPLOAD_DIR,

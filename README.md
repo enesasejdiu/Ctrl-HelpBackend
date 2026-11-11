@@ -134,7 +134,13 @@ npm run db:seed -- --force
 npm test               # run all tests once
 npm run test:watch     # re-run on every file change
 npm run test:coverage  # also prints a coverage table (HTML report in coverage/)
+npm run test:real-size # only the one 10 MB attachment test
 ```
+
+`npm test` and `npm run test:coverage` are two Jest runs: first every test (one file after another), then, in a
+separate run, the one test that uploads a real file just over 10 MB (`tests/real-size/`, `jest.real-size.config.js`).
+All other attachment tests use a 200 KB limit (`ATTACHMENT_MAX_BYTES`, set in `tests/setupEnv.js`), so no other test
+builds big files.
 
 MySQL must be running (the same server and login as in `.env`).
 
@@ -678,7 +684,7 @@ tickets, so HR only sees its own. **Deleting** a file is for whoever uploaded it
 | Rule          | Value                                                                           |
 | ------------- | ------------------------------------------------------------------------------- |
 | Allowed types | `png`, `jpg`/`jpeg`, `gif`, `webp`, `pdf`, `txt`, `log`, `csv`                  |
-| Size          | at most **10 MB** per file; empty files are refused                             |
+| Size          | at most **10 MB** per file (always; see below); empty files are refused         |
 | Per upload    | **1–5 files**, all in the multipart field `files`, and nothing else in the body |
 | Per ticket    | at most **20** attachments                                                      |
 
@@ -688,6 +694,10 @@ extension must also match the content: a `photo.png` that is really text, or a P
 type stored (and sent on download) is the one found from the content, never what the browser claimed.
 
 An upload is all or nothing: if one file is refused, none is saved.
+
+**The 10 MB limit can only change in tests.** With `NODE_ENV=test`, `ATTACHMENT_MAX_BYTES` (a whole number of bytes, 1
+to 10485760) lowers it, like `LOCKOUT_MINUTES` for the lockout; the 413 message and `max_bytes` then show that limit.
+Anywhere else the server refuses to start with any other value, and the limit is always 10 MB.
 
 ### Storage: `UPLOAD_DIR`
 

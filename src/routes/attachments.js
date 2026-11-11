@@ -13,7 +13,8 @@ const validate = require('../middleware/validate')
 const schemas = require('../schemas/attachments')
 const { recordAudit } = require('../audit')
 const {
-  MAX_FILE_BYTES,
+  maxFileBytes,
+  formatBytes,
   MAX_FILES_PER_UPLOAD,
   MAX_FILES_PER_TICKET,
   ALLOWED_EXTENSIONS,
@@ -30,14 +31,15 @@ const {
   listAttachments,
 } = require('../attachments')
 
-const MB = MAX_FILE_BYTES / (1024 * 1024)
-
 // Parses the multipart body into memory (req.files), so every file is checked before anything is written to disk.
-// At most MAX_FILES_PER_UPLOAD files of MAX_FILE_BYTES each, all in the "files" field, and nothing else in the body.
-const parseFiles = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_FILE_BYTES, files: MAX_FILES_PER_UPLOAD, fields: 0, parts: MAX_FILES_PER_UPLOAD },
-}).array('files', MAX_FILES_PER_UPLOAD)
+// At most MAX_FILES_PER_UPLOAD files of maxFileBytes() each, all in the "files" field, and nothing else in the body.
+// Built per request, because the size limit is read on every call (see maxFileBytes in src/attachments.js).
+function fileParser(maxBytes) {
+  return multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: maxBytes, files: MAX_FILES_PER_UPLOAD, fields: 0, parts: MAX_FILES_PER_UPLOAD },
+  }).array('files', MAX_FILES_PER_UPLOAD)
+}
 
 const tooManyFiles = () =>
   new HttpError(400, `Upload at most ${MAX_FILES_PER_UPLOAD} files at a time`, 'TOO_MANY_FILES', {
@@ -45,11 +47,13 @@ const tooManyFiles = () =>
   })
 
 // multer's errors as our API errors (otherwise they would be a plain 500)
-function uploadError(err) {
+function uploadError(err, maxBytes) {
   if (err instanceof multer.MulterError) {
     switch (err.code) {
       case 'LIMIT_FILE_SIZE':
-        return new HttpError(413, `Each file can be at most ${MB} MB`, 'FILE_TOO_LARGE', { max_bytes: MAX_FILE_BYTES })
+        return new HttpError(413, `Each file can be at most ${formatBytes(maxBytes)}`, 'FILE_TOO_LARGE', {
+          max_bytes: maxBytes,
+        })
       case 'LIMIT_FILE_COUNT':
       case 'LIMIT_PART_COUNT':
         return tooManyFiles()
@@ -68,7 +72,8 @@ function uploadError(err) {
 
 // Step 2 of an upload, after the ticket check: reads the files, turning multer's errors into ours
 function receiveFiles(req, res, next) {
-  parseFiles(req, res, (err) => next(err ? uploadError(err) : undefined))
+  const maxBytes = maxFileBytes()
+  fileParser(maxBytes)(req, res, (err) => next(err ? uploadError(err, maxBytes) : undefined))
 }
 
 // Step 3: checks every file, then saves them all, or none

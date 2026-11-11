@@ -2,6 +2,8 @@
 module.exports = {
   testEnvironment: 'node',
   testMatch: ['<rootDir>/tests/**/*.test.js'],
+  // The real-size attachment test runs on its own, in a second Jest run (jest.real-size.config.js)
+  testPathIgnorePatterns: ['/node_modules/', '<rootDir>/tests/real-size/'],
   // Creates the throwaway test database before all tests and drops it after, even when tests fail
   globalSetup: '<rootDir>/tests/globalSetup.js',
   globalTeardown: '<rootDir>/tests/globalTeardown.js',
