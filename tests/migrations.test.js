@@ -9,6 +9,7 @@ const mysql = require('mysql2/promise')
 const { migrate } = require('../scripts/migrate')
 const { rollback } = require('../scripts/rollback')
 const { verify } = require('../scripts/verify-department-migration')
+const { migrationLockName } = require('../scripts/migrationLock')
 const { assertTestDbName, loadServerSettings } = require('./testDb')
 
 const FILE = '005_link_users_to_departments.sql'
@@ -331,5 +332,58 @@ describe('migration 005 on messy data', () => {
     expect(await departmentNames(db)).toEqual(['Engineering', 'Sales Team'])
     const linked = Object.fromEntries((await users(db)).map((u) => [u.name, u.linked]))
     expect(linked).toMatchObject({ Dua: null, Ela: 'Sales Team', Kujtim: 'Engineering', Ana: null })
+  })
+})
+
+describe('the migration lock (one per database)', () => {
+  // Holds the lock for a database name on a separate connection, like a migration running in another process
+  async function holdLock(name) {
+    const holder = await mysql.createConnection(server)
+    const [[{ locked }]] = await holder.query('SELECT GET_LOCK(?, 0) AS locked', [migrationLockName(name)])
+    expect(locked).toBe(1)
+    return holder
+  }
+
+  test('a migration of another database on the same server never gets in the way', async () => {
+    const holder = await holdLock('ticketflow_someone_else')
+    try {
+      // The old single server-wide lock made this throw "Another db:migrate is running"
+      await expect(newDatabase()).resolves.toBeDefined()
+    } finally {
+      await holder.end()
+    }
+  })
+
+  test('two migrations of the same database still exclude each other', async () => {
+    dbCount += 1
+    const dbName = assertTestDbName(`${process.env.DB_NAME}_mig${dbCount}`)
+    opened.push({ db: { end: async () => {} }, dbName })
+    const holder = await holdLock(dbName)
+    try {
+      await expect(quietly(() => migrate({ dbName, backupFirst: false }))).rejects.toThrow(
+        `Another db:migrate is running on "${dbName}"`,
+      )
+    } finally {
+      await holder.end()
+    }
+  })
+
+  test('a rollback uses the same per-database lock', async () => {
+    const { dbName } = await newDatabase()
+    const holder = await holdLock(dbName)
+    try {
+      await expect(quietly(() => rollback({ dbName, backupFirst: false }))).rejects.toThrow(
+        `Another db:migrate or db:rollback is running on "${dbName}"`,
+      )
+    } finally {
+      await holder.end()
+    }
+  })
+
+  test('lock names fit MySQL and MariaDB (64 characters), and different databases never share one', () => {
+    expect(migrationLockName('ticketflow')).toBe('ticketflow_migrate:ticketflow')
+    const long = 'ticketflow_test_' + 'x'.repeat(80)
+    expect(migrationLockName(long).length).toBeLessThanOrEqual(64)
+    expect(migrationLockName(long)).not.toBe(migrationLockName(long + 'y'))
   })
 })
