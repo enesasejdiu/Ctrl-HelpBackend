@@ -292,3 +292,29 @@ describe('the real entry points', () => {
     expect(res.stdout).not.toMatch(/Applied|up to date/)
   })
 })
+
+describe('LOCKOUT_MINUTES', () => {
+  test.each(['production', 'development'])('%s refuses to start with a value other than 15', (NODE_ENV) => {
+    const env = NODE_ENV === 'production' ? prod({ LOCKOUT_MINUTES: '5' }) : dev({ LOCKOUT_MINUTES: '5' })
+    const { exited, exitCode, log } = run(env)
+    expect([exited, exitCode]).toEqual([true, 1])
+    expect(log.error.mock.calls[0][0]).toMatch(/LOCKOUT_MINUTES can only be changed when NODE_ENV=test/)
+  })
+
+  test('15, or not set, is fine everywhere', () => {
+    expect(run(prod({ LOCKOUT_MINUTES: '15' })).exited).toBe(false)
+    expect(run(prod()).exited).toBe(false)
+    expect(run(dev({ LOCKOUT_MINUTES: '' })).exited).toBe(false)
+  })
+
+  test('in the test environment: a whole number of minutes from 1 to 1440', () => {
+    const test = (value) => ({ ...GOOD, NODE_ENV: 'test', LOCKOUT_MINUTES: value })
+    expect(run(test('1')).exited).toBe(false)
+    expect(run(test('1440')).exited).toBe(false)
+    for (const value of ['0', '1441', '2.5', 'abc']) {
+      const { exited, log } = run(test(value))
+      expect([value, exited]).toEqual([value, true])
+      expect(log.error.mock.calls[0][0]).toMatch(/LOCKOUT_MINUTES must be a whole number of minutes from 1 to 1440/)
+    }
+  })
+})

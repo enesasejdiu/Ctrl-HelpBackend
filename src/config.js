@@ -12,6 +12,7 @@
 // "Email is set up" (mail.emailConfigured, isEmailConfigured() in the mailer) = MAIL_ENABLED=true, SMTP_HOST and
 // MAIL_FROM set. Only then do passwords go out as emailed links; otherwise admins see a temporary password, as before.
 const { z } = require('zod')
+const { DEFAULT_LOCKOUT_MINUTES, MAX_LOCKOUT_MINUTES, parseLockoutMinutes } = require('./lockout')
 
 const MIN_SECRET_LENGTH = 32
 
@@ -192,6 +193,23 @@ function loadMailConfig(env = process.env) {
 
 // Validates env for 'server' (everything, including config.mail) or 'database' (the DB_* settings only).
 // Returns { config, warnings, notices }. Throws ConfigError when the program must not start.
+// LOCKOUT_MINUTES (src/lockout.js) may only shorten or lengthen the lockout in the test environment. Anywhere else a
+// value other than 15 is refused (in production the lock is always 15 minutes), and in tests it must be a valid number.
+function lockoutProblems(env) {
+  const raw = env.LOCKOUT_MINUTES
+  if (raw === undefined || raw === '') return []
+  if (env.NODE_ENV !== 'test') {
+    return Number(raw) === DEFAULT_LOCKOUT_MINUTES
+      ? []
+      : [
+          `LOCKOUT_MINUTES can only be changed when NODE_ENV=test; the lockout is always ${DEFAULT_LOCKOUT_MINUTES} minutes here (got ${raw}). Remove it from .env`,
+        ]
+  }
+  return parseLockoutMinutes(raw) === null
+    ? [`LOCKOUT_MINUTES must be a whole number of minutes from 1 to ${MAX_LOCKOUT_MINUTES} (got ${raw})`]
+    : []
+}
+
 function loadConfig(env = process.env, { scope = 'server' } = {}) {
   const schema = scope === 'database' ? databaseSchema : serverSchema
   const result = schema.safeParse(env)
@@ -199,6 +217,7 @@ function loadConfig(env = process.env, { scope = 'server' } = {}) {
   let mail = null
   let notices = []
   if (scope === 'server') {
+    issues.push(...lockoutProblems(env))
     // Collected together with the other problems, so one start lists everything that is wrong
     try {
       ;({ mail, notices } = loadMailConfig(env))
