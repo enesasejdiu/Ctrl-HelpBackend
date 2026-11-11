@@ -648,6 +648,49 @@ describe('PATCH /api/users/:id: department_id, job_title, order of checks, times
   })
 })
 
+// DIAGNOSTIC helpers (module level, used by the original test and the DIAG loop)
+const tryQuery = async (conn, sql) => {
+  try {
+    const [rows] = await conn.query(sql)
+    return rows
+  } catch (err) {
+    return `unavailable: ${err.code || err.message}`
+  }
+}
+
+async function diagSnapshot(conn) {
+  const [[server]] = await conn.query('SELECT VERSION() AS version, @@transaction_isolation AS isolation')
+  return {
+    server,
+    snapshotIsolation: await tryQuery(conn, 'SELECT @@innodb_snapshot_isolation AS value'),
+    processlist: await tryQuery(
+      conn,
+      `SELECT ID, COMMAND, TIME, STATE, LEFT(INFO, 160) AS INFO FROM information_schema.PROCESSLIST WHERE DB = DATABASE()`,
+    ),
+    innodbTrx: await tryQuery(
+      conn,
+      `SELECT trx_id, trx_state, trx_mysql_thread_id, trx_operation_state, trx_rows_locked, LEFT(trx_query, 160) AS q
+       FROM information_schema.INNODB_TRX`,
+    ),
+    mariadbLockWaits: await tryQuery(conn, 'SELECT * FROM information_schema.INNODB_LOCK_WAITS'),
+    mariadbLocks: await tryQuery(conn, 'SELECT * FROM information_schema.INNODB_LOCKS'),
+    mysqlLockWaits: await tryQuery(conn, 'SELECT * FROM performance_schema.data_lock_waits'),
+    metadataLockInfo: await tryQuery(conn, 'SELECT * FROM information_schema.METADATA_LOCK_INFO'),
+    psMetadataLocks: await tryQuery(
+      conn,
+      `SELECT OBJECT_TYPE, OBJECT_SCHEMA, OBJECT_NAME, LOCK_TYPE, LOCK_STATUS, OWNER_THREAD_ID
+       FROM performance_schema.metadata_locks WHERE OBJECT_SCHEMA = DATABASE()`,
+    ),
+    innodbStatus: await (async () => {
+      const rows = await tryQuery(conn, 'SHOW ENGINE INNODB STATUS')
+      if (typeof rows === 'string') return rows
+      const text = rows[0].Status
+      const start = text.indexOf('TRANSACTIONS')
+      return text.slice(start, start + 4000)
+    })(),
+  }
+}
+
 describe('PATCH /api/users/:id never removes the last active admin', () => {
   const patch = (id, token, body) => api.patch(`/api/users/${id}`).set(auth(token)).send(body)
 
@@ -689,6 +732,19 @@ describe('PATCH /api/users/:id never removes the last active admin', () => {
            FROM information_schema.INNODB_TRX t
            JOIN information_schema.PROCESSLIST p ON p.ID = t.trx_mysql_thread_id
            WHERE t.trx_state = 'LOCK WAIT' AND p.DB = DATABASE()`,
+        )
+      }
+      if (waiting < 2) {
+        // DIAGNOSTIC: what every connection waits on at this moment, then the outcome once released
+        const dump = await diagSnapshot(blocker)
+        console.log(`DIAG-ORIGINAL waiting=${waiting} ${JSON.stringify(dump)}`)
+        await blocker.commit()
+        const late = await requests
+        const [[{ admins }]] = await pool.query(
+          "SELECT COUNT(*) AS admins FROM users WHERE role = 'admin' AND is_active = TRUE",
+        )
+        console.log(
+          `DIAG-ORIGINAL-OUTCOME statuses=${JSON.stringify(late.map((r) => r.status))} admins=${admins} bodies=${JSON.stringify(late.map((r) => r.body))}`,
         )
       }
       expect(waiting).toBe(2)
@@ -894,47 +950,7 @@ describe('PATCH /api/users/:id: refusals change nothing', () => {
 // than 2 requests are seen waiting for a row lock.
 describe('DIAG: two admins removing each other, 20 times each', () => {
   const patch = (id, token, body) => api.patch(`/api/users/${id}`).set(auth(token)).send(body)
-  const tryQuery = async (conn, sql) => {
-    try {
-      const [rows] = await conn.query(sql)
-      return rows
-    } catch (err) {
-      return `unavailable: ${err.code || err.message}`
-    }
-  }
-
-  async function snapshot(conn) {
-    const [[server]] = await conn.query('SELECT VERSION() AS version, @@transaction_isolation AS isolation')
-    return {
-      server,
-      snapshotIsolation: await tryQuery(conn, 'SELECT @@innodb_snapshot_isolation AS value'),
-      processlist: await tryQuery(
-        conn,
-        `SELECT ID, COMMAND, TIME, STATE, LEFT(INFO, 160) AS INFO FROM information_schema.PROCESSLIST WHERE DB = DATABASE()`,
-      ),
-      innodbTrx: await tryQuery(
-        conn,
-        `SELECT trx_id, trx_state, trx_mysql_thread_id, trx_operation_state, trx_rows_locked, LEFT(trx_query, 160) AS q
-         FROM information_schema.INNODB_TRX`,
-      ),
-      mariadbLockWaits: await tryQuery(conn, 'SELECT * FROM information_schema.INNODB_LOCK_WAITS'),
-      mariadbLocks: await tryQuery(conn, 'SELECT * FROM information_schema.INNODB_LOCKS'),
-      mysqlLockWaits: await tryQuery(conn, 'SELECT * FROM performance_schema.data_lock_waits'),
-      metadataLockInfo: await tryQuery(conn, 'SELECT * FROM information_schema.METADATA_LOCK_INFO'),
-      psMetadataLocks: await tryQuery(
-        conn,
-        `SELECT OBJECT_TYPE, OBJECT_SCHEMA, OBJECT_NAME, LOCK_TYPE, LOCK_STATUS, OWNER_THREAD_ID
-         FROM performance_schema.metadata_locks WHERE OBJECT_SCHEMA = DATABASE()`,
-      ),
-      innodbStatus: await (async () => {
-        const rows = await tryQuery(conn, 'SHOW ENGINE INNODB STATUS')
-        if (typeof rows === 'string') return rows
-        const text = rows[0].Status
-        const start = text.indexOf('TRANSACTIONS')
-        return text.slice(start, start + 4000)
-      })(),
-    }
-  }
+  const snapshot = diagSnapshot
 
   test.each([
     ['role', { role: 'agent' }],
