@@ -117,6 +117,9 @@ To restore a backup (this replaces the current tables):
 mysql -u root ticketflow < backups/ticketflow-<YYYY-MM-DD-HHmm>.sql
 ```
 
+Attachment files are not in the database dump: copy the `UPLOAD_DIR` folder (default `uploads/`) along with each
+backup. See [Attachments](#attachments).
+
 `npm run db:seed` **wipes every table**, so it refuses to run if the `users` table already has rows. To really wipe
 and reseed a non-empty database, back it up first and pass `--force`:
 
@@ -664,6 +667,90 @@ Staff can set any status. Every change to status, priority or assignee is saved 
 A ticket is **overdue** when it is not resolved/closed and is older than its priority's target time
 (Low 120h, Medium 72h, High 24h, Critical 4h).
 
+## Attachments
+
+People can add files to a ticket: screenshots, PDFs, logs. Who may do what follows the ticket: **the requester and
+staff** (agents and admins) see a ticket, so they can list, add and download its files. HR is an employee for
+tickets, so HR only sees its own. **Deleting** a file is for whoever uploaded it, or an admin.
+
+### Files and limits
+
+| Rule          | Value                                                                           |
+| ------------- | ------------------------------------------------------------------------------- |
+| Allowed types | `png`, `jpg`/`jpeg`, `gif`, `webp`, `pdf`, `txt`, `log`, `csv`                  |
+| Size          | at most **10 MB** per file; empty files are refused                             |
+| Per upload    | **1–5 files**, all in the multipart field `files`, and nothing else in the body |
+| Per ticket    | at most **20** attachments                                                      |
+
+**The type is checked from the file's content, not its name.** Images and PDFs must start with their real signature
+(magic bytes). `.txt`, `.log` and `.csv` have no signature, so they must be valid UTF-8 text without NUL bytes. The
+extension must also match the content: a `photo.png` that is really text, or a PNG named `scan.pdf`, is refused. The
+type stored (and sent on download) is the one found from the content, never what the browser claimed.
+
+An upload is all or nothing: if one file is refused, none is saved.
+
+### Storage: `UPLOAD_DIR`
+
+Files are written to `UPLOAD_DIR`: default `./uploads` in the backend folder, which git ignores. A relative path counts
+from the backend folder. Each file is stored under a random id (a UUID, no extension). The user's file name is only
+kept in the database as `original_name`, shown in lists and used as the download name; it never becomes a path. Path
+parts (`../`, `C:\\`), control characters and line breaks are removed from it, and it's cut to 255 characters
+(keeping the extension).
+
+- **Never served statically.** The API serves no files itself; the only way to a file is
+  `GET /api/attachments/:id/download`, which checks who is asking. The config check refuses an `UPLOAD_DIR` inside a
+  folder named `public`, `dist`, `static`, `www`, `htdocs` or `html`, and the server checks at start that the folder
+  exists (it creates it) and is writable.
+- **Back it up with the database.** `npm run db:backup` saves the database only. The database has the names, the folder
+  has the files: copy `UPLOAD_DIR` along with each backup.
+- Tests use a new, empty temporary folder per test file, deleted afterwards.
+
+### Endpoints
+
+`POST /api/tickets/:id/attachments`: multipart, field `files`. Cookie sessions need the `X-CSRF-Token` header as for
+any change. The ticket is checked first (404, 403), before the upload is read. → **201** with the new attachments:
+
+```json
+[
+  {
+    "id": 7,
+    "ticket_id": 42,
+    "original_name": "printer.png",
+    "mime_type": "image/png",
+    "size_bytes": 48213,
+    "uploaded_by": { "id": 4, "name": "Liridon Gashi" },
+    "created_at": "2026-11-11T09:15:02.000Z"
+  }
+]
+```
+
+`GET /api/tickets/:id/attachments` → the same shape for every attachment of the ticket, oldest first.
+`GET /api/tickets/:id` also returns them as `attachments`.
+
+`GET /api/attachments/:id/download` → the file, always as a download, never shown in the browser:
+`Content-Disposition: attachment; filename="…"` (plus `filename*=UTF-8''…` for other characters),
+`Content-Type` as stored, `X-Content-Type-Options: nosniff`, `Cache-Control: private, no-store`.
+
+`DELETE /api/attachments/:id` → **204**. The row and the file on disk are both removed.
+
+### Errors
+
+| Status | `code`                  | When                                                                                                                  |
+| ------ | ----------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| 400    | `UNSUPPORTED_FILE_TYPE` | A file's content or extension isn't allowed: `"invoice.exe: this file type isn't allowed"`, with `file` and `allowed` |
+| 400    | `EMPTY_FILE`            | A file has 0 bytes (`file`)                                                                                           |
+| 413    | `FILE_TOO_LARGE`        | A file is over 10 MB (`max_bytes`)                                                                                    |
+| 400    | `TOO_MANY_FILES`        | More than 5 files in one upload (`max_files`)                                                                         |
+| 400    | `TOO_MANY_ATTACHMENTS`  | The ticket would have more than 20 (`max_per_ticket`, `current`)                                                      |
+| 400    | `NO_FILES`              | No file in the request                                                                                                |
+| 400    | `INVALID_UPLOAD`        | Files in another field than `files`, extra text fields, or a broken multipart body                                    |
+| 403    |                         | Not the requester or staff (any endpoint); deleting someone else's file without being admin                           |
+| 404    | `FILE_MISSING`          | Download: the row exists but its file is gone from `UPLOAD_DIR` (logged on the server)                                |
+
+Uploads and deletes are in the [audit log](#audit-log) (`attachment_uploaded`, `attachment_deleted`) with the file's
+name and size, never its content. Deleting a ticket deletes its attachment rows (`ON DELETE CASCADE`); there is no
+API for deleting tickets.
+
 ## Audit log
 
 Security events are recorded in the `audit_log` table (migration 009) and shown to **admins** by two endpoints.
@@ -754,23 +841,25 @@ Returns every action name as a JSON array of strings, in a sensible order for th
 
 ### Actions
 
-| Action                     | When                                                                                   | `actor`    | `target`                      | `details`                                                                                   |
-| -------------------------- | -------------------------------------------------------------------------------------- | ---------- | ----------------------------- | ------------------------------------------------------------------------------------------- |
-| `login_success`            | A successful login                                                                     | the user   | the user                      | `{ email }`                                                                                 |
-| `login_failure`            | A refused login (the password is never stored)                                         | `null`     | the user, if the email exists | `{ email, reason }`, reason: `unknown_email`, `wrong_password`, `locked` or `deactivated`   |
-| `account_locked`           | The wrong password that locked the account (it also logs a `login_failure`)            | `null`     | the user                      | `{ email, minutes }`                                                                        |
-| `logout`                   | `POST /api/auth/logout` ended a session (a repeated logout isn't logged)               | the user   | the user                      | `null`                                                                                      |
-| `logout_all`               | `POST /api/auth/logout-all`                                                            | the user   | the user                      | `{ sessions_ended }`                                                                        |
-| `password_changed`         | The user changed their own password                                                    | the user   | the user                      | `{ other_sessions_ended }`                                                                  |
-| `password_reset`           | An admin or HR reset the password (the temporary one is never stored)                  | admin / HR | the user                      | `{ sessions_ended }`                                                                        |
-| `password_reset_requested` | "Forgot password" sent the user a reset link (the link is never stored)                | `null`     | the user                      |                                                                                             |
-| `password_set_with_link`   | The user set their password with the emailed link (the link is never stored)           | the user   | the user                      |                                                                                             |
-| `user_created`             | An admin or HR created the account (a set-password link is emailed; never stored here) | admin / HR | the new user                  | `{ email, role, department_id }`                                                            |
-| `invite_resent`            | An admin or HR sent a new one-time link (`POST /api/users/:id/resend-link`)            | admin / HR | the user                      |                                                                                             |
-| `user_updated`             | An admin or HR edited name, email, department or job title                             | admin / HR | the user                      | `{ fields }`: the names of the fields sent, e.g. `["name", "job_title"]` (not their values) |
-| `role_changed`             | The role changed to a different one                                                    | admin      | the user                      | `{ from, to }`                                                                              |
-| `user_activated`           | The account was activated again                                                        | admin / HR | the user                      | `null`                                                                                      |
-| `user_deactivated`         | The account was deactivated                                                            | admin / HR | the user                      | `null`                                                                                      |
+| Action                     | When                                                                                   | `actor`          | `target`                      | `details`                                                                                   |
+| -------------------------- | -------------------------------------------------------------------------------------- | ---------------- | ----------------------------- | ------------------------------------------------------------------------------------------- |
+| `login_success`            | A successful login                                                                     | the user         | the user                      | `{ email }`                                                                                 |
+| `login_failure`            | A refused login (the password is never stored)                                         | `null`           | the user, if the email exists | `{ email, reason }`, reason: `unknown_email`, `wrong_password`, `locked` or `deactivated`   |
+| `account_locked`           | The wrong password that locked the account (it also logs a `login_failure`)            | `null`           | the user                      | `{ email, minutes }`                                                                        |
+| `logout`                   | `POST /api/auth/logout` ended a session (a repeated logout isn't logged)               | the user         | the user                      | `null`                                                                                      |
+| `logout_all`               | `POST /api/auth/logout-all`                                                            | the user         | the user                      | `{ sessions_ended }`                                                                        |
+| `password_changed`         | The user changed their own password                                                    | the user         | the user                      | `{ other_sessions_ended }`                                                                  |
+| `password_reset`           | An admin or HR reset the password (the temporary one is never stored)                  | admin / HR       | the user                      | `{ sessions_ended }`                                                                        |
+| `password_reset_requested` | "Forgot password" sent the user a reset link (the link is never stored)                | `null`           | the user                      |                                                                                             |
+| `password_set_with_link`   | The user set their password with the emailed link (the link is never stored)           | the user         | the user                      |                                                                                             |
+| `user_created`             | An admin or HR created the account (a set-password link is emailed; never stored here) | admin / HR       | the new user                  | `{ email, role, department_id }`                                                            |
+| `invite_resent`            | An admin or HR sent a new one-time link (`POST /api/users/:id/resend-link`)            | admin / HR       | the user                      |                                                                                             |
+| `user_updated`             | An admin or HR edited name, email, department or job title                             | admin / HR       | the user                      | `{ fields }`: the names of the fields sent, e.g. `["name", "job_title"]` (not their values) |
+| `role_changed`             | The role changed to a different one                                                    | admin            | the user                      | `{ from, to }`                                                                              |
+| `user_activated`           | The account was activated again                                                        | admin / HR       | the user                      | `null`                                                                                      |
+| `user_deactivated`         | The account was deactivated                                                            | admin / HR       | the user                      | `null`                                                                                      |
+| `attachment_uploaded`      | A file was added to a ticket (one entry per file)                                      | the uploader     | `null`                        | `{ ticket_id, file_name, mime_type, size_bytes }` (never the content)                       |
+| `attachment_deleted`       | A file was deleted                                                                     | uploader / admin | `null`                        | `{ ticket_id, file_name, size_bytes }`                                                      |
 
 A role or active-status change is logged as its own event, not as `user_updated`. Saving the role or status a user
 already has logs nothing, and neither does a refused request. Account changes are logged in the same transaction
@@ -809,7 +898,11 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | GET    | `/api/meta`                       | logged in    | Categories and priorities (for dropdowns), and `password_delivery` (`email` or `temporary_password`)                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | GET    | `/api/tickets`                    | logged in    | List tickets (employees: own only). Filters: `status`, `priority`, `category`, `assigned=me\|unassigned`, `q`, `overdue=1`                                                                                                                                                                                                                                                                                                                                                                                                    |
 | POST   | `/api/tickets`                    | logged in    | Create a ticket `{ title, description, category_id, priority_id }`                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| GET    | `/api/tickets/:id`                | logged in    | One ticket with comments and history (employees: own tickets, no internal notes)                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| GET    | `/api/tickets/:id`                | logged in    | One ticket with comments, history and `attachments` (employees: own tickets, no internal notes)                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| GET    | `/api/tickets/:id/attachments`    | logged in    | The ticket's attachments (requester and staff). See [Attachments](#attachments)                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| POST   | `/api/tickets/:id/attachments`    | logged in    | Upload 1–5 files (multipart, field `files`; requester and staff) → 201 the new attachments. See [Attachments](#attachments)                                                                                                                                                                                                                                                                                                                                                                                                   |
+| GET    | `/api/attachments/:id/download`   | logged in    | Download a file (requester and staff; always as a download)                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| DELETE | `/api/attachments/:id`            | logged in    | Delete a file (the uploader or an admin) → 204                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | POST   | `/api/tickets/:id/comments`       | logged in    | Add a comment `{ content, is_internal? }` (internal notes: staff only)                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | PATCH  | `/api/tickets/:id/status`         | logged in    | Change status `{ status, resolution? }` (employees: only close or reopen)                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | PATCH  | `/api/tickets/:id/priority`       | agent, admin | Change priority `{ priority_id }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -921,5 +1014,6 @@ TASKS.md                  Development task list
 | `ticket_history`    | Audit trail: who changed which field (status, priority, assignee) from what to what, and when                                                                                                                                                                                                                   |
 | `sessions`          | One row per login (migration 008): `user_id`, `created_at`, `expires_at`, `revoked_at`, `last_seen_at`, `ip`, `user_agent`. The token's `sid` is the row id. Rows are deleted 7 days after they end                                                                                                             |
 | `audit_log`         | Security events (migration 009): `created_at`, `actor_id`, `action`, `target_user_id`, `details` (JSON), `ip`. Never a secret. See [Audit log](#audit-log)                                                                                                                                                      |
+| `attachments`       | Files on tickets (migration 012): `ticket_id` (deleted with the ticket), `uploaded_by`, `original_name`, `stored_name` (the random file name in `UPLOAD_DIR`), `mime_type` (from the content), `size_bytes`, `created_at`. See [Attachments](#attachments)                                                      |
 | `password_tokens`   | One-time password links (migrations 010, 011): the SHA-256 hash of each token (never the token), `purpose` (`setup` / `reset`), `expires_at` (48 hours), `used_at`. See [How passwords are delivered](#how-passwords-are-delivered)                                                                             |
 | `schema_migrations` | Which migrations this database has run, and when                                                                                                                                                                                                                                                                |

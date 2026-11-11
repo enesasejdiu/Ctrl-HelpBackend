@@ -284,6 +284,8 @@ async function seed({ force = process.argv.includes('--force') } = {}) {
     for (const table of [
       'audit_log',
       'sessions',
+      // Attachment rows point at tickets; their files in UPLOAD_DIR are left on disk (only the rows are wiped)
+      'attachments',
       'ticket_history',
       'comments',
       'tickets',

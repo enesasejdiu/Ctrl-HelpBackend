@@ -318,3 +318,30 @@ describe('LOCKOUT_MINUTES', () => {
     }
   })
 })
+
+describe('UPLOAD_DIR', () => {
+  test('not set is fine (the default ./uploads), and so is a folder outside anything served', () => {
+    expect(run(prod()).exited).toBe(false)
+    expect(run(prod({ UPLOAD_DIR: '/var/lib/ticketflow/uploads' })).exited).toBe(false)
+    expect(run(dev({ UPLOAD_DIR: './data/uploads' })).exited).toBe(false)
+  })
+
+  test.each(['/var/www/uploads', '../Ctrl-HelpFrontend/public/files', './dist/uploads', '/srv/htdocs/files', 'Static'])(
+    '%s (inside a folder web servers serve statically) is refused everywhere',
+    (dir) => {
+      for (const env of [prod({ UPLOAD_DIR: dir }), dev({ UPLOAD_DIR: dir })]) {
+        const { exited, exitCode, log } = run(env)
+        expect([exited, exitCode]).toEqual([true, 1])
+        expect(log.error.mock.calls[0][0]).toMatch(
+          /UPLOAD_DIR .* folder, which web servers often serve as static files/,
+        )
+      }
+    },
+  )
+
+  test('an empty value is refused with a hint', () => {
+    const { exited, log } = run(dev({ UPLOAD_DIR: '   ' }))
+    expect(exited).toBe(true)
+    expect(log.error.mock.calls[0][0]).toMatch(/UPLOAD_DIR is empty/)
+  })
+})

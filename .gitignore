@@ -4,3 +4,6 @@ node_modules/
 .DS_Store
 backups/
 coverage/
+
+# Attachment files (UPLOAD_DIR); never committed
+uploads/

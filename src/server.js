@@ -5,6 +5,15 @@ require('dotenv').config()
 // Refuses to start (exit 1, with a list of problems) when a setting is missing or, in production, too weak
 const config = require('./config').checkConfig('server')
 
+// The attachments folder must exist and be writable; better to find out now than at the first upload
+const { ensureUploadDir } = require('./attachments')
+try {
+  ensureUploadDir()
+} catch (err) {
+  console.error(`UPLOAD_DIR is not usable: ${err.message}\nFix UPLOAD_DIR in .env (see .env.example) and start again.`)
+  process.exit(1)
+}
+
 const app = require('./app')
 const { startSessionCleanup } = require('./sessionStore')
 
