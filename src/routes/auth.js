@@ -17,6 +17,7 @@ const { newPassword: newPasswordRule } = require('../schemas/common')
 const { SESSION_HOURS, SESSION_COOKIE, setSessionCookies, clearSessionCookies } = require('../session')
 const { createSession, revokeSession, revokeUserSessions } = require('../sessionStore')
 const { recordAudit } = require('../audit')
+const { lockoutMinutes } = require('../lockout')
 const validate = require('../middleware/validate')
 const schemas = require('../schemas/auth')
 
@@ -43,9 +44,9 @@ const AUTH_USER_COLUMNS = `
 const AUTH_USER_FROM = 'FROM users u LEFT JOIN departments d ON d.id = u.department_id'
 const AUTH_USER_SELECT = `SELECT ${AUTH_USER_COLUMNS} ${AUTH_USER_FROM}`
 
-// Lockout: this many wrong passwords in a row lock the account for LOCK_MINUTES (see POST /login below)
+// Lockout: this many wrong passwords in a row lock the account for lockoutMinutes() (15, except in tests; see
+// src/lockout.js and POST /login below)
 const MAX_FAILED_LOGINS = 5
-const LOCK_MINUTES = 15
 
 // The login query also reads the lockout state. lock_seconds_left is computed by the database, with the same clock that
 // set locked_until: NULL = not locked, > 0 = still locked, <= 0 = the lock has run out.
@@ -84,12 +85,13 @@ async function recordWrongPassword(user) {
     'UPDATE users SET failed_login_count = failed_login_count + 1, updated_at = updated_at WHERE id = ?',
     [user.id],
   )
+  const minutes = lockoutMinutes()
   const [locked] = await pool.query(
     `UPDATE users SET locked_until = NOW() + INTERVAL ? MINUTE, updated_at = updated_at
      WHERE id = ? AND failed_login_count >= ? AND locked_until IS NULL`,
-    [LOCK_MINUTES, user.id, MAX_FAILED_LOGINS],
+    [minutes, user.id, MAX_FAILED_LOGINS],
   )
-  return locked.affectedRows > 0 ? LOCK_MINUTES * 60 : null
+  return locked.affectedRows > 0 ? minutes * 60 : null
 }
 
 // The only user shape ever sent to clients; password_hash is deliberately left out
@@ -114,7 +116,7 @@ function publicUser(user) {
 // A user with a temporary password logs in normally; user.must_change_password tells the client to send them to the
 // change-password screen, and requireAuth blocks everything else until they do.
 // Limits: at most 20 requests per IP address per 15 minutes (429 RATE_LIMITED, middleware/rateLimit.js), and 5 wrong
-// passwords in a row lock the account for 15 minutes (423 ACCOUNT_LOCKED, even with the right password). The lock
+// passwords in a row lock the account for 15 minutes (lockoutMinutes(); 423 ACCOUNT_LOCKED, even with the right password). The lock
 // ends by itself, after a successful login, or when an admin or HR resets the password.
 router.post('/login', loginRateLimit, validate(schemas.login), async (req, res) => {
   const { email, password } = req.valid.body

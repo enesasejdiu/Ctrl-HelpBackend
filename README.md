@@ -319,6 +319,10 @@ Two limits protect `POST /api/auth/login` against password guessing:
   account, so the temporary password works at once.
 - **Unknown emails** get the same 401 `Wrong email or password` as a wrong password, every time, and are never
   locked. (Note: a known email can still be told apart after 5 wrong passwords, by the 423.)
+- **Lock length in tests.** The lock always lasts 15 minutes, except with `NODE_ENV=test`, where `LOCKOUT_MINUTES`
+  (a whole number from 1 to 1440) may change it, so end-to-end tests can watch a lock run out. Every message,
+  `retryAfterMinutes` and `Retry-After` follows it (`src/lockout.js`). Anywhere else the server refuses to start with a
+  value other than 15.
 - **Rate limit, per IP address.** At most **20 login requests per 15 minutes** from one address, right or wrong; then
   **429** until the window has passed, with `Retry-After` and `RateLimit` headers:
 
