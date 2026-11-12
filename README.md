@@ -54,23 +54,24 @@ npm run dev          # starts the API with auto-reload
 The API runs on **http://localhost:5050**. Check it with http://localhost:5050/api/health → `{ "status": "ok" }`.
 (Port 5000 is not used because macOS AirPlay occupies it.)
 
-| Script                               | Description                                                                                |
-| ------------------------------------ | ------------------------------------------------------------------------------------------ |
-| `npm start`                          | Start the server                                                                           |
-| `npm run dev`                        | Start with nodemon (auto-reload)                                                           |
-| `npm run db:migrate`                 | Create the database or apply new migrations                                                |
-| `npm run db:seed`                    | Insert the demo data (empty database only)                                                 |
-| `npm run db:rollback`                | Undo the most recent migration (backs up first)                                            |
-| `npm run db:department-report`       | Read-only: the free-text department values migration 005 will turn into departments        |
-| `npm run db:verify-departments`      | Read-only: checks that migration 005 linked every user correctly                           |
-| `npm run db:backup`                  | Back up the database to `backups/`                                                         |
-| `npm run db:sessions:cleanup`        | Delete sessions that ended more than 7 days ago (also runs daily in the server)            |
-| `npm run db:password-tokens:cleanup` | Delete password links used or expired more than 7 days ago (also runs daily in the server) |
-| `npm test`                           | Run all tests once (see [Running tests](#running-tests))                                   |
-| `npm run test:coverage`              | Run the tests with a coverage report                                                       |
-| `npm run lint`                       | Check the code with ESLint (fails on any error or warning)                                 |
-| `npm run format`                     | Format every file with Prettier                                                            |
-| `npm run format:check`               | Check that every file is formatted (what CI runs)                                          |
+| Script                               | Description                                                                                                                             |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm start`                          | Start the server                                                                                                                        |
+| `npm run dev`                        | Start with nodemon (auto-reload)                                                                                                        |
+| `npm run db:migrate`                 | Create the database or apply new migrations                                                                                             |
+| `npm run db:seed`                    | Insert the demo data (empty database only)                                                                                              |
+| `npm run db:rollback`                | Undo the most recent migration (backs up first)                                                                                         |
+| `npm run db:department-report`       | Read-only: the free-text department values migration 005 will turn into departments                                                     |
+| `npm run db:verify-departments`      | Read-only: checks that migration 005 linked every user correctly                                                                        |
+| `npm run db:backup`                  | Back up the database to `backups/`                                                                                                      |
+| `npm run db:sessions:cleanup`        | Delete sessions that ended more than 7 days ago (also runs daily in the server)                                                         |
+| `npm run db:password-tokens:cleanup` | Delete password links used or expired more than 7 days ago (also runs daily in the server)                                              |
+| `npm run job:auto-close`             | Close tickets resolved for `auto_close_days` (default 7) now; `-- --dry-run` only lists them (also runs daily at 03:00 Europe/Budapest) |
+| `npm test`                           | Run all tests once (see [Running tests](#running-tests))                                                                                |
+| `npm run test:coverage`              | Run the tests with a coverage report                                                                                                    |
+| `npm run lint`                       | Check the code with ESLint (fails on any error or warning)                                                                              |
+| `npm run format`                     | Format every file with Prettier                                                                                                         |
+| `npm run format:check`               | Check that every file is formatted (what CI runs)                                                                                       |
 
 ## Updating and migrations
 
@@ -674,9 +675,45 @@ open → assigned → in_progress ⇄ waiting_for_user → resolved → closed
 Moving a ticket back to an unfinished status clears `resolved_at` and `closed_at`, so it no longer counts as resolved
 in the statistics. Moving a closed ticket back to **resolved** clears `closed_at`. The resolution note is kept.
 
-Staff can set any status. Every change to status, priority or assignee is saved in `ticket_history`.
+Staff can set any status. Every change to status, priority or assignee is saved in `ticket_history`. What a status
+change does to `resolved_at` and `closed_at` is decided in one place, `src/ticketStatus.js`, which every route and job
+uses. A ticket left **resolved** for `auto_close_days` (default 7) is closed by the daily job; see [Auto-close](#auto-close).
 A ticket is **overdue** when it is not resolved/closed and is older than its priority's target time
 (Low 120h, Medium 72h, High 24h, Critical 4h).
+
+## Auto-close
+
+Every day at **03:00 Europe/Budapest** the API closes tickets that have been **resolved** for `auto_close_days`
+(default **7**; `0` switches it off): `status = 'resolved' AND resolved_at <= now − auto_close_days × 24 h`.
+`resolved_at` is set when a ticket is resolved and cleared when it leaves resolved (reopened, back to in progress, ...),
+so a reopened ticket counts its days again from its next resolve.
+
+Each ticket it closes gets `status = closed` and `closed_at = now`, a history row by the system (`changed_by` NULL,
+shown as "System" on the ticket page) and an audit entry `ticket_auto_closed` (no actor, `ticket_id` set). **No email is
+sent** for automatic closes.
+
+**How it runs** (`src/jobs/autoClose.js`):
+
+- in batches of 500; every `UPDATE` repeats the condition, so a ticket reopened after its batch was picked isn't closed
+- one run at a time: a database lock (`GET_LOCK`, per database, like the migration lock); a run that finds it taken
+  logs that and does nothing, so several API servers or a manual run during the nightly one are safe
+- idempotent: a second run right after closes nothing
+- a failing batch is logged and the job goes on with the next; it never stops the API. It ends with one line:
+  `[auto-close] Done: checked N, closed N, failed N, … ms`
+
+**By hand:** `npm run job:auto-close` runs it once now. `npm run job:auto-close -- --dry-run` only lists the ticket ids
+and the count that would be closed, and changes nothing. Use the dry run first on a real database.
+
+**The schedule** (`src/jobs/schedule.js`, with [croner](https://github.com/hexagon/croner)) runs inside the API process:
+
+| Setting               | Default           | Notes                                                  |
+| --------------------- | ----------------- | ------------------------------------------------------ |
+| `AUTO_CLOSE_CRON`     | `0 3 * * *`       | A cron expression: minute 0 of hour 3, every day       |
+| `AUTO_CLOSE_TIMEZONE` | `Europe/Budapest` | An IANA time zone; the time is local time in that zone |
+
+Because the time zone is explicit, 03:00 means 02:00 UTC in winter (CET) and 01:00 UTC in summer (CEST), and the job
+runs exactly once on the days the clocks change. An invalid setting is logged and the job isn't scheduled; the API keeps
+running. `auto_close_days` is changed with `PATCH /api/settings { auto_close_days }` (admin, a whole number 0–365).
 
 ## Attachments
 
@@ -949,11 +986,11 @@ filters by them; a new-ticket form should offer only the active ones.
 
 ### Company name
 
-| Request                    | Who    | What it does                                                                         |
-| -------------------------- | ------ | ------------------------------------------------------------------------------------ |
-| `GET /api/settings/public` | anyone | `{ company_name, email_enabled }` for the sign-in page and the app header (no login) |
-| `GET /api/settings`        | admin  | `{ company_name }`                                                                   |
-| `PATCH /api/settings`      | admin  | `{ company_name }` (trimmed, 1–100 characters) → the settings                        |
+| Request                    | Who    | What it does                                                                                                                                      |
+| -------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/settings/public` | anyone | `{ company_name, email_enabled }` for the sign-in page and the app header (no login)                                                              |
+| `GET /api/settings`        | admin  | `{ company_name, auto_close_days }`                                                                                                               |
+| `PATCH /api/settings`      | admin  | `{ company_name?, auto_close_days? }` (at least one; company_name trimmed, 1–100 characters; auto_close_days a whole number 0–365) → the settings |
 
 `company_name` starts as "TicketFlow". Emails use it in the subject (`[Acme #12] New ticket: ...`), the header and
 the texts. The sender address stays `MAIL_FROM` from `.env`.
@@ -1041,8 +1078,8 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | GET    | `/api/audit`                      | admin        | The audit log, newest first, filtered and paged → `{ entries, total, page, pageSize }`. See [Audit log](#audit-log)                                                                                                                                                                                                                                                                                                                                                                                                           |
 | GET    | `/api/audit/actions`              | admin        | Every audit action name (for the filter dropdown). See [Audit log](#audit-log)                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | GET    | `/api/settings/public`            | anyone       | `{ company_name, email_enabled }` for the sign-in page. See [Admin settings](#admin-settings)                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| GET    | `/api/settings`                   | admin        | `{ company_name }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| PATCH  | `/api/settings`                   | admin        | `{ company_name }` → the settings                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| GET    | `/api/settings`                   | admin        | `{ company_name, auto_close_days }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| PATCH  | `/api/settings`                   | admin        | `{ company_name?, auto_close_days? }` (at least one) → the settings. See [Auto-close](#auto-close)                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | GET    | `/api/categories`                 | logged in    | Active categories (admins: `?include_inactive=1`, with `ticket_count`)                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | POST   | `/api/categories`                 | admin        | `{ name, description?, sort_order? }` → 201 (409 `NAME_TAKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | PATCH  | `/api/categories/:id`             | admin        | `{ name?, description?, sort_order?, is_active? }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -1082,6 +1119,10 @@ src/
   db.js                   MySQL connection pool
   overdue.js              The shared "is this ticket overdue?" SQL rule
   temporaryPassword.js    Random temporary passwords for password resets
+  ticketStatus.js         What a status change does to resolved_at and closed_at (every route and job uses it)
+  jobs/
+    autoClose.js          Closes tickets resolved for auto_close_days (npm run job:auto-close)
+    schedule.js           When the daily jobs run (croner, 03:00 Europe/Budapest)
   passwordTokens.js       One-time password links (setup and reset): tokens (hashed), 48-hour expiry, one use
   mail/
     mailer.js             The only code that uses nodemailer: sendMailSafe(), isEmailConfigured(), SMTP / log / test modes
@@ -1140,10 +1181,10 @@ TASKS.md                  Development task list
 | `priorities`        | Priorities: `name`, `level` (the rank, unique; 1 = least urgent), `target_hours`, `is_default` (exactly one), `is_active` (migration 015)                                                                                                                                                                       |
 | `tickets`           | Tickets: requester, assignee, category, priority, status, resolution note, timestamps                                                                                                                                                                                                                           |
 | `comments`          | Comments on tickets; `is_internal` marks staff-only notes                                                                                                                                                                                                                                                       |
-| `ticket_history`    | Audit trail: who changed which field (status, priority, assignee) from what to what, and when                                                                                                                                                                                                                   |
+| `ticket_history`    | Audit trail: who changed which field (status, priority, assignee) from what to what, and when; `changed_by` NULL = the system (the auto-close job, migration 016)                                                                                                                                               |
 | `sessions`          | One row per login (migration 008): `user_id`, `created_at`, `expires_at`, `revoked_at`, `last_seen_at`, `ip`, `user_agent`. The token's `sid` is the row id. Rows are deleted 7 days after they end                                                                                                             |
-| `audit_log`         | Security events (migration 009): `created_at`, `actor_id`, `action`, `target_user_id`, `details` (JSON), `ip`. Never a secret. See [Audit log](#audit-log)                                                                                                                                                      |
+| `audit_log`         | Security events (migration 009): `created_at`, `actor_id`, `action`, `target_user_id`, `details` (JSON), `ip`. Never a secret. See [Audit log](#audit-log); `ticket_id` (migration 016) for entries about a ticket, e.g. `ticket_auto_closed`                                                                   |
 | `attachments`       | Files on tickets (migration 012): `ticket_id` (deleted with the ticket), `uploaded_by`, `original_name`, `stored_name` (the random file name in `UPLOAD_DIR`), `mime_type` (from the content), `size_bytes`, `created_at`. See [Attachments](#attachments)                                                      |
 | `password_tokens`   | One-time password links (migrations 010, 011): the SHA-256 hash of each token (never the token), `purpose` (`setup` / `reset`), `expires_at` (48 hours), `used_at`. See [How passwords are delivered](#how-passwords-are-delivered)                                                                             |
-| `settings`          | Admin settings, one row per key: `company_name` (migration 015)                                                                                                                                                                                                                                                 |
+| `settings`          | Admin settings, one row per key: `company_name` (migration 015), `auto_close_days` (016)                                                                                                                                                                                                                        |
 | `schema_migrations` | Which migrations this database has run, and when                                                                                                                                                                                                                                                                |

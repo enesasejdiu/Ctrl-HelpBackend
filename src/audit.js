@@ -22,6 +22,8 @@ const AUDIT_ACTIONS = [
   'user_deactivated',
   'attachment_uploaded', // a file was added to a ticket. details: { ticket_id, file_name, mime_type, size_bytes }
   'attachment_deleted', // details: { ticket_id, file_name, size_bytes } (never the file's content)
+  // The daily job closed a ticket resolved for auto_close_days. actor null (the system); ticket_id set; details: { days }
+  'ticket_auto_closed',
 ]
 
 // Keys that could carry a secret; never stored, whatever a caller passes
@@ -40,17 +42,15 @@ function withoutSecrets(details) {
 // Records one event. db: a transaction's connection, so the entry is saved together with the change it describes.
 async function recordAudit(
   action,
-  { actorId = null, targetUserId = null, details = null, req = null, db = pool } = {},
+  { actorId = null, targetUserId = null, ticketId = null, details = null, req = null, db = pool } = {},
 ) {
   if (!AUDIT_ACTIONS.includes(action)) throw new Error(`Unknown audit action: ${action}`)
   const clean = withoutSecrets(details)
-  await db.query('INSERT INTO audit_log (actor_id, action, target_user_id, details, ip) VALUES (?, ?, ?, ?, ?)', [
-    actorId,
-    action,
-    targetUserId,
-    clean === null ? null : JSON.stringify(clean),
-    req?.ip || null,
-  ])
+  // ticket_id (migration 016): the ticket an entry is about, e.g. ticket_auto_closed
+  await db.query(
+    'INSERT INTO audit_log (actor_id, action, target_user_id, ticket_id, details, ip) VALUES (?, ?, ?, ?, ?, ?)',
+    [actorId, action, targetUserId, ticketId, clean === null ? null : JSON.stringify(clean), req?.ip || null],
+  )
 }
 
 // MySQL returns a JSON column already parsed; MariaDB (JSON = LONGTEXT) returns the text. Same result on both.
@@ -90,7 +90,7 @@ async function listAudit({ user, action, from, to, page, pageSize }, db = pool) 
   const [[{ total }]] = await db.query(`SELECT COUNT(*) AS total FROM audit_log a ${whereSql}`, params)
   const [rows] = await db.query(
     `SELECT a.id, a.created_at, a.action, a.details, a.ip,
-            a.actor_id, actor.name AS actor_name, a.target_user_id, target.name AS target_name
+            a.actor_id, actor.name AS actor_name, a.target_user_id, target.name AS target_name, a.ticket_id
      FROM audit_log a
      LEFT JOIN users actor ON actor.id = a.actor_id
      LEFT JOIN users target ON target.id = a.target_user_id

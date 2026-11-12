@@ -13,6 +13,7 @@ const { OVERDUE_SQL } = require('../overdue')
 const schemas = require('../schemas/tickets')
 const { addComment } = require('../schemas/comments')
 const notify = require('../mail/notifications')
+const { statusSets } = require('../ticketStatus')
 const settings = require('../settings')
 const { canSeeTicket, listAttachments } = require('../attachments')
 const { receiveFiles, uploadAttachments, listTicketAttachments } = require('./attachments')
@@ -161,8 +162,8 @@ router.get('/:id', validate(schemas.getTicket), async (req, res) => {
     [ticket.id],
   )
   const [history] = await pool.query(
-    `SELECT h.*, u.name AS changed_by_name
-     FROM ticket_history h JOIN users u ON u.id = h.changed_by
+    `SELECT h.*, COALESCE(u.name, 'System') AS changed_by_name
+     FROM ticket_history h LEFT JOIN users u ON u.id = h.changed_by
      WHERE h.ticket_id = ?
      ORDER BY h.changed_at, h.id`,
     [ticket.id],
@@ -232,8 +233,10 @@ router.patch('/:id/status', validate(schemas.updateStatus), async (req, res) => 
     }
   }
 
-  const sets = ['status = ?']
-  const params = [status]
+  // The status and its timestamps (resolved_at, closed_at) come from src/ticketStatus.js, like every status change.
+  // Going back to an unfinished status keeps the resolution text, to show as the previous resolution and prefill the
+  // next one.
+  const { sets, params } = statusSets(status)
 
   if (status === 'resolved') {
     // A new note replaces the old one; otherwise keep the note from an earlier resolve
@@ -241,18 +244,8 @@ router.patch('/:id/status', validate(schemas.updateStatus), async (req, res) => 
     if (!resolution) {
       throw new HttpError(400, 'Please write a resolution note')
     }
-    sets.push('resolution = ?', 'resolved_at = NOW()')
+    sets.push('resolution = ?')
     params.push(resolution)
-  } else if (status === 'closed') {
-    // resolved_at stays: closed tickets still count as resolved in the statistics
-    sets.push('closed_at = NOW()')
-  } else {
-    // Back to an unfinished status: the statistics treat resolved_at as "this ticket is resolved".
-    // The resolution text stays, to show as the previous resolution and prefill the next one.
-    sets.push('resolved_at = NULL')
-  }
-  if (status !== 'closed') {
-    sets.push('closed_at = NULL')
   }
 
   await pool.query(`UPDATE tickets SET ${sets.join(', ')} WHERE id = ?`, [...params, ticket.id])
@@ -318,7 +311,13 @@ router.patch('/:id/assign', requireRole('agent', 'admin'), validate(schemas.assi
     newStatus = 'open'
   }
 
-  await pool.query('UPDATE tickets SET assigned_to = ?, status = ? WHERE id = ?', [assigneeId, newStatus, ticket.id])
+  // The status (and its timestamps) only changes when it moves; src/ticketStatus.js knows what that means
+  const change = newStatus !== ticket.status ? statusSets(newStatus) : { sets: [], params: [] }
+  await pool.query(`UPDATE tickets SET ${['assigned_to = ?', ...change.sets].join(', ')} WHERE id = ?`, [
+    assigneeId,
+    ...change.params,
+    ticket.id,
+  ])
   if (assigneeId !== ticket.assigned_to) {
     await logHistory(ticket.id, req.user.id, 'assigned_to', ticket.assignee_name, assigneeName)
     // The new assignee hears about it (not when they took the ticket themselves; notifications skip the actor)

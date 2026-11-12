@@ -22,6 +22,7 @@ const EMAIL = 'email'
 const TEMPORARY_PASSWORD = 'temporary_password'
 const { revokeUserSessions } = require('../sessionStore')
 const { recordAudit } = require('../audit')
+const { statusSets } = require('../ticketStatus')
 
 const router = express.Router()
 
@@ -428,7 +429,11 @@ async function editUser(req, res) {
       for (const ticket of tickets) {
         // Same rule as unassigning on the ticket page: "assigned" goes back to "open", other statuses stay
         const newStatus = ticket.status === 'assigned' ? 'open' : ticket.status
-        await conn.query('UPDATE tickets SET assigned_to = NULL, status = ? WHERE id = ?', [newStatus, ticket.id])
+        const change = newStatus !== ticket.status ? statusSets(newStatus) : { sets: [], params: [] }
+        await conn.query(`UPDATE tickets SET ${['assigned_to = NULL', ...change.sets].join(', ')} WHERE id = ?`, [
+          ...change.params,
+          ticket.id,
+        ])
         await conn.query(
           'INSERT INTO ticket_history (ticket_id, changed_by, field_changed, old_value, new_value) VALUES (?, ?, ?, ?, ?)',
           [ticket.id, req.user.id, 'assigned_to', user.name, null],

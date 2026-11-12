@@ -128,3 +128,4 @@ requireAuth checks the current role and active status in the database on every r
 - [x] One-time password links (48h) for new users and Admin/HR resets when email is set up; temporary passwords otherwise
 - [x] Self-service "Forgot password" with the same one-time reset links; email retries; daily cleanup of old links
 - [x] Admin settings API: categories, priorities (rank, target hours, default) and the company name; emails use the company name
+- [x] Daily auto-close of tickets resolved for auto_close_days (default 7); npm run job:auto-close [--dry-run]
