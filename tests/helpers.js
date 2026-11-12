@@ -45,7 +45,7 @@ async function resetData() {
 }
 
 // Puts the standard categories and priorities back (with ids 1, 2, … in list order, so tests can send category_id: 1)
-// and the built-in company name, and clears the settings cache. Admins can change all of these through the API, and
+// and the built-in company name and auto_close_days (7), and clears the settings cache. Admins can change all of these through the API, and
 // resetData() doesn't empty them, so without this one test file's changes would leak into the next (same database):
 // tests/auth-enforcement.test.js calls every route as an admin, and its DELETE /api/categories/1 and
 // DELETE /api/priorities/1 really deleted Hardware and Low. Empties tickets (and what hangs off them) too, since every
@@ -78,6 +78,7 @@ async function restoreReferenceData() {
     connection.release()
   }
   await pool.query("UPDATE settings SET setting_value = 'TicketFlow' WHERE setting_key = 'company_name'")
+  await pool.query("UPDATE settings SET setting_value = '7' WHERE setting_key = 'auto_close_days'")
   settings.clearCache()
 }
 

@@ -86,10 +86,21 @@ const reorderPriorities = {
   }),
 }
 
+// PATCH /api/settings: either or both; at least one
 const updateSettings = {
-  body: z.strictObject({
-    company_name: requiredText('Company name', 100),
-  }),
+  body: z
+    .strictObject({
+      company_name: requiredText('Company name', 100).optional(),
+      auto_close_days: z
+        .number({ error: 'auto_close_days must be a whole number from 0 to 365' })
+        .int('auto_close_days must be a whole number from 0 to 365')
+        .min(0, 'auto_close_days must be a whole number from 0 to 365')
+        .max(365, 'auto_close_days must be a whole number from 0 to 365')
+        .optional(),
+    })
+    .refine((body) => body.company_name !== undefined || body.auto_close_days !== undefined, {
+      error: 'Send company_name or auto_close_days',
+    }),
 }
 
 module.exports = {

@@ -1,5 +1,5 @@
 // Admin settings read by the rest of the app: categories, priorities (rank = priorities.level, target hours, the
-// default) and the company name (migration 015). routes/settings.js changes them; everything else reads them here.
+// default), the company name (migration 015) and auto_close_days (migration 016: the auto-close job). routes/settings.js changes them; everything else reads them here.
 //
 // Cache: these are read on almost every request (dropdowns, new tickets, emails) and change rarely, so each list is
 // kept in memory after its first read and dropped by clearCache() after every write. The cache lives in this
@@ -8,6 +8,9 @@
 const pool = require('./db')
 
 const DEFAULT_COMPANY_NAME = 'TicketFlow'
+// Days a ticket stays resolved before the daily job closes it; 0 switches the job off
+const DEFAULT_AUTO_CLOSE_DAYS = 7
+const MAX_AUTO_CLOSE_DAYS = 365
 
 let cache = {}
 
@@ -80,6 +83,19 @@ function companySettings() {
   })
 }
 
+// auto_close_days, read straight from the database (not the cache): the job runs once a day, and another server's
+// change must count. A missing or unreadable value means the default.
+async function autoCloseDays(db = pool) {
+  const [[row]] = await db.query("SELECT setting_value FROM settings WHERE setting_key = 'auto_close_days'")
+  const days = Number(row?.setting_value)
+  return Number.isInteger(days) && days >= 0 && days <= MAX_AUTO_CLOSE_DAYS ? days : DEFAULT_AUTO_CLOSE_DAYS
+}
+
+// What GET /api/settings shows admins: the company name and auto_close_days
+async function adminSettings() {
+  return { ...(await companySettings()), auto_close_days: await autoCloseDays() }
+}
+
 async function companyName() {
   return (await companySettings()).company_name
 }
@@ -107,6 +123,10 @@ module.exports = {
   allCategories,
   allPriorities,
   companySettings,
+  adminSettings,
+  autoCloseDays,
+  DEFAULT_AUTO_CLOSE_DAYS,
+  MAX_AUTO_CLOSE_DAYS,
   companyName,
   usableCategory,
   usablePriority,

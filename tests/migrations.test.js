@@ -137,8 +137,8 @@ describe('schema', () => {
 })
 
 describe('up → down → up', () => {
-  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 015 down to 003
-  test('rolling back 015, 012, 011, 010, 009, 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
+  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 016 down to 003
+  test('rolling back 016, 015, 012, 011, 010, 009, 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
     const { db, dbName } = await newDatabase()
     const schema = async () => {
       const tables = {}
@@ -154,7 +154,7 @@ describe('up → down → up', () => {
       (await db.query('SELECT filename FROM schema_migrations ORDER BY filename'))[0].map((r) => r.filename)
 
     const before = await schema()
-    for (let i = 0; i < 11; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
+    for (let i = 0; i < 12; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
     expect(await applied()).toEqual(['001_initial.sql', '002_hr_role_and_password_change.sql'])
     const [departments] = await db.query("SHOW TABLES LIKE 'departments'")
     expect(departments).toHaveLength(0)
@@ -165,7 +165,7 @@ describe('up → down → up', () => {
 
     await quietly(() => migrate({ dbName, backupFirst: false }))
     expect(await schema()).toEqual(before)
-    expect((await applied()).at(-1)).toBe('015_settings.sql')
+    expect((await applied()).at(-1)).toBe('016_auto_close.sql')
   })
 
   test('011 keeps the links issued under 010 as setup links; rolling it back drops only reset links', async () => {
@@ -190,6 +190,46 @@ describe('up → down → up', () => {
     await quietly(() => rollback({ dbName, backupFirst: false }))
     const [left] = await db.query('SELECT token_hash FROM password_setup_tokens WHERE user_id = ?', [userId])
     expect(left.map((r) => r.token_hash)).toEqual(['b'.repeat(64)])
+  })
+
+  test('016 backfills a resolved ticket without resolved_at from its history, else the migration time, never updated_at', async () => {
+    const { db, dbName } = await newDatabase('015')
+    const [{ insertId: userId }] = await db.query(
+      "INSERT INTO users (name, email, password_hash) VALUES ('T', 't.016@test.local', 'x')",
+    )
+    const [[{ c }]] = await db.query('SELECT MIN(id) AS c FROM categories')
+    const [[{ p }]] = await db.query('SELECT MIN(id) AS p FROM priorities')
+    const longAgo = '2026-01-10 09:30:00'
+    const insertTicket = async (title, status, resolvedAt) => {
+      const [{ insertId }] = await db.query(
+        `INSERT INTO tickets (title, description, requester_id, category_id, priority_id, status, resolved_at, updated_at)
+         VALUES (?, 'd', ?, ?, ?, ?, ?, ?)`,
+        [title, userId, c, p, status, resolvedAt, longAgo],
+      )
+      return insertId
+    }
+    const withHistory = await insertTicket('history', 'resolved', null)
+    const without = await insertTicket('no history', 'resolved', null)
+    const alreadySet = await insertTicket('set', 'resolved', '2026-03-01 08:00:00')
+    const notResolved = await insertTicket('open', 'open', null)
+    await db.query(
+      "INSERT INTO ticket_history (ticket_id, changed_by, field_changed, old_value, new_value, changed_at) VALUES (?, ?, 'status', 'in_progress', 'resolved', '2026-02-02 10:00:00')",
+      [withHistory, userId],
+    )
+
+    const before = new Date(Date.now() - 2000)
+    await quietly(() => migrate({ dbName, backupFirst: false }))
+    const resolvedAt = async (id) =>
+      (await db.query('SELECT resolved_at FROM tickets WHERE id = ?', [id]))[0][0].resolved_at
+    const fmt = (d) => d && d.toISOString()
+
+    expect(fmt(await resolvedAt(withHistory))).toBe(fmt(new Date('2026-02-02 10:00:00')))
+    expect((await resolvedAt(without)).getTime()).toBeGreaterThanOrEqual(before.getTime()) // the migration time
+    expect(fmt(await resolvedAt(without))).not.toBe(fmt(new Date(longAgo))) // never updated_at
+    expect(fmt(await resolvedAt(alreadySet))).toBe(fmt(new Date('2026-03-01 08:00:00'))) // left as it was
+    expect(await resolvedAt(notResolved)).toBeNull()
+    const [[setting]] = await db.query("SELECT setting_value FROM settings WHERE setting_key = 'auto_close_days'")
+    expect(setting.setting_value).toBe('7')
   })
 
   test('a migration without a rollback file is refused, not half-undone', async () => {
@@ -392,9 +432,11 @@ describe('the migration lock (one per database)', () => {
 describe('migration 015 (admin settings)', () => {
   const reference = require('../scripts/reference-data')
   const rows = async (db, sql) => (await db.query(sql))[0]
+  // These look at 015 on its own, so their databases stop there (016 adds a setting of its own)
+  const newDatabase015 = () => newDatabase('015')
 
   test('a fresh database gets the standard categories and priorities, Medium as the default, and the company name', async () => {
-    const { db } = await newDatabase()
+    const { db } = await newDatabase015()
     const categories = await rows(
       db,
       'SELECT name, description, sort_order, is_active FROM categories ORDER BY sort_order',
@@ -474,7 +516,7 @@ describe('migration 015 (admin settings)', () => {
   })
 
   test('at most one default and unique ranks, enforced by the database', async () => {
-    const { db } = await newDatabase()
+    const { db } = await newDatabase015()
     await expect(db.query("UPDATE priorities SET is_default = TRUE WHERE name = 'High'")).rejects.toMatchObject({
       code: 'ER_DUP_ENTRY',
     })
@@ -485,7 +527,7 @@ describe('migration 015 (admin settings)', () => {
 
   test('rolling it back keeps every category, priority and ticket link; migrating again works', async () => {
     const { db, dbName, links, linksBefore } = await before015()
-    await quietly(() => migrate({ dbName, backupFirst: false }))
+    await quietly(() => migrate({ dbName, backupFirst: false, until: '015' }))
     await quietly(() => rollback({ dbName, backupFirst: false }))
     expect(await links()).toEqual(linksBefore)
     expect(await rows(db, "SHOW TABLES LIKE 'settings'")).toHaveLength(0)
