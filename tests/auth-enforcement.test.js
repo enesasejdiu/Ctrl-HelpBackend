@@ -32,6 +32,8 @@ const PUBLIC = [
   'POST /api/auth/forgot-password',
   // The company name and whether email is set up, for the sign-in page (nothing private)
   'GET /api/settings/public',
+  // What the sign-in page may offer (email_enabled)
+  'GET /api/auth/config',
 ]
 // What a user with a temporary password may still do. Pinned here so widening the list is a deliberate change.
 const ALLOWED = ['GET /api/auth/me', 'POST /api/auth/change-password']

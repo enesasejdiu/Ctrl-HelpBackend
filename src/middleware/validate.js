@@ -20,7 +20,8 @@ function toErrors(part, issues) {
   })
 }
 
-function validate(schemas) {
+// options.status: the status for a failed check (400 unless a route needs another, e.g. 422 for forgot-password)
+function validate(schemas, { status = 400 } = {}) {
   return (req, res, next) => {
     const valid = {}
     const errors = []
@@ -34,7 +35,7 @@ function validate(schemas) {
     }
 
     if (errors.length > 0) {
-      return res.status(400).json({ message: errors[0].message, errors })
+      return res.status(status).json({ message: errors[0].message, errors })
     }
     req.valid = { ...req.valid, ...valid }
     next()

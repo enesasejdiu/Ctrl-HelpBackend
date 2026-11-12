@@ -19,14 +19,20 @@ module.exports = {
     button: 'Set your password',
     reason: 'an account was created for you in {company}',
   },
-  // "Forgot password" on the sign-in page: the current password keeps working until a new one is chosen
+  // "Forgot password" on the sign-in page (purpose 'forgot': 1 hour; the current password keeps working)
   passwordForgot: {
     subject: 'Reset your {company} password',
-    intro:
-      'Someone asked to reset the password of your {company} account ({email}). If it was you, choose a new password below. Your current password keeps working until you do.',
+    intro: 'We received a request to reset the password of your {company} account ({email}).',
     button: 'Choose a new password',
-    ignore: "If you didn't ask for this, you can ignore this email: your password stays as it is.",
+    expiry: 'This link expires in 1 hour and can be used once.',
+    ignore: "If you didn't request this, you can ignore this email. Your password hasn't changed.",
     reason: 'a password reset was requested for your {company} account',
+  },
+  // After a "Forgot password" link set a new password (no link in it)
+  passwordChanged: {
+    subject: 'Your {company} password was changed',
+    body: "Your {company} password was changed. If this wasn't you, contact your administrator.",
+    reason: 'the password of your {company} account was changed',
   },
   passwordReset: {
     subject: 'Reset your {company} password',

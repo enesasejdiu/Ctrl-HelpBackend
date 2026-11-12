@@ -139,6 +139,9 @@ async function migrate({ dbName = process.env.DB_NAME, backupFirst = true, until
     }
     console.log(`Database "${dbName}" is up to date (migrations applied: ${applied.length + pending.length}).`)
   } finally {
+    // Release the lock explicitly: closing the connection releases it too, but the server does that a moment later,
+    // so the next migrate or rollback (e.g. several in a row) could still find it taken and give up
+    await connection.query('SELECT RELEASE_LOCK(?)', [migrationLockName(dbName)]).catch(() => {})
     await connection.end()
   }
 }
