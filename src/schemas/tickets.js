@@ -1,6 +1,7 @@
 // Request schemas for /api/tickets, except comments (see comments.js).
 const { z } = require('zod')
 const { id, status, requiredText, optionalText, ticketParams } = require('./common')
+const { pagingSchema, TICKET_SORTS } = require('../pagination')
 
 // Whether a category, priority or assignee really exists needs the database, so the routes check that
 
@@ -17,6 +18,8 @@ const listTickets = {
     assigned: filter(z.enum(['me', 'unassigned'], { error: 'Assigned must be one of: me, unassigned' })),
     q: filter(z.string({ error: 'Search must be text' }).trim()),
     overdue: filter(z.literal('1', { error: 'Overdue must be 1 or left out' })),
+    // page, pageSize, sort, order (src/pagination.js)
+    ...pagingSchema(TICKET_SORTS),
   }),
 }
 

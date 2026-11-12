@@ -1,6 +1,12 @@
 // Request schemas for /api/users.
 const { z } = require('zod')
 const { id, role, name, email, optionalText } = require('./common')
+const { pagingSchema, USER_SORTS } = require('../pagination')
+
+// GET /api/users: paging and sorting only (src/pagination.js); the list has no filters
+const listUsers = {
+  query: z.object(pagingSchema(USER_SORTS)),
+}
 
 // Strict, so a password or must_change_password in the body is refused: the server always makes the password.
 // role is optional here because HR may leave it out (it then means employee); the route requires it from admins.
@@ -55,4 +61,4 @@ const updateUser = {
     }),
 }
 
-module.exports = { createUser, resetPassword, resetPasswordBody, resendLink, updateUserParams, updateUser }
+module.exports = { listUsers, createUser, resetPassword, resetPasswordBody, resendLink, updateUserParams, updateUser }

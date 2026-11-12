@@ -17,6 +17,7 @@ const { makeTemporaryPassword } = require('../temporaryPassword')
 const { issueToken, latestPurpose, unusablePasswordHash } = require('../passwordTokens')
 const { isEmailConfigured } = require('../mail/mailer')
 const notify = require('../mail/notifications')
+const { USER_SORTS, USER_PAGED_DEFAULT, orderBySql, listRows } = require('../pagination')
 
 const EMAIL = 'email'
 const TEMPORARY_PASSWORD = 'temporary_password'
@@ -28,11 +29,13 @@ const router = express.Router()
 
 // Columns safe to send to the client (password_hash is never selected), with the department's name joined in.
 // The old free-text users.department column is no longer read or written (see migrations/005).
-const USER_SELECT = `
+const USER_COLUMNS = `
   SELECT u.id, u.name, u.email, u.role, u.department_id, d.name AS department_name, u.job_title, u.is_active,
-         u.must_change_password, u.last_login_at, u.created_at, u.updated_at
+         u.must_change_password, u.last_login_at, u.created_at, u.updated_at`
+const USER_FROM = `
   FROM users u
   LEFT JOIN departments d ON d.id = u.department_id`
+const USER_SELECT = `${USER_COLUMNS} ${USER_FROM}`
 
 async function findUser(id) {
   const [rows] = await pool.query(`${USER_SELECT} WHERE u.id = ?`, [id])
@@ -59,10 +62,27 @@ router.get('/agents', requireRole('agent', 'admin'), async (req, res) => {
   res.json(rows)
 })
 
-// GET /api/users → every account, newest first (admin and HR)
-router.get('/', requireRole('admin', 'hr'), async (req, res) => {
-  const [rows] = await pool.query(`${USER_SELECT} ORDER BY u.created_at DESC, u.id DESC`)
-  res.json(rows.map(formatUser))
+// GET /api/users?page=&pageSize=&sort=&order= (admin and HR) → every account, newest first, as a plain array (as
+// before); with page: { items, total, page, pageSize }, by name unless sorted. sort: name, email, role, department,
+// created_at, last_login_at
+// (src/pagination.js)
+router.get('/', requireRole('admin', 'hr'), validate(schemas.listUsers), async (req, res) => {
+  const orderSql = orderBySql(USER_SORTS, req.valid.query, {
+    defaultSql: 'u.created_at DESC, u.id DESC',
+    pagedSort: USER_PAGED_DEFAULT,
+    idColumn: 'u.id',
+  })
+  res.json(
+    await listRows(pool, {
+      selectSql: USER_COLUMNS,
+      fromSql: USER_FROM,
+      whereSql: '',
+      params: [],
+      orderSql,
+      query: req.valid.query,
+      format: formatUser,
+    }),
+  )
 })
 
 // POST /api/users { name, email, role, department_id?, job_title? } (admin and HR)

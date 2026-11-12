@@ -10,6 +10,7 @@ const { HttpError } = require('../middleware/errors')
 const { requireAuth, requireRole, isStaff } = require('../middleware/auth')
 const validate = require('../middleware/validate')
 const { OVERDUE_SQL } = require('../overdue')
+const { TICKET_SORTS, TICKET_PAGED_DEFAULT, orderBySql, listRows } = require('../pagination')
 const schemas = require('../schemas/tickets')
 const { addComment } = require('../schemas/comments')
 const notify = require('../mail/notifications')
@@ -20,8 +21,9 @@ const { receiveFiles, uploadAttachments, listTicketAttachments } = require('./at
 
 const router = express.Router()
 
-// Base query for a ticket with all its display names; append WHERE / ORDER BY as needed
-const TICKET_SELECT = `
+// Base query for a ticket with all its display names; append WHERE / ORDER BY as needed. The list's count query
+// (src/pagination.js) uses TICKET_FROM with the same WHERE, so it counts exactly the rows the list returns.
+const TICKET_COLUMNS = `
   SELECT t.*,
     requester.name AS requester_name,
     assignee.name AS assignee_name,
@@ -29,12 +31,14 @@ const TICKET_SELECT = `
     p.name AS priority_name,
     p.level AS priority_level,
     p.target_hours,
-    ${OVERDUE_SQL} AS is_overdue
+    ${OVERDUE_SQL} AS is_overdue`
+const TICKET_FROM = `
   FROM tickets t
   JOIN users requester ON requester.id = t.requester_id
   LEFT JOIN users assignee ON assignee.id = t.assigned_to
   JOIN categories c ON c.id = t.category_id
   JOIN priorities p ON p.id = t.priority_id`
+const TICKET_SELECT = `${TICKET_COLUMNS} ${TICKET_FROM}`
 
 // MySQL returns booleans as 0/1; send real true/false to the client
 function formatTicket(row) {
@@ -64,7 +68,10 @@ async function loadTicket(id, user) {
 
 router.use(requireAuth)
 
-// GET /api/tickets?status=&priority=&category=&assigned=me|unassigned&q=&overdue=1
+// GET /api/tickets?status=&priority=&category=&assigned=me|unassigned&q=&overdue=1&page=&pageSize=&sort=&order=
+// Without page: every matching ticket as a plain array (as before). With page: { items, total, page, pageSize },
+// newest first unless sorted.
+// sort: created_at, updated_at, priority, status, title (src/pagination.js)
 router.get('/', validate(schemas.listTickets), async (req, res) => {
   const { status, priority, category, assigned, q, overdue } = req.valid.query
 
@@ -103,12 +110,23 @@ router.get('/', validate(schemas.listTickets), async (req, res) => {
   }
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
-  // t.id breaks ties between tickets created in the same second
-  const [rows] = await pool.query(
-    `${TICKET_SELECT} ${whereSql} ORDER BY p.level DESC, t.created_at DESC, t.id DESC`,
-    params,
+  // Without ?sort=: most urgent first, then newest (t.id breaks ties between tickets created in the same second)
+  const orderSql = orderBySql(TICKET_SORTS, req.valid.query, {
+    defaultSql: 'p.level DESC, t.created_at DESC, t.id DESC',
+    pagedSort: TICKET_PAGED_DEFAULT,
+    idColumn: 't.id',
+  })
+  res.json(
+    await listRows(pool, {
+      selectSql: TICKET_COLUMNS,
+      fromSql: TICKET_FROM,
+      whereSql,
+      params,
+      orderSql,
+      query: req.valid.query,
+      format: formatTicket,
+    }),
   )
-  res.json(rows.map(formatTicket))
 })
 
 // An archived category or priority can't be given to a ticket (old tickets that have one keep it)
