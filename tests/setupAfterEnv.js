@@ -7,6 +7,12 @@ const pool = require('../src/db')
 const notifications = require('../src/mail/notifications')
 const { getMailer, resetMailer } = require('../src/mail/mailer')
 
+// Before any test file creates data: the pool must really be on the throwaway ticketflow_test_* database, on a local
+// or CI server (tests/support/guard.js). Otherwise the whole file stops here.
+beforeAll(async () => {
+  await require('./support/guard').assertThrowawayDb()
+})
+
 // A test's emails finish before the next test starts (and resets the data they read), and every test starts with an
 // empty outbox, with email not set up again (the default; see useEmail() in helpers.js)
 afterEach(async () => {

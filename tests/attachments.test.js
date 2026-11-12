@@ -550,3 +550,300 @@ describe('the size limit outside the test environment', () => {
     expect(refused.status).toBe(413)
   })
 })
+
+// ---- The test plan's rules (email, uploads, pagination). Where the app does something else, the test states the rule
+// and is marked test.failing with "BUG:" and why: Jest reports it as passing while the app is wrong, and fails as soon
+// as the app is fixed, so the marker must then be removed. The tests above keep checking what the app does today.
+describe('upload rules', () => {
+  const crypto = require('crypto')
+  const { assertThrowawayDb } = require('./support/guard')
+  beforeAll(assertThrowawayDb)
+
+  const sha256 = (buffer) => crypto.createHash('sha256').update(buffer).digest('hex')
+  const KIND_FOR = { png: 'png', jpg: 'jpg', gif: 'gif', webp: 'webp', pdf: 'pdf', txt: 'txt', log: 'log', csv: 'csv' }
+
+  test.each(Object.keys(KIND_FOR))(
+    '.%s: 201; stored as a bare UUID (no extension) with the MIME type and size in the row',
+    async (ext) => {
+      const { sessions, ticketId } = await setup()
+      const res = await upload(sessions.requester, ticketId, [[`file.${ext}`, FILES[KIND_FOR[ext]]]])
+      expect(res.status).toBe(201)
+      const [row] = await attachmentRows()
+      expect(row.stored_name).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+      expect(storedFiles()).toEqual([row.stored_name])
+      expect(row.mime_type).toBe(res.body[0].mime_type)
+      expect(row.size_bytes).toBe(FILES[KIND_FOR[ext]].length)
+    },
+  )
+
+  // BUG: the attachments table (migration 012) has no sha256 column, and the upload never hashes the file
+  test.failing('BUG: the attachment row stores the sha256 of the file', async () => {
+    const { sessions, ticketId } = await setup()
+    await upload(sessions.requester, ticketId, [['photo.png', FILES.png]])
+    const [row] = await attachmentRows()
+    expect(row.sha256).toBe(sha256(FILES.png))
+  })
+
+  // BUG: an empty file is refused with 400 EMPTY_FILE (routes/attachments.js uploadAttachments), not 422
+  test.failing('BUG: an empty file is refused with 422', async () => {
+    const { sessions, ticketId } = await setup()
+    const res = await upload(sessions.requester, ticketId, [['empty.txt', Buffer.alloc(0)]])
+    expect(res.status).toBe(422)
+  })
+
+  test('an empty file leaves nothing behind', async () => {
+    const { sessions, ticketId } = await setup()
+    await upload(sessions.requester, ticketId, [['empty.txt', Buffer.alloc(0)]])
+    expectNothingSaved(await attachmentRows(), storedFiles())
+  })
+
+  const REFUSED = [
+    ['an SVG', 'logo.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>')],
+    ['an HTML page', 'page.html', Buffer.from('<!doctype html><script>alert(1)</script>')],
+    ['an .htm page', 'page.htm', Buffer.from('<p>hi</p>')],
+    ['an exe', 'setup.exe', EXE],
+    ['an exe named .pdf', 'setup.pdf', EXE],
+    ['a JPEG named .png', 'photo.png', FILES.jpg],
+    ['a PDF named .txt', 'notes.txt', FILES.pdf],
+    ['text with a NUL byte', 'notes.txt', bytes('abc', [0], 'def')],
+    ['text that is not valid UTF-8', 'server.log', bytes('ok ', [0xff, 0xfe, 0xfd])],
+  ]
+
+  test.each(REFUSED)('%s is refused and nothing is saved', async (_, name, content) => {
+    const { sessions, ticketId } = await setup()
+    const res = await upload(sessions.requester, ticketId, [[name, content]])
+    expect([400, 415]).toContain(res.status)
+    expect(res.body.code).toBe('UNSUPPORTED_FILE_TYPE')
+    expectNothingSaved(await attachmentRows(), storedFiles())
+  })
+
+  // BUG: a refused file type gets 400 UNSUPPORTED_FILE_TYPE (routes/attachments.js uploadAttachments), not 415
+  test.failing.each(REFUSED)('BUG: %s is refused with 415', async (_, name, content) => {
+    const { sessions, ticketId } = await setup()
+    const res = await upload(sessions.requester, ticketId, [[name, content]])
+    expect(res.status).toBe(415)
+  })
+
+  test('the Content-Type the client sends is ignored: an exe sent as image/png is refused', async () => {
+    const { sessions, ticketId } = await setup()
+    const res = await api
+      .post(`/api/tickets/${ticketId}/attachments`)
+      .set(auth(sessions.requester))
+      .attach('files', EXE, { filename: 'photo.png', contentType: 'image/png' })
+    expect(res.body.code).toBe('UNSUPPORTED_FILE_TYPE')
+    expectNothingSaved(await attachmentRows(), storedFiles())
+  })
+
+  test('... and a real PNG sent as text/html is stored as image/png', async () => {
+    const { sessions, ticketId } = await setup()
+    const res = await api
+      .post(`/api/tickets/${ticketId}/attachments`)
+      .set(auth(sessions.requester))
+      .attach('files', FILES.png, { filename: 'photo.png', contentType: 'text/html' })
+    expect(res.status).toBe(201)
+    expect(res.body[0].mime_type).toBe('image/png')
+  })
+
+  // BUG: see above; the fake Content-Type case gets 400 too
+  test.failing('BUG: an exe sent as image/png is refused with 415', async () => {
+    const { sessions, ticketId } = await setup()
+    const res = await api
+      .post(`/api/tickets/${ticketId}/attachments`)
+      .set(auth(sessions.requester))
+      .attach('files', EXE, { filename: 'photo.png', contentType: 'image/png' })
+    expect(res.status).toBe(415)
+  })
+
+  test.each(['nul\u0000byte.txt', 'del\u007fete.txt'])(
+    'a raw control character in the multipart name (%j) is refused by the parser, and nothing is saved',
+    async (sent) => {
+      const { sessions, ticketId } = await setup()
+      const res = await upload(sessions.requester, ticketId, [[sent, FILES.txt]])
+      expect(res.status).toBe(400)
+      expect(res.body.code).toBe('INVALID_UPLOAD')
+      expectNothingSaved(await attachmentRows(), storedFiles())
+    },
+  )
+
+  test('safeName drops control characters from any name that gets past the parser', () => {
+    const { safeName } = require('../src/attachments')
+    expect(safeName('nul\u0000byte.txt')).toBe('nulbyte.txt')
+    expect(safeName('del\u007fete.txt')).toBe('delete.txt')
+    expect(safeName('bell\u0007\u001b[31m.txt')).toBe('bell[31m.txt')
+    expect(safeName('')).toBe('file')
+  })
+
+  test.each([
+    ['C:\\Users\\me\\Desktop\\report.csv', 'report.csv'],
+    ['....hidden.txt', 'hidden.txt'],
+  ])('the name %j is kept as %j', async (sent, kept) => {
+    const { sessions, ticketId } = await setup()
+    const res = await upload(sessions.requester, ticketId, [[sent, sent.endsWith('.csv') ? FILES.csv : FILES.txt]])
+    expect(res.status).toBe(201)
+    expect(res.body[0].original_name).toBe(kept)
+    const [row] = await attachmentRows()
+    expect(row.original_name).toBe(kept)
+    expect(storedFiles()).toEqual([row.stored_name])
+  })
+})
+
+describe('attachment permissions and downloads (test plan)', () => {
+  const { assertThrowawayDb } = require('./support/guard')
+  beforeAll(assertThrowawayDb)
+
+  // BUG: routes/tickets.js loadVisibleTicket and routes/attachments.js loadAttachment answer 403 for a ticket the
+  // caller can't see, which tells them it exists; the rule is 404
+  test.failing('BUG: another employee gets 404 (not 403) for upload, list, download and delete', async () => {
+    const { sessions, ticketId } = await setup()
+    const [attachment] = (await upload(sessions.requester, ticketId, [['a.png', FILES.png]])).body
+    const statuses = [
+      (await upload(sessions.other, ticketId, [['b.png', FILES.png]])).status,
+      (await api.get(`/api/tickets/${ticketId}/attachments`).set(auth(sessions.other))).status,
+      (await api.get(`/api/attachments/${attachment.id}/download`).set(auth(sessions.other))).status,
+      (await api.delete(`/api/attachments/${attachment.id}`).set(auth(sessions.other))).status,
+    ]
+    expect(statuses).toEqual([404, 404, 404, 404])
+  })
+
+  test('another employee never gets the file, and nothing changes', async () => {
+    const { sessions, ticketId } = await setup()
+    const [attachment] = (await upload(sessions.requester, ticketId, [['a.png', FILES.png]])).body
+    const res = await api.get(`/api/attachments/${attachment.id}/download`).set(auth(sessions.other))
+    expect([403, 404]).toContain(res.status)
+    expect(res.headers['content-disposition']).toBeUndefined()
+    await api.delete(`/api/attachments/${attachment.id}`).set(auth(sessions.other))
+    expect(await attachmentRows()).toHaveLength(1)
+    expect(storedFiles()).toHaveLength(1)
+  })
+
+  const download = (session, id, query = '') =>
+    api
+      .get(`/api/attachments/${id}/download${query}`)
+      .set(auth(session))
+      .buffer(true)
+      .parse((response, done) => {
+        const chunks = []
+        response.on('data', (chunk) => chunks.push(chunk))
+        response.on('end', () => done(null, Buffer.concat(chunks)))
+      })
+
+  test.each(['png', 'jpg', 'gif', 'webp', 'pdf', 'txt', 'csv'])(
+    '.%s: the exact bytes, as a download, with nosniff, no-store and Content-Length',
+    async (ext) => {
+      const { sessions, ticketId } = await setup()
+      const content = FILES[ext]
+      const [attachment] = (await upload(sessions.requester, ticketId, [[`Prüfung.${ext}`, content]])).body
+      const res = await download(sessions.requester, attachment.id)
+      expect(res.status).toBe(200)
+      expect(res.body.equals(content)).toBe(true)
+      expect(res.headers['content-disposition']).toMatch(/^attachment; /)
+      expect(res.headers['content-disposition']).toContain(`filename*=UTF-8''Pr%C3%BCfung.${ext}`)
+      expect(res.headers['content-type'].split(';')[0]).toBe(attachment.mime_type)
+      expect(res.headers['x-content-type-options']).toBe('nosniff')
+      expect(res.headers['cache-control']).toBe('private, no-store')
+      expect(res.headers['content-length']).toBe(String(content.length))
+    },
+  )
+
+  // BUG: the download's Content-Security-Policy is the API-wide one from helmet in src/app.js
+  // ("default-src 'none'; frame-ancestors 'none'"); it has no sandbox directive
+  test.failing('BUG: a download is sent with Content-Security-Policy: sandbox', async () => {
+    const { sessions, ticketId } = await setup()
+    const [attachment] = (await upload(sessions.requester, ticketId, [['a.pdf', FILES.pdf]])).body
+    const res = await download(sessions.requester, attachment.id)
+    expect(res.headers['content-security-policy']).toMatch(/(^|;)\s*sandbox(\s|;|$)/)
+  })
+
+  // BUG: the download route ignores ?inline=1 and always sends Content-Disposition: attachment
+  test.failing.each(['png', 'pdf'])('BUG: ?inline=1 shows a .%s inline', async (ext) => {
+    const { sessions, ticketId } = await setup()
+    const [attachment] = (await upload(sessions.requester, ticketId, [[`a.${ext}`, FILES[ext]]])).body
+    const res = await download(sessions.requester, attachment.id, '?inline=1')
+    expect(res.headers['content-disposition']).toMatch(/^inline/)
+  })
+
+  test.each(['txt', 'csv', 'log'])('?inline=1 never shows a .%s inline', async (ext) => {
+    const { sessions, ticketId } = await setup()
+    const [attachment] = (await upload(sessions.requester, ticketId, [[`a.${ext}`, FILES[ext]]])).body
+    const res = await download(sessions.requester, attachment.id, '?inline=1')
+    expect(res.status).toBe(200)
+    expect(res.headers['content-disposition']).toMatch(/^attachment; /)
+  })
+
+  test('there is no static URL for uploaded files', async () => {
+    const { sessions, ticketId } = await setup()
+    await upload(sessions.requester, ticketId, [['a.png', FILES.png]])
+    const [row] = await attachmentRows()
+    for (const url of [
+      `/uploads/${row.stored_name}`,
+      `/api/uploads/${row.stored_name}`,
+      `/${row.stored_name}`,
+      `/api/attachments/${row.stored_name}`,
+      `/api/attachments/${row.stored_name}/download`,
+    ]) {
+      const res = await api.get(url).set(auth(sessions.requester))
+      expect({ url, status: [400, 404].includes(res.status) }).toEqual({ url, status: true })
+      expect(res.headers['content-type']).toMatch(/json/)
+    }
+  })
+
+  test('a file missing on disk: 404, and the error is logged with the attachment id', async () => {
+    const { sessions, ticketId } = await setup()
+    const [attachment] = (await upload(sessions.requester, ticketId, [['a.png', FILES.png]])).body
+    for (const file of storedFiles()) fs.rmSync(path.join(uploadDir(), file))
+    const errors = jest.spyOn(console, 'error').mockImplementation(() => {})
+    const res = await api.get(`/api/attachments/${attachment.id}/download`).set(auth(sessions.requester))
+    const logged = errors.mock.calls.map((args) => args.join(' '))
+    errors.mockRestore()
+    expect(res.status).toBe(404)
+    expect(logged).toEqual([expect.stringContaining(`Attachment ${attachment.id}`)])
+  })
+
+  // BUG: uploads take no comment_id (multer is set up with fields: 0, so any text field is 400 INVALID_UPLOAD); the
+  // rule is that a comment from another ticket is refused with 422
+  test.failing('BUG: a comment_id from another ticket is refused with 422', async () => {
+    const { sessions, ticketId } = await setup()
+    const [[category]] = await pool.query('SELECT id FROM categories LIMIT 1')
+    const other = await api
+      .post('/api/tickets')
+      .set(auth(sessions.requester))
+      .send({ title: 'Other', description: 'Another ticket', category_id: category.id })
+    const comment = await api
+      .post(`/api/tickets/${other.body.id}/comments`)
+      .set(auth(sessions.requester))
+      .send({ content: 'On the other ticket' })
+    expect(comment.status).toBe(201)
+    const res = await api
+      .post(`/api/tickets/${ticketId}/attachments`)
+      .set(auth(sessions.requester))
+      .field('comment_id', String(comment.body.id))
+      .attach('files', FILES.png, 'a.png')
+    expect(res.status).toBe(422)
+  })
+
+  test('a comment_id from another ticket never attaches the file anywhere', async () => {
+    const { sessions, ticketId } = await setup()
+    const res = await api
+      .post(`/api/tickets/${ticketId}/attachments`)
+      .set(auth(sessions.requester))
+      .field('comment_id', '999999')
+      .attach('files', FILES.png, 'a.png')
+    expect(res.status).toBeGreaterThanOrEqual(400)
+    expectNothingSaved(await attachmentRows(), storedFiles())
+  })
+
+  test('a download is streamed from disk, never read into memory whole', async () => {
+    const { sessions, ticketId } = await setup()
+    const [attachment] = (await upload(sessions.requester, ticketId, [['a.pdf', FILES.pdf]])).body
+    const streams = jest.spyOn(fs, 'createReadStream')
+    const readFile = jest.spyOn(fs.promises, 'readFile')
+    const readFileSync = jest.spyOn(fs, 'readFileSync')
+    const res = await download(sessions.requester, attachment.id)
+    const calls = { streams: streams.mock.calls.length, readFile: readFile.mock.calls.length }
+    const syncReads = readFileSync.mock.calls.filter(([file]) => String(file).startsWith(uploadDir())).length
+    jest.restoreAllMocks()
+    expect(res.body.equals(FILES.pdf)).toBe(true)
+    expect(calls).toEqual({ streams: 1, readFile: 0 })
+    expect(syncReads).toBe(0)
+  })
+})
