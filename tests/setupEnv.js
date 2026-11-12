@@ -25,5 +25,9 @@ process.env.MAIL_FROM = ''
 // (setupAfterEnv.js), so tests never write into the real ./uploads
 process.env.UPLOAD_DIR = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'ticketflow-uploads-'))
 
+// Attachments: a 200 KB size limit instead of 10 MB, so no test has to build big files (only allowed with NODE_ENV=test).
+// The one test of the real 10 MB limit (tests/real-size/) clears it, and runs in its own Jest run.
+process.env.ATTACHMENT_MAX_BYTES = String(200 * 1024)
+
 // Host, user and password from .env. dotenv never overwrites variables that are already set, so DB_NAME stays.
 require('dotenv').config({ quiet: true })
