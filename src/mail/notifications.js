@@ -3,8 +3,9 @@
 // recipients, an SMTP failure) is logged and never reaches the request. A failed email never undoes the change.
 //
 //   passwordLink     new account or reset   → the user (one-time set-password link; only when email is set up)
-//   forgotPassword   "Forgot password"      → the account with that email, if any (a reset link; at most one
-//                                             every FORGOT_EVERY_MINUTES per account)
+//   forgotPassword   "Forgot password"      → the account, if it is active and has a password of its own (a 1-hour
+//                                             'forgot' link; at most FORGOT_PASSWORD_EMAIL_LIMIT per hour)
+//   passwordChanged  a "Forgot password" link set a new password → the user (a notice, no link)
 //   ticketCreated    new ticket             → IT: IT_NOTIFY_EMAIL if set, otherwise every active agent
 //   ticketAssigned   assigned / reassigned  → the new assignee
 //   commentAdded     comment by the requester → the assignee, or IT if unassigned
@@ -21,8 +22,7 @@ const { companyName } = require('../settings')
 const { TOKEN_HOURS, issueToken } = require('../passwordTokens')
 const { recordAudit } = require('../audit')
 
-// "Forgot password" sends an account at most one link this often, so it can't be used to flood someone's inbox
-const FORGOT_EVERY_MINUTES = 5
+const { FORGOT_PASSWORD_EMAIL_LIMIT, FORGOT_PASSWORD_EMAIL_WINDOW_MINUTES } = require('../middleware/rateLimit')
 
 const pending = new Set()
 
@@ -213,32 +213,38 @@ function ticketResolved({ ticketId, actorId }) {
   })
 }
 
-// "Forgot password" for this email address. Runs entirely in the background, after the response, so the answer and
-// its timing are the same whether or not the account exists. An active account gets a 'reset' link (its current
-// password keeps working until a new one is set); unknown and deactivated addresses get nothing. A link already sent
-// in the last FORGOT_EVERY_MINUTES means nothing new is sent. `ip` is only for the audit log.
-function forgotPassword({ email, ip }) {
+// "Forgot password", for an account the route has already found to be active and to have a password of its own. Runs
+// after the response (the route answers the same for every address and never waits for this). Inside one
+// transaction, with the user row locked so two requests at once are counted one after the other:
+// - at most FORGOT_PASSWORD_EMAIL_LIMIT reset emails per FORGOT_PASSWORD_EMAIL_WINDOW_MINUTES (counted in the audit
+//   log, password_reset_requested); over that, nothing is sent
+// - a new 'forgot' token (1 hour), which also ends the user's earlier unused links
+// The password and the sessions are not touched: the user may still know the password. `ip` is only for the audit log.
+function forgotPassword({ userId, ip }) {
   inBackground('forgotPassword', async () => {
     const conn = await pool.getConnection()
     let user = null
     let link = null
     try {
       await conn.beginTransaction()
-      // Locks the user row: two requests at once can't both send a link
       const [[row]] = await conn.query(
-        'SELECT id, name, email, is_active FROM users WHERE email = ? AND is_active = TRUE FOR UPDATE',
-        [email],
+        `SELECT id, name, email FROM users
+         WHERE id = ? AND is_active = TRUE AND must_change_password = FALSE FOR UPDATE`,
+        [userId],
       )
       if (row) {
-        const [[recent]] = await conn.query(
-          `SELECT COUNT(*) AS n FROM password_tokens
-           WHERE user_id = ? AND purpose = 'reset' AND used_at IS NULL AND created_at > NOW() - INTERVAL ? MINUTE`,
-          [row.id, FORGOT_EVERY_MINUTES],
+        const [[{ sent }]] = await conn.query(
+          `SELECT COUNT(*) AS sent FROM audit_log
+           WHERE action = 'password_reset_requested' AND target_user_id = ? AND created_at > NOW() - INTERVAL ? MINUTE`,
+          [row.id, FORGOT_PASSWORD_EMAIL_WINDOW_MINUTES],
         )
-        if (recent.n === 0) {
+        if (sent < FORGOT_PASSWORD_EMAIL_LIMIT) {
           user = row
-          link = await issueToken(conn, row.id, 'reset')
+          link = await issueToken(conn, row.id, 'forgot')
           await recordAudit('password_reset_requested', { targetUserId: row.id, req: { ip }, db: conn })
+        } else {
+          // The user's id only: never the address, and nothing about other requests
+          console.log(`[auth] Reset email limit reached for user #${row.id}; no email sent`)
         }
       }
       await conn.commit()
@@ -252,24 +258,35 @@ function forgotPassword({ email, ip }) {
     const url = templates.links.setPassword(appUrl(), link.token)
     const message = templates.passwordLink({
       company: await companyName(),
-      purpose: 'reset',
-      requested: true,
+      purpose: 'forgot',
       name: user.name,
       email: user.email,
       link: url,
-      hours: TOKEN_HOURS,
     })
     await deliver('passwordForgot', user.email, { ...message, link: url })
+  })
+}
+
+// After a "Forgot password" link set a new password: tell the user, without a link
+function passwordChanged({ userId }) {
+  inBackground('passwordChanged', async () => {
+    for (const person of recipients([await loadUser(userId)], null)) {
+      await deliver(
+        'passwordChanged',
+        person.email,
+        templates.passwordChanged({ name: person.name, company: await companyName() }),
+      )
+    }
   })
 }
 
 module.exports = {
   passwordLink,
   forgotPassword,
+  passwordChanged,
   ticketCreated,
   ticketAssigned,
   commentAdded,
   ticketResolved,
   settle,
-  FORGOT_EVERY_MINUTES,
 }

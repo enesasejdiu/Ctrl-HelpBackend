@@ -439,13 +439,32 @@ resend). Until the link is used, the user can't log in (the usual "Wrong email o
 
 ### "Forgot password"
 
-With email set up, the sign-in page offers "Forgot password?": `POST /api/auth/forgot-password { email }` (public, at
-most 10 requests per IP address in 15 minutes) always answers the same `200 { message }`, whether or not the address
-has an account; the lookup and the email happen after the response, so the timing doesn't tell either. An active
-account gets a one-time **reset** link ("Reset your TicketFlow password", 48 hours). Its **current password keeps
-working** until the link sets a new one, so asking for a reset can't lock anyone out; at most one link is sent per
-account every 5 minutes. Without email set up the answer is 409 `EMAIL_NOT_CONFIGURED` (ask an admin or HR). Logged
-in the audit log as `password_reset_requested`.
+`POST /api/auth/forgot-password { email }` (public) lets someone who can't sign in ask for a reset link. The answer
+never tells whether an account exists:
+
+- **Always the same answer:** `200 { "message": "If an account exists for this email, we've sent a password reset
+link." }`, with the same headers, for an active account, an unknown address, a deactivated account, a pending
+  invitation, an account over its email limit, and when email isn't set up. Only a malformed email (422, a format
+  check) and too many requests from one IP address (429) answer differently, and neither depends on an account.
+- **The same timing:** every request runs the same user lookup; the per-account limit, the token and the email happen
+  after the response, which never waits for them.
+- **Logs:** each request logs one line with a short SHA-256 fingerprint of the address (never the address, and never
+  "not found"); tokens and links are never logged.
+
+Only an **active account that has set its own password** gets an email: a one-time `forgot` link valid for **1 hour**
+("Reset your TicketFlow password"). Pending invitations get nothing (Admin/HR resend their setup link). Asking for a
+reset **changes nothing**: the current password and sessions keep working, since anyone can ask for any address.
+
+Completing it with `POST /api/auth/set-password`, in one transaction: the new password, `must_change_password` cleared,
+the link used and the user's other links removed, **every session ended**, and the wrong-password count and lock
+cleared. Afterwards the user gets "Your TicketFlow password was changed" (no link). Audit log: `password_reset_requested`
+for each email sent, `password_reset_self` when the reset is completed.
+
+**Limits** (`src/middleware/rateLimit.js`): 5 requests per IP address per 15 minutes (then 429 with `Retry-After`),
+and 3 reset emails per account per hour (more requests still get the same 200, but no email).
+
+Without email set up the answer is the same 200, nothing is sent, and the server logs a warning. `GET /api/auth/config`
+→ `{ email_enabled }` (public) tells the sign-in page whether to show "Forgot password?" at all.
 
 ### Setting a password with the emailed link
 
@@ -539,15 +558,15 @@ temporary password, or with the password they set with the link. Deactivating a 
 
 The API sends these emails ([nodemailer](https://nodemailer.com/), SMTP settings from `.env`):
 
-| Event                                      | To                                                            | Never to                                    |
-| ------------------------------------------ | ------------------------------------------------------------- | ------------------------------------------- |
-| New account, Admin/HR reset (email set up) | the user: their one-time set-password link                    |                                             |
-| "Forgot password" (email set up)           | the account with that email, if active: a one-time reset link | at most one every 5 minutes                 |
-| Ticket created                             | IT: `IT_NOTIFY_EMAIL` if set, otherwise every active agent    | the creator, if they are IT                 |
-| Ticket assigned / reassigned               | the new assignee                                              | whoever assigned it, if they took it        |
-| Comment by the requester                   | the assignee, or IT if nobody is assigned                     | the author                                  |
-| Comment by IT (agent or admin)             | the requester                                                 | the author. Internal notes send no email    |
-| Ticket resolved                            | the requester                                                 | whoever resolved it, if it is the requester |
+| Event                                      | To                                                                                                                                       | Never to                                    |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| New account, Admin/HR reset (email set up) | the user: their one-time set-password link                                                                                               |                                             |
+| "Forgot password" (email set up)           | the account with that email, if active and with a password of its own: a 1-hour reset link; after the reset, a "password changed" notice | at most 3 per hour                          |
+| Ticket created                             | IT: `IT_NOTIFY_EMAIL` if set, otherwise every active agent                                                                               | the creator, if they are IT                 |
+| Ticket assigned / reassigned               | the new assignee                                                                                                                         | whoever assigned it, if they took it        |
+| Comment by the requester                   | the assignee, or IT if nobody is assigned                                                                                                | the author                                  |
+| Comment by IT (agent or admin)             | the requester                                                                                                                            | the author. Internal notes send no email    |
+| Ticket resolved                            | the requester                                                                                                                            | whoever resolved it, if it is the requester |
 
 The person who caused an event never gets an email about it, and deactivated users are skipped. Each email has an HTML
 and a plain-text version, a subject like `[TicketFlow #123] New comment: Printer not working`, a short summary (a
@@ -881,6 +900,7 @@ Returns every action name as a JSON array of strings, in a sensible order for th
   "password_changed",
   "password_reset",
   "password_reset_requested",
+  "password_reset_self",
   "password_set_with_link",
   "user_created",
   "invite_resent",
@@ -903,6 +923,7 @@ Returns every action name as a JSON array of strings, in a sensible order for th
 | `password_changed`         | The user changed their own password                                                    | the user         | the user                      | `{ other_sessions_ended }`                                                                  |
 | `password_reset`           | An admin or HR reset the password (the temporary one is never stored)                  | admin / HR       | the user                      | `{ sessions_ended }`                                                                        |
 | `password_reset_requested` | "Forgot password" sent the user a reset link (the link is never stored)                | `null`           | the user                      |                                                                                             |
+| `password_reset_self`      | The user set a new password with their "Forgot password" link                          | the user         | the user                      | `{ purpose }`                                                                               |
 | `password_set_with_link`   | The user set their password with the emailed link (the link is never stored)           | the user         | the user                      |                                                                                             |
 | `user_created`             | An admin or HR created the account (a set-password link is emailed; never stored here) | admin / HR       | the new user                  | `{ email, role, department_id }`                                                            |
 | `invite_resent`            | An admin or HR sent a new one-time link (`POST /api/users/:id/resend-link`)            | admin / HR       | the user                      |                                                                                             |
@@ -1067,7 +1088,8 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | POST   | `/api/users/:id/resend-link`      | admin, hr    | `{ purpose? }`. A new one-time link by email (the old one stops working) → `{ user, password_delivery }`; 409 when email isn't set up, the user already set a password, or is deactivated (HR: employees only)                                                                                                                                                                                                                                                                                                                |
 | GET    | `/api/auth/set-password/validate` | anyone       | `?token=` → `{ status: valid \| expired \| used \| invalid, purpose }` for the set-password page                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | POST   | `/api/auth/set-password`          | anyone       | `{ token, new_password }` → sets the password with an emailed link (400 `TOKEN_INVALID` / `TOKEN_EXPIRED` / `TOKEN_USED`, 422 `WEAK_PASSWORD`). See [Setting a password with the emailed link](#setting-a-password-with-the-emailed-link)                                                                                                                                                                                                                                                                                     |
-| POST   | `/api/auth/forgot-password`       | anyone       | `{ email }` → always the same `200 { message }`; an active account gets a one-time reset link by email, its current password keeps working (409 `EMAIL_NOT_CONFIGURED` when email isn't set up; 10 requests per IP in 15 minutes). See ["Forgot password"](#forgot-password)                                                                                                                                                                                                                                                  |
+| POST   | `/api/auth/forgot-password`       | anyone       | `{ email }` → always the same `200 { message }`; an active account with its own password gets a 1-hour reset link by email, and its current password keeps working (422 for a malformed email; 5 requests per IP in 15 minutes, then 429). See ["Forgot password"](#forgot-password)                                                                                                                                                                                                                                          |
+| GET    | `/api/auth/config`                | anyone       | `{ email_enabled }`: whether the sign-in page offers "Forgot password?"                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | POST   | `/api/users/:id/reset-password`   | admin, hr    | No body. Email set up: the old password stops working and a one-time reset link is emailed → `{ user, password_delivery: "email" }`. Otherwise a new temporary password → `{ user, temporaryPassword, password_delivery }`. Sets `must_change_password`, ends the user's sessions and unlocks a locked account (not your own account: 403; HR: employees only). See [Resetting a password](#resetting-a-password-post-apiusersidreset-password)                                                                               |
 | PATCH  | `/api/users/:id`                  | admin, hr    | Change `{ name?, email?, department_id?, job_title?, role?, is_active? }` (at least one). Admin: anyone, but not their own role/active status, and never the last active admin. HR: employees only, never `role`. See [Editing an account](#editing-an-account-patch-apiusersid)                                                                                                                                                                                                                                              |
 | GET    | `/api/stats`                      | admin        | Dashboard statistics: totals, by status/priority/category/agent, 8-week trend                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -1185,6 +1207,6 @@ TASKS.md                  Development task list
 | `sessions`          | One row per login (migration 008): `user_id`, `created_at`, `expires_at`, `revoked_at`, `last_seen_at`, `ip`, `user_agent`. The token's `sid` is the row id. Rows are deleted 7 days after they end                                                                                                             |
 | `audit_log`         | Security events (migration 009): `created_at`, `actor_id`, `action`, `target_user_id`, `details` (JSON), `ip`. Never a secret. See [Audit log](#audit-log); `ticket_id` (migration 016) for entries about a ticket, e.g. `ticket_auto_closed`                                                                   |
 | `attachments`       | Files on tickets (migration 012): `ticket_id` (deleted with the ticket), `uploaded_by`, `original_name`, `stored_name` (the random file name in `UPLOAD_DIR`), `mime_type` (from the content), `size_bytes`, `created_at`. See [Attachments](#attachments)                                                      |
-| `password_tokens`   | One-time password links (migrations 010, 011): the SHA-256 hash of each token (never the token), `purpose` (`setup` / `reset`), `expires_at` (48 hours), `used_at`. See [How passwords are delivered](#how-passwords-are-delivered)                                                                             |
+| `password_tokens`   | One-time password links (migrations 010, 011, 014): the SHA-256 hash of each token (never the token), `purpose` (`setup` / `reset` / `forgot`), `expires_at` (48 hours; `forgot` 1 hour), `used_at`. See [How passwords are delivered](#how-passwords-are-delivered)                                            |
 | `settings`          | Admin settings, one row per key: `company_name` (migration 015), `auto_close_days` (016)                                                                                                                                                                                                                        |
 | `schema_migrations` | Which migrations this database has run, and when                                                                                                                                                                                                                                                                |

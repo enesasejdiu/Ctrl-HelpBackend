@@ -5,6 +5,7 @@
 // with the link from their email (the set-password routes at the end; public, no login needed).
 const express = require('express')
 const bcrypt = require('bcryptjs')
+const crypto = require('crypto')
 const jwt = require('jsonwebtoken')
 const pool = require('../db')
 const { HttpError } = require('../middleware/errors')
@@ -280,8 +281,9 @@ const TOKEN_PROBLEMS = {
 }
 
 // GET /api/auth/set-password/validate?token= → 200 { status, purpose, ... }
-//   valid:                     { status: 'valid', purpose: 'setup' | 'reset', email, expires_at }
-//   expired / used / invalid:  { status, purpose: null, message, code }
+//   valid:           { status: 'valid', purpose: 'setup' | 'reset' | 'forgot', email, expires_at }
+//   expired / used:  { status, purpose, message, code } (so the page can offer "Forgot password" again for 'forgot')
+//   invalid:         { status: 'invalid', purpose: null, message, code }
 // Public. Tells the set-password page whether to show the form, before the user types anything. It changes nothing.
 // An unknown token, one replaced by a newer link and one of a deactivated account all answer the same 'invalid'
 // (one indexed lookup each), and a link that can't be used never reveals whose it is.
@@ -295,7 +297,7 @@ router.get(
       return res.json({ status, purpose: row.purpose, email: row.email, expires_at: row.expires_at })
     }
     const [message, code] = TOKEN_PROBLEMS[status]
-    res.json({ status, purpose: null, message, code })
+    res.json({ status, purpose: row?.purpose ?? null, message, code })
   },
 )
 
@@ -313,6 +315,8 @@ router.post('/set-password', setPasswordRateLimit, validate(schemas.setPassword)
   const { token, new_password: password } = req.valid.body
 
   const conn = await pool.getConnection()
+  let purpose
+  let userId
   try {
     await conn.beginTransaction()
     const { status, row } = await lookUpToken(conn, token, { forUpdate: true })
@@ -336,7 +340,8 @@ router.post('/set-password', setPasswordRateLimit, validate(schemas.setPassword)
     await conn.query('UPDATE password_tokens SET used_at = ? WHERE id = ?', [new Date(Date.now()), row.id])
     await conn.query('DELETE FROM password_tokens WHERE user_id = ? AND used_at IS NULL', [row.user_id])
     await revokeUserSessions(row.user_id, { db: conn })
-    await recordAudit('password_set_with_link', {
+    const action = row.purpose === 'forgot' ? 'password_reset_self' : 'password_set_with_link'
+    await recordAudit(action, {
       actorId: row.user_id,
       targetUserId: row.user_id,
       details: { purpose: row.purpose },
@@ -344,6 +349,8 @@ router.post('/set-password', setPasswordRateLimit, validate(schemas.setPassword)
       db: conn,
     })
     await conn.commit()
+    purpose = row.purpose
+    userId = row.user_id
   } catch (err) {
     await conn.rollback()
     throw err
@@ -351,28 +358,52 @@ router.post('/set-password', setPasswordRateLimit, validate(schemas.setPassword)
     conn.release()
   }
 
+  // A self-service reset: tell the account, in case it wasn't its owner (after the commit, not awaited, no link)
+  if (purpose === 'forgot') notify.passwordChanged({ userId })
   res.json({ message: 'Password set, please log in.' })
 })
 
-// The one answer POST /api/auth/forgot-password gives, whether or not the email has an account
-const FORGOT_PASSWORD_MESSAGE =
-  "If there's an active account for that email, we've sent it a link to choose a new password. It expires in 48 hours."
-
-// POST /api/auth/forgot-password { email } → 200 { message } (always the same message)
-// Public, rate-limited per IP address. Only when email is set up; otherwise 409 EMAIL_NOT_CONFIGURED (ask an admin or
-// HR for a reset). The account lookup and the email happen after the response (notifications.forgotPassword), so
-// neither the answer nor its timing tells whether an account exists. The current password keeps working: only the
-// emailed one-time link (purpose 'reset', 48 hours) can replace it, so asking for a reset can't lock anyone out.
-router.post('/forgot-password', forgotPasswordRateLimit, validate(schemas.forgotPassword), (req, res) => {
-  if (!isEmailConfigured()) {
-    throw new HttpError(
-      409,
-      "Password reset by email isn't available. Ask your administrator or HR to reset your password.",
-      'EMAIL_NOT_CONFIGURED',
-    )
-  }
-  notify.forgotPassword({ email: req.valid.body.email, ip: req.ip })
-  res.json({ message: FORGOT_PASSWORD_MESSAGE })
+// GET /api/auth/config → { email_enabled }. Public: what the sign-in page may offer (the "Forgot password?" link only
+// when email is set up). Decided by the server's settings.
+router.get('/config', (req, res) => {
+  res.json({ email_enabled: isEmailConfigured() })
 })
+
+// The one answer POST /api/auth/forgot-password gives, in every case
+const FORGOT_PASSWORD_MESSAGE = "If an account exists for this email, we've sent a password reset link."
+
+// A short, one-way fingerprint of an address for the logs: the same address gives the same value, but the log never
+// holds the address itself (and so never says which addresses have no account)
+const emailFingerprint = (email) => crypto.createHash('sha256').update(email).digest('hex').slice(0, 12)
+
+// POST /api/auth/forgot-password { email } → always 200 { message: FORGOT_PASSWORD_MESSAGE }
+// Public (no session, so the must_change_password check doesn't apply). Rate-limited per IP address (429 with
+// Retry-After, which says nothing about any account). A malformed email is 422; that checks the format only.
+// Every other case gets the same status, body and headers: an active account with its own password, an unknown
+// address, a deactivated account, a pending invitation, the per-account email limit reached, email not set up.
+// Timing: every request runs the same user lookup, and everything else (the per-account limit, the token, the email)
+// happens after the response in notifications.forgotPassword, which the response never waits for. So an existing
+// account doesn't answer more slowly than an unknown address.
+// Only an active account that has set its own password gets a 1-hour 'forgot' link; pending invitations get nothing
+// (Admin/HR resend their setup link). The current password and sessions are left alone: anyone can ask, and the user
+// may still know their password.
+router.post(
+  '/forgot-password',
+  forgotPasswordRateLimit,
+  validate(schemas.forgotPassword, { status: 422 }),
+  async (req, res) => {
+    const { email } = req.valid.body
+    // The same line for every request: a fingerprint, never the address, and nothing about whether it exists
+    console.log(`[auth] Password reset requested (email #${emailFingerprint(email)})`)
+
+    const [[user]] = await pool.query('SELECT id, is_active, must_change_password FROM users WHERE email = ?', [email])
+    if (!isEmailConfigured()) {
+      console.warn('[auth] "Forgot password" was used, but email is not set up: no reset link was sent')
+    } else if (user && user.is_active && !user.must_change_password) {
+      notify.forgotPassword({ userId: user.id, ip: req.ip })
+    }
+    res.json({ message: FORGOT_PASSWORD_MESSAGE })
+  },
+)
 
 module.exports = router

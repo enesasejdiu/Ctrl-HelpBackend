@@ -2,12 +2,13 @@
 // (isEmailConfigured() in src/mail/mailer.js). Two purposes:
 //   setup  a new account sets its first password (POST /api/users)
 //   reset  an admin or HR reset the password (POST /api/users/:id/reset-password)
+//   forgot the user asked for it with "Forgot password" (POST /api/auth/forgot-password); lasts only 1 hour
 // The person opens {APP_URL}/set-password?token=..., and POST /api/auth/set-password uses the token up.
 //
 // - The token is 32 random bytes from crypto.randomBytes, base64url (43 URL-safe characters). Only its SHA-256 hash
 //   is stored and looked up: the database alone can't produce a working link. (A plain hash is enough, unlike for
 //   passwords: the token is random and long, so there is nothing to guess.)
-// - It expires TOKEN_HOURS after it was issued and works once (used_at). Expiry uses the API's clock (Date.now), so
+// - It expires after its purpose's lifetime (TOKEN_MINUTES: 48 hours, "forgot" 1 hour) and works once (used_at). Expiry uses the API's clock (Date.now), so
 //   tests can fake the time.
 // - Issuing a new token removes the user's other unused ones (of either purpose), so only the newest link works.
 // - Tokens and links are never logged.
@@ -17,8 +18,10 @@ const bcrypt = require('bcryptjs')
 const crypto = require('crypto')
 
 const TOKEN_BYTES = 32
-const TOKEN_HOURS = 48
-const PURPOSES = ['setup', 'reset']
+const TOKEN_HOURS = 48 // setup and reset links
+const FORGOT_TOKEN_MINUTES = 60 // "Forgot password" links: anyone can ask for one, so they expire sooner
+const TOKEN_MINUTES = { setup: TOKEN_HOURS * 60, reset: TOKEN_HOURS * 60, forgot: FORGOT_TOKEN_MINUTES }
+const PURPOSES = Object.keys(TOKEN_MINUTES)
 const KEEP_ENDED_DAYS = 7
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -35,7 +38,7 @@ async function unusablePasswordHash() {
 async function issueToken(db, userId, purpose) {
   if (!PURPOSES.includes(purpose)) throw new Error(`Unknown token purpose: ${purpose}`)
   const token = crypto.randomBytes(TOKEN_BYTES).toString('base64url')
-  const expiresAt = new Date(Date.now() + TOKEN_HOURS * 60 * 60 * 1000)
+  const expiresAt = new Date(Date.now() + TOKEN_MINUTES[purpose] * 60 * 1000)
   await db.query('DELETE FROM password_tokens WHERE user_id = ? AND used_at IS NULL', [userId])
   await db.query('INSERT INTO password_tokens (user_id, token_hash, purpose, expires_at) VALUES (?, ?, ?, ?)', [
     userId,
@@ -107,6 +110,8 @@ module.exports = {
   hashToken,
   unusablePasswordHash,
   TOKEN_HOURS,
+  FORGOT_TOKEN_MINUTES,
+  TOKEN_MINUTES,
   TOKEN_BYTES,
   PURPOSES,
 }
