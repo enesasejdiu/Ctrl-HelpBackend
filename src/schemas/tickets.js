@@ -28,7 +28,8 @@ const createTicket = {
     title: requiredText('Title', 150, 'Title must be at most 150 characters'),
     description: requiredText('Description', 10000),
     category_id: id('Category', { invalid: 'Invalid category' }),
-    priority_id: id('Priority', { invalid: 'Invalid priority' }),
+    // Left out (or null): the default priority (src/settings.js)
+    priority_id: id('Priority', { invalid: 'Invalid priority' }).nullable().optional(),
   }),
 }
 

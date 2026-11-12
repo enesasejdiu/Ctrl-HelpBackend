@@ -127,4 +127,5 @@ requireAuth checks the current role and active status in the database on every r
 - [x] Email notifications (nodemailer): set-password link for new users, new ticket → IT, assigned, comments, resolved
 - [x] One-time password links (48h) for new users and Admin/HR resets when email is set up; temporary passwords otherwise
 - [x] Self-service "Forgot password" with the same one-time reset links; email retries; daily cleanup of old links
+- [x] Admin settings API: categories, priorities (rank, target hours, default) and the company name; emails use the company name
 - [x] Server-side pagination and sorting for GET /api/tickets and GET /api/users (plain array without ?page=)

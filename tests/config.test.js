@@ -345,3 +345,33 @@ describe('UPLOAD_DIR', () => {
     expect(log.error.mock.calls[0][0]).toMatch(/UPLOAD_DIR is empty/)
   })
 })
+
+describe('ATTACHMENT_MAX_BYTES', () => {
+  test.each(['production', 'development'])('%s refuses to start with a value other than 10 MB', (NODE_ENV) => {
+    const env =
+      NODE_ENV === 'production' ? prod({ ATTACHMENT_MAX_BYTES: '204800' }) : dev({ ATTACHMENT_MAX_BYTES: '204800' })
+    const { exited, exitCode, log } = run(env)
+    expect([exited, exitCode]).toEqual([true, 1])
+    expect(log.error.mock.calls[0][0]).toMatch(/ATTACHMENT_MAX_BYTES can only be changed when NODE_ENV=test/)
+  })
+
+  test('10485760 (10 MB), or not set, is fine everywhere', () => {
+    expect(run(prod({ ATTACHMENT_MAX_BYTES: '10485760' })).exited).toBe(false)
+    expect(run(prod()).exited).toBe(false)
+    expect(run(dev({ ATTACHMENT_MAX_BYTES: '' })).exited).toBe(false)
+  })
+
+  test('in the test environment: a whole number of bytes from 1 to 10485760', () => {
+    const test = (value) => ({ ...GOOD, NODE_ENV: 'test', ATTACHMENT_MAX_BYTES: value })
+    expect(run(test('1')).exited).toBe(false)
+    expect(run(test('204800')).exited).toBe(false)
+    expect(run(test('10485760')).exited).toBe(false)
+    for (const value of ['0', '10485761', '2.5', 'abc', '-5']) {
+      const { exited, log } = run(test(value))
+      expect([value, exited]).toEqual([value, true])
+      expect(log.error.mock.calls[0][0]).toMatch(
+        /ATTACHMENT_MAX_BYTES must be a whole number of bytes from 1 to 10485760/,
+      )
+    }
+  })
+})

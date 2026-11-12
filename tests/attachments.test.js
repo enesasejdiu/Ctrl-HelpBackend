@@ -5,7 +5,11 @@ const fs = require('fs')
 const path = require('path')
 const pool = require('../src/db')
 const { api, resetData, createUser, loginAs, auth } = require('./helpers')
-const { MAX_FILE_BYTES, uploadDir } = require('../src/attachments')
+const { maxFileBytes, uploadDir } = require('../src/attachments')
+
+// The tests run with a small size limit (ATTACHMENT_MAX_BYTES, 200 KB, from tests/setupEnv.js), so no test here builds a
+// big file. The real 10 MB limit has its own test, run on its own: tests/real-size/attachments-10mb.test.js.
+const LIMIT = maxFileBytes()
 
 beforeEach(async () => {
   await resetData()
@@ -131,12 +135,13 @@ describe('POST /api/tickets/:id/attachments: allowed files', () => {
     expect(res.body[0].original_name).toBe('Préavis été.pdf')
   })
 
-  test('a file of exactly 10 MB is accepted', async () => {
+  test('a file of exactly the limit is accepted', async () => {
+    expect(LIMIT).toBe(200 * 1024)
     const { sessions, ticketId } = await setup()
-    const big = Buffer.concat([FILES.png, Buffer.alloc(MAX_FILE_BYTES - FILES.png.length, 1)])
+    const big = Buffer.concat([FILES.png, Buffer.alloc(LIMIT - FILES.png.length, 1)])
     const res = await upload(sessions.requester, ticketId, [['big.png', big]])
     expect(res.status).toBe(201)
-    expect(res.body[0].size_bytes).toBe(MAX_FILE_BYTES)
+    expect(res.body[0].size_bytes).toBe(LIMIT)
   })
 })
 
@@ -184,12 +189,16 @@ describe('POST /api/tickets/:id/attachments: refused files (nothing is saved)', 
     expect(res.body).toMatchObject({ code: 'EMPTY_FILE', message: 'empty.txt is empty' })
   })
 
-  test('a file over 10 MB: 413 FILE_TOO_LARGE', async () => {
+  test('one byte over the limit: 413 FILE_TOO_LARGE, with the limit in the message and in max_bytes', async () => {
     const { sessions, ticketId } = await setup()
-    const tooBig = Buffer.concat([FILES.png, Buffer.alloc(MAX_FILE_BYTES - FILES.png.length + 1, 1)])
+    const tooBig = Buffer.concat([FILES.png, Buffer.alloc(LIMIT - FILES.png.length + 1, 1)])
     const res = await upload(sessions.requester, ticketId, [['big.png', tooBig]])
     expect(res.status).toBe(413)
-    expect(res.body).toMatchObject({ code: 'FILE_TOO_LARGE', message: 'Each file can be at most 10 MB' })
+    expect(res.body).toMatchObject({
+      code: 'FILE_TOO_LARGE',
+      message: 'Each file can be at most 200 KB',
+      max_bytes: LIMIT,
+    })
     expectNothingSaved(await attachmentRows(), storedFiles())
   })
 
@@ -517,5 +526,27 @@ describe('audit log', () => {
     const { sessions, ticketId } = await setup()
     await upload(sessions.requester, ticketId, [['invoice.exe', EXE]])
     expect(await auditRows()).toEqual([])
+  })
+})
+
+describe('the size limit outside the test environment', () => {
+  test('without NODE_ENV=test, ATTACHMENT_MAX_BYTES is ignored and the limit is always 10 MB', async () => {
+    const { sessions, ticketId } = await setup()
+    const overTheTestLimit = Buffer.concat([FILES.png, Buffer.alloc(LIMIT, 1)]) // 200 KB + a little
+
+    for (const NODE_ENV of ['development', 'production']) {
+      expect(maxFileBytes({ NODE_ENV, ATTACHMENT_MAX_BYTES: String(LIMIT) })).toBe(10 * 1024 * 1024)
+    }
+    // The real route, too: with NODE_ENV=development the same file that is too big in tests is accepted
+    process.env.NODE_ENV = 'development'
+    try {
+      const res = await upload(sessions.requester, ticketId, [['over-test-limit.png', overTheTestLimit]])
+      expect(res.status).toBe(201)
+    } finally {
+      process.env.NODE_ENV = 'test'
+    }
+    // ...and back in the test environment it's refused again
+    const refused = await upload(sessions.requester, ticketId, [['again.png', overTheTestLimit]])
+    expect(refused.status).toBe(413)
   })
 })

@@ -17,9 +17,10 @@
     "db:password-tokens:cleanup": "node scripts/cleanup-password-tokens.js",
     "db:department-report": "node scripts/department-report.js",
     "db:verify-departments": "node scripts/verify-department-migration.js",
-    "test": "jest",
+    "test": "jest && npm run test:real-size",
     "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage",
+    "test:coverage": "jest --coverage && npm run test:real-size",
+    "test:real-size": "jest --config jest.real-size.config.js",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint . --max-warnings=0"
