@@ -10,7 +10,7 @@ const { HttpError } = require('../middleware/errors')
 const { requireAuth, requireRole, isStaff } = require('../middleware/auth')
 const validate = require('../middleware/validate')
 const { OVERDUE_SQL } = require('../overdue')
-const { TICKET_SORTS, orderBySql, listRows } = require('../pagination')
+const { TICKET_SORTS, TICKET_PAGED_DEFAULT, orderBySql, listRows } = require('../pagination')
 const schemas = require('../schemas/tickets')
 const { addComment } = require('../schemas/comments')
 const notify = require('../mail/notifications')
@@ -67,7 +67,8 @@ async function loadTicket(id, user) {
 router.use(requireAuth)
 
 // GET /api/tickets?status=&priority=&category=&assigned=me|unassigned&q=&overdue=1&page=&pageSize=&sort=&order=
-// Without page: every matching ticket as a plain array (as before). With page: { items, total, page, pageSize }.
+// Without page: every matching ticket as a plain array (as before). With page: { items, total, page, pageSize },
+// newest first unless sorted.
 // sort: created_at, updated_at, priority, status, title (src/pagination.js)
 router.get('/', validate(schemas.listTickets), async (req, res) => {
   const { status, priority, category, assigned, q, overdue } = req.valid.query
@@ -110,6 +111,7 @@ router.get('/', validate(schemas.listTickets), async (req, res) => {
   // Without ?sort=: most urgent first, then newest (t.id breaks ties between tickets created in the same second)
   const orderSql = orderBySql(TICKET_SORTS, req.valid.query, {
     defaultSql: 'p.level DESC, t.created_at DESC, t.id DESC',
+    pagedSort: TICKET_PAGED_DEFAULT,
     idColumn: 't.id',
   })
   res.json(

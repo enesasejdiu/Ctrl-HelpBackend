@@ -133,13 +133,23 @@ describe('GET /api/tickets with page', () => {
     expect(Object.keys(res.body).sort()).toEqual(['items', 'page', 'pageSize', 'total'])
     expect(res.body).toMatchObject({ total: 35, page: 1, pageSize: DEFAULT_PAGE_SIZE })
     expect(res.body.items).toHaveLength(DEFAULT_PAGE_SIZE)
-    // The rows are the same as in the plain array, in the same order
-    const plain = await get('/api/tickets')
+    // The same row objects as the plain array, sorted the same way
+    const plain = await get('/api/tickets?sort=created_at')
     expect(res.body.items).toEqual(plain.body.slice(0, DEFAULT_PAGE_SIZE))
   })
 
+  test('without sort, a page is newest first (created_at desc), unlike the plain array', async () => {
+    const created = (t) => new Date(t.created_at).getTime()
+    const res = await get('/api/tickets?page=1&pageSize=100')
+    expect(res.body.items.map((t) => t.id)).toEqual(expectedOrder(tickets, created, 'desc'))
+    // order alone turns that default around; without page, order alone changes nothing
+    const asc = await get('/api/tickets?page=1&pageSize=100&order=asc')
+    expect(asc.body.items.map((t) => t.id)).toEqual(expectedOrder(tickets, created, 'asc'))
+    expect((await get('/api/tickets?order=asc')).body).toEqual((await get('/api/tickets')).body)
+  })
+
   test('later pages, the short last page, and a page past the end (empty, with the real total)', async () => {
-    const plain = (await get('/api/tickets')).body
+    const plain = (await get('/api/tickets?sort=created_at')).body
     const page2 = await get('/api/tickets?page=2&pageSize=10')
     expect(page2.body).toMatchObject({ total: 35, page: 2, pageSize: 10 })
     expect(page2.body.items).toEqual(plain.slice(10, 20))
@@ -178,7 +188,7 @@ describe('GET /api/tickets with page', () => {
     const [[high]] = await pool.query("SELECT id FROM priorities WHERE name = 'High'")
     const query = filters.replace('PRIORITY', high.id)
     const caller = callers.agent // staff: sees every ticket; "me" = the agent
-    const plain = await get(`/api/tickets?${query}`, caller)
+    const plain = await get(`/api/tickets?${query}&sort=created_at`, caller)
     const paged = await get(`/api/tickets?${query}&page=1&pageSize=5`, caller)
     expect(paged.body.total).toBe(plain.body.length)
     expect(paged.body.items).toEqual(plain.body.slice(0, 5))
@@ -207,6 +217,28 @@ describe('sorting tickets', () => {
   test('the allow-list is exactly these columns', () => {
     expect(Object.keys(TICKET_SORTS)).toEqual(Object.keys(VALUE))
   })
+
+  test('priority sorts by urgency (Low < Medium < High < Critical), not by name', async () => {
+    const res = await get('/api/tickets?sort=priority&order=asc')
+    const names = [...new Set(res.body.map((t) => t.priority_name))]
+    expect(names).toEqual(['Low', 'Medium', 'High', 'Critical'])
+  })
+
+  // Only 4 priorities and 7 statuses for 35 tickets: most rows tie, and only the id keeps the pages apart
+  test.each(['priority', 'status'])(
+    'many equal %s values: pages of 3 have no duplicates and miss nothing',
+    async (sort) => {
+      for (const order of ['asc', 'desc']) {
+        const ids = []
+        for (let page = 1; page <= 12; page += 1) {
+          const res = await get(`/api/tickets?sort=${sort}&order=${order}&page=${page}&pageSize=3`)
+          ids.push(...res.body.items.map((t) => t.id))
+        }
+        expect(ids).toHaveLength(35)
+        expect(new Set(ids).size).toBe(35)
+      }
+    },
+  )
 
   test.each(
     Object.keys(VALUE).flatMap((sort) => [
@@ -281,7 +313,10 @@ describe('GET /api/users', () => {
     role: (u) => u.role,
     department: (u) => u.department_name?.toLowerCase() ?? null,
     created_at: (u) => new Date(u.created_at).getTime(),
+    last_login_at: (u) => (u.last_login_at ? new Date(u.last_login_at).getTime() : null),
   }
+  // These sort users without a value (no department, never logged in) last in both directions
+  const NULLS_LAST = ['department', 'last_login_at']
 
   test('without page: the plain array, newest first, as before', async () => {
     const res = await get('/api/users')
@@ -292,11 +327,13 @@ describe('GET /api/users', () => {
     expect(typeof res.body[0].is_active).toBe('boolean')
   })
 
-  test('with page: { items, total, page, pageSize }, the same rows as the plain array', async () => {
-    const plain = (await get('/api/users')).body
+  test('with page: { items, total, page, pageSize }, by name unless sorted, the same rows as the plain array', async () => {
+    const plain = (await get('/api/users?sort=name')).body
     const res = await get('/api/users?page=2&pageSize=3')
     expect(res.body).toEqual({ items: plain.slice(3, 6), total: users.length, page: 2, pageSize: 3 })
     expect(res.body.items[0]).not.toHaveProperty('password_hash')
+    const all = await get('/api/users?page=1&pageSize=100')
+    expect(all.body.items.map((u) => u.id)).toEqual(expectedOrder(users, VALUE.name, 'asc'))
   })
 
   test('the allow-list is exactly these columns', () => {
@@ -311,8 +348,7 @@ describe('GET /api/users', () => {
   )('sort=%s&order=%s, paged through', async (sort, order) => {
     const { ids, total } = await allPages(`/api/users?sort=${sort}&order=${order}`)
     expect(total).toBe(users.length)
-    // Users without a department come last both ways
-    expect(ids).toEqual(expectedOrder(users, VALUE[sort], order, { nullsLast: sort === 'department' }))
+    expect(ids).toEqual(expectedOrder(users, VALUE[sort], order, { nullsLast: NULLS_LAST.includes(sort) }))
   })
 
   test('role sorts alphabetically, not in the ENUM order', async () => {

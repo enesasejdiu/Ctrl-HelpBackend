@@ -870,27 +870,30 @@ as the change itself.
 `GET /api/tickets` and `GET /api/users` can return one page at a time, sorted by a column. The paging parameters
 go next to the list's filters (tickets: `status`, `priority`, `category`, `assigned`, `q`, `overdue`; users: none).
 
-| Parameter  | Values                          | Default                         |
-| ---------- | ------------------------------- | ------------------------------- |
-| `page`     | 1 to 1,000,000                  | not sent: no paging (see below) |
-| `pageSize` | 1 to 100                        | 25                              |
-| `sort`     | one of the list's columns below | the list's own order            |
-| `order`    | `asc` or `desc`                 | the column's direction below    |
+| Parameter  | Values                          | Default                                                                 |
+| ---------- | ------------------------------- | ----------------------------------------------------------------------- |
+| `page`     | 1 to 1,000,000                  | not sent: no paging (see below)                                         |
+| `pageSize` | 1 to 100                        | 25                                                                      |
+| `sort`     | one of the list's columns below | with `page`: tickets `created_at`, users `name`; without: the old order |
+| `order`    | `asc` or `desc`                 | the column's direction below                                            |
 
-| List           | `sort`       | Sorts by                                                                                      | Without `order` |
-| -------------- | ------------ | --------------------------------------------------------------------------------------------- | --------------- |
-| `/api/tickets` | `created_at` | When the ticket was created                                                                   | `desc`          |
-|                | `updated_at` | When it last changed                                                                          | `desc`          |
-|                | `priority`   | Urgency (the priority's level: Critical, High, Medium, Low), not its name                     | `desc`          |
-|                | `status`     | The workflow order: open, assigned, in_progress, waiting_for_user, resolved, closed, reopened | `asc`           |
-|                | `title`      | Title, A–Z                                                                                    | `asc`           |
-| `/api/users`   | `name`       | Name, A–Z                                                                                     | `asc`           |
-|                | `email`      | Email, A–Z                                                                                    | `asc`           |
-|                | `role`       | Role, alphabetically: admin, agent, employee, hr                                              | `asc`           |
-|                | `department` | Department name; users without one come last in both directions                               | `asc`           |
-|                | `created_at` | When the account was created                                                                  | `desc`          |
+| List           | `sort`          | Sorts by                                                                                      | Without `order` |
+| -------------- | --------------- | --------------------------------------------------------------------------------------------- | --------------- |
+| `/api/tickets` | `created_at`    | When the ticket was created                                                                   | `desc`          |
+|                | `updated_at`    | When it last changed                                                                          | `desc`          |
+|                | `priority`      | Urgency (the priority's level: Critical, High, Medium, Low), not its name                     | `desc`          |
+|                | `status`        | The workflow order: open, assigned, in_progress, waiting_for_user, resolved, closed, reopened | `asc`           |
+|                | `title`         | Title, A–Z                                                                                    | `asc`           |
+| `/api/users`   | `name`          | Name, A–Z                                                                                     | `asc`           |
+|                | `email`         | Email, A–Z                                                                                    | `asc`           |
+|                | `role`          | Role, alphabetically: admin, agent, employee, hr                                              | `asc`           |
+|                | `department`    | Department name; users without one come last in both directions                               | `asc`           |
+|                | `created_at`    | When the account was created                                                                  | `desc`          |
+|                | `last_login_at` | The last login; users who never logged in come last in both directions                        | `desc`          |
 
-Without `sort`, tickets come most urgent first, then newest; users newest first (the order these lists always had).
+Without `sort`, a page (`page` sent) is sorted by the list's paged default: tickets newest first (`created_at`
+desc), users by name (A–Z); `order` alone turns that around. The plain array (no `page`) keeps the order these lists
+always had: tickets most urgent first, then newest; users newest first; `order` alone changes nothing there.
 Rows that tie (the same priority, the same name) are ordered by id in the same direction, so paging never shows a row
 twice or skips one.
 

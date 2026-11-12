@@ -2,7 +2,8 @@
 //
 // - Without ?page= a list answers exactly as before: a plain JSON array of every row (old clients keep working).
 //   ?sort=&order= still apply to it; ?pageSize= alone changes nothing.
-// - With ?page= it answers { items, total, page, pageSize }: one page of rows, and `total` = how many rows match the
+// - With ?page= it answers { items, total, page, pageSize }, sorted by ?sort= or else by the list's paged default
+//   (tickets newest first, users by name): one page of rows, and `total` = how many rows match the
 //   filters (the count query uses the same FROM and WHERE as the list). A page past the end has items: [] and the
 //   real total, so the client can go back to the last page.
 // - The sort columns are an explicit allow-list per list (TICKET_SORTS, USER_SORTS below): ?sort= picks an entry by name,
@@ -37,7 +38,14 @@ const USER_SORTS = {
   // Users without a department come last in both directions
   department: { order: 'asc', sql: (dir) => `d.name IS NULL, d.name ${dir}` },
   created_at: { order: 'desc', sql: (dir) => `u.created_at ${dir}` },
+  // Users who never logged in come last in both directions
+  last_login_at: { order: 'desc', sql: (dir) => `u.last_login_at IS NULL, u.last_login_at ${dir}` },
 }
+
+// The sort a paged request (?page=) gets when it sends no ?sort=. A request without ?page= keeps the list's old order
+// instead, so the plain array stays exactly as it was.
+const TICKET_PAGED_DEFAULT = 'created_at'
+const USER_PAGED_DEFAULT = 'name'
 
 // An empty value (?page=) counts as not sent, like the list filters
 const optional = (schema) => z.preprocess((value) => (value === '' ? undefined : value), schema.optional())
@@ -67,11 +75,13 @@ function pagingSchema(sorts) {
   }
 }
 
-// The ORDER BY clause: the chosen sort (its default direction when ?order= is left out), or the list's own default
-// order when ?sort= is left out. `idColumn` breaks ties, in the same direction.
-function orderBySql(sorts, { sort, order }, { defaultSql, idColumn }) {
-  if (!sort) return `ORDER BY ${defaultSql}`
-  const entry = sorts[sort]
+// The ORDER BY clause: the chosen sort (its default direction when ?order= is left out). Without ?sort=: a paged
+// request uses `pagedSort` (?order= applies to it), a plain-array request the list's old order `defaultSql`.
+// `idColumn` breaks ties, in the same direction.
+function orderBySql(sorts, { sort, order, page }, { defaultSql, pagedSort, idColumn }) {
+  const chosen = sort ?? (page !== undefined ? pagedSort : undefined)
+  if (!chosen) return `ORDER BY ${defaultSql}`
+  const entry = sorts[chosen]
   const direction = (order ?? entry.order) === 'asc' ? 'ASC' : 'DESC'
   return `ORDER BY ${entry.sql(direction)}, ${idColumn} ${direction}`
 }
@@ -96,6 +106,8 @@ async function listRows(db, { selectSql, fromSql, whereSql, params, orderSql, qu
 module.exports = {
   TICKET_SORTS,
   USER_SORTS,
+  TICKET_PAGED_DEFAULT,
+  USER_PAGED_DEFAULT,
   pagingSchema,
   orderBySql,
   listRows,

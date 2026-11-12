@@ -17,7 +17,7 @@ const { makeTemporaryPassword } = require('../temporaryPassword')
 const { issueToken, latestPurpose, unusablePasswordHash } = require('../passwordTokens')
 const { isEmailConfigured } = require('../mail/mailer')
 const notify = require('../mail/notifications')
-const { USER_SORTS, orderBySql, listRows } = require('../pagination')
+const { USER_SORTS, USER_PAGED_DEFAULT, orderBySql, listRows } = require('../pagination')
 
 const EMAIL = 'email'
 const TEMPORARY_PASSWORD = 'temporary_password'
@@ -62,11 +62,13 @@ router.get('/agents', requireRole('agent', 'admin'), async (req, res) => {
 })
 
 // GET /api/users?page=&pageSize=&sort=&order= (admin and HR) → every account, newest first, as a plain array (as
-// before); with page: { items, total, page, pageSize }. sort: name, email, role, department, created_at
+// before); with page: { items, total, page, pageSize }, by name unless sorted. sort: name, email, role, department,
+// created_at, last_login_at
 // (src/pagination.js)
 router.get('/', requireRole('admin', 'hr'), validate(schemas.listUsers), async (req, res) => {
   const orderSql = orderBySql(USER_SORTS, req.valid.query, {
     defaultSql: 'u.created_at DESC, u.id DESC',
+    pagedSort: USER_PAGED_DEFAULT,
     idColumn: 'u.id',
   })
   res.json(
