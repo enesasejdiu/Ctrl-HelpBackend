@@ -36,5 +36,7 @@ app.listen(PORT, (err) => {
 
 // Deletes sessions that ended more than 7 days ago: now, then once a day (see src/sessionStore.js)
 startSessionCleanup()
+// Closes tickets resolved for auto_close_days, every day at 03:00 Europe/Budapest (src/jobs/schedule.js)
+require('./jobs/schedule').startAutoCloseSchedule()
 // The same for password links used or expired more than 7 days ago (see src/passwordTokens.js)
 require('./passwordTokens').startPasswordTokenCleanup(require('./db'))

@@ -304,21 +304,26 @@ company.get('/public', async (req, res) => {
 
 company.use(requireAuth)
 
-// GET /api/settings (admin) → { company_name }
+// GET /api/settings (admin) → { company_name, auto_close_days }
 company.get('/', adminOnly, async (req, res) => {
-  res.json(await settings.companySettings())
+  res.json(await settings.adminSettings())
 })
 
-// PATCH /api/settings { company_name } (admin) → the settings. company_name: trimmed, 1–100 characters.
+// PATCH /api/settings { company_name?, auto_close_days? } (admin, at least one) → the settings.
+// company_name: trimmed, 1–100 characters. auto_close_days: a whole number of days, 0–365; 0 switches the daily
+// auto-close job off (src/jobs/autoClose.js).
 company.patch('/', adminOnly, validate(schemas.updateSettings), async (req, res) => {
-  const { company_name: companyName } = req.valid.body
-  await pool.query(
-    `INSERT INTO settings (setting_key, setting_value) VALUES ('company_name', ?)
-     ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
-    [companyName],
-  )
+  const { company_name: companyName, auto_close_days: autoCloseDays } = req.valid.body
+  const upsert = (key, value) =>
+    pool.query(
+      `INSERT INTO settings (setting_key, setting_value) VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
+      [key, String(value)],
+    )
+  if (companyName !== undefined) await upsert('company_name', companyName)
+  if (autoCloseDays !== undefined) await upsert('auto_close_days', autoCloseDays)
   settings.clearCache()
-  res.json(await settings.companySettings())
+  res.json(await settings.adminSettings())
 })
 
 module.exports = { categories, priorities, company }
