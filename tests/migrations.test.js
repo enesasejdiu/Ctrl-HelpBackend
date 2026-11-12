@@ -134,11 +134,25 @@ describe('schema', () => {
       code: 'ER_DUP_ENTRY',
     })
   })
+
+  test('the sortable list columns are indexed (migration 013)', async () => {
+    const indexes = async (table) => {
+      const [rows] = await db.query(`SHOW INDEX FROM \`${table}\``)
+      return Object.fromEntries(rows.filter((r) => r.Seq_in_index === 1).map((r) => [r.Key_name, r.Column_name]))
+    }
+    expect(await indexes('tickets')).toMatchObject({
+      idx_tickets_created: 'created_at',
+      idx_tickets_updated: 'updated_at',
+      idx_tickets_title: 'title',
+      idx_tickets_status: 'status',
+    })
+    expect(await indexes('users')).toMatchObject({ idx_users_created: 'created_at', idx_users_name: 'name' })
+  })
 })
 
 describe('up → down → up', () => {
-  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 012 down to 003
-  test('rolling back 012, 011, 010, 009, 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
+  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 013 down to 003
+  test('rolling back 013, 012, 011, 010, 009, 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
     const { db, dbName } = await newDatabase()
     const schema = async () => {
       const tables = {}
@@ -154,7 +168,7 @@ describe('up → down → up', () => {
       (await db.query('SELECT filename FROM schema_migrations ORDER BY filename'))[0].map((r) => r.filename)
 
     const before = await schema()
-    for (let i = 0; i < 10; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
+    for (let i = 0; i < 11; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
     expect(await applied()).toEqual(['001_initial.sql', '002_hr_role_and_password_change.sql'])
     const [departments] = await db.query("SHOW TABLES LIKE 'departments'")
     expect(departments).toHaveLength(0)
@@ -165,7 +179,7 @@ describe('up → down → up', () => {
 
     await quietly(() => migrate({ dbName, backupFirst: false }))
     expect(await schema()).toEqual(before)
-    expect((await applied()).at(-1)).toBe('012_attachments.sql')
+    expect((await applied()).at(-1)).toBe('013_list_sort_indexes.sql')
   })
 
   test('011 keeps the links issued under 010 as setup links; rolling it back drops only reset links', async () => {

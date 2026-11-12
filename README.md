@@ -865,6 +865,67 @@ A role or active-status change is logged as its own event, not as `user_updated`
 already has logs nothing, and neither does a refused request. Account changes are logged in the same transaction
 as the change itself.
 
+## Pagination and sorting
+
+`GET /api/tickets` and `GET /api/users` can return one page at a time, sorted by a column. The paging parameters
+go next to the list's filters (tickets: `status`, `priority`, `category`, `assigned`, `q`, `overdue`; users: none).
+
+| Parameter  | Values                          | Default                         |
+| ---------- | ------------------------------- | ------------------------------- |
+| `page`     | 1 to 1,000,000                  | not sent: no paging (see below) |
+| `pageSize` | 1 to 100                        | 25                              |
+| `sort`     | one of the list's columns below | the list's own order            |
+| `order`    | `asc` or `desc`                 | the column's direction below    |
+
+| List           | `sort`       | Sorts by                                                                                      | Without `order` |
+| -------------- | ------------ | --------------------------------------------------------------------------------------------- | --------------- |
+| `/api/tickets` | `created_at` | When the ticket was created                                                                   | `desc`          |
+|                | `updated_at` | When it last changed                                                                          | `desc`          |
+|                | `priority`   | Urgency (the priority's level: Critical, High, Medium, Low), not its name                     | `desc`          |
+|                | `status`     | The workflow order: open, assigned, in_progress, waiting_for_user, resolved, closed, reopened | `asc`           |
+|                | `title`      | Title, A–Z                                                                                    | `asc`           |
+| `/api/users`   | `name`       | Name, A–Z                                                                                     | `asc`           |
+|                | `email`      | Email, A–Z                                                                                    | `asc`           |
+|                | `role`       | Role, alphabetically: admin, agent, employee, hr                                              | `asc`           |
+|                | `department` | Department name; users without one come last in both directions                               | `asc`           |
+|                | `created_at` | When the account was created                                                                  | `desc`          |
+
+Without `sort`, tickets come most urgent first, then newest; users newest first (the order these lists always had).
+Rows that tie (the same priority, the same name) are ordered by id in the same direction, so paging never shows a row
+twice or skips one.
+
+**Without `page`** the answer is exactly what it always was: a plain JSON array of every matching row. `sort` and
+`order` still apply to it; `pageSize` alone changes nothing. Existing clients keep working unchanged.
+
+**With `page`** the answer is one page and the number of matching rows:
+
+```json
+{ "items": [{ "id": 31, "title": "Printer offline", "...": "..." }], "total": 132, "page": 2, "pageSize": 25 }
+```
+
+- `items` has the same row objects the plain array has, in the same order.
+- `total` counts every row that matches the filters (and, for an employee, only their own tickets): the count runs
+  with the same filters as the list.
+- A page past the end is not an error: `items` is `[]` and `total` is the real count, so a client can go back to the
+  last page (`ceil(total / pageSize)`).
+
+**Bad values** get 400 with every problem listed, like any other invalid input, e.g. `?page=0&sort=nope`:
+
+```json
+{
+  "message": "page must be at least 1",
+  "errors": [
+    { "field": "page", "message": "page must be at least 1" },
+    { "field": "sort", "message": "sort must be one of: created_at, updated_at, priority, status, title" }
+  ]
+}
+```
+
+`sort` only ever picks a column from the lists above (`src/pagination.js`); the text of the request never goes into
+the SQL, and `LIMIT` / `OFFSET` are query placeholders. An empty value (`?page=`) counts as not sent.
+Migration 013 indexes the sortable columns that need it (tickets: `created_at`, `updated_at`, `title`; users:
+`created_at`, `name`).
+
 ## API endpoints
 
 All endpoints except health, login, logout and the two set-password ones need a session: the `tf_session` cookie (an `Authorization` header is
@@ -896,7 +957,7 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | GET    | `/api/auth/me`                    | logged in    | The current user: `{ id, name, email, role, department_id, department_name, job_title, created_at, last_login_at, must_change_password }` (`null` when empty; never the password hash). Login returns the same user object                                                                                                                                                                                                                                                                                                    |
 | POST   | `/api/auth/change-password`       | logged in    | Change your password `{ currentPassword, newPassword }` → `{ message, user }`, with fresh session cookies; clears `must_change_password` and ends the user's other sessions (400 `INVALID_CURRENT_PASSWORD` if the current password is wrong). See [Changing your own password](#changing-your-own-password-post-apiauthchange-password)                                                                                                                                                                                      |
 | GET    | `/api/meta`                       | logged in    | Categories and priorities (for dropdowns), and `password_delivery` (`email` or `temporary_password`)                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| GET    | `/api/tickets`                    | logged in    | List tickets (employees: own only). Filters: `status`, `priority`, `category`, `assigned=me\|unassigned`, `q`, `overdue=1`                                                                                                                                                                                                                                                                                                                                                                                                    |
+| GET    | `/api/tickets`                    | logged in    | List tickets (employees: own only). Filters: `status`, `priority`, `category`, `assigned=me\|unassigned`, `q`, `overdue=1`. Paging and sorting: `page`, `pageSize`, `sort`, `order` → `{ items, total, page, pageSize }` (without `page`: the plain array). See [Pagination and sorting](#pagination-and-sorting)                                                                                                                                                                                                             |
 | POST   | `/api/tickets`                    | logged in    | Create a ticket `{ title, description, category_id, priority_id }`                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | GET    | `/api/tickets/:id`                | logged in    | One ticket with comments, history and `attachments` (employees: own tickets, no internal notes)                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | GET    | `/api/tickets/:id/attachments`    | logged in    | The ticket's attachments (requester and staff). See [Attachments](#attachments)                                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -908,7 +969,7 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | PATCH  | `/api/tickets/:id/priority`       | agent, admin | Change priority `{ priority_id }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | PATCH  | `/api/tickets/:id/assign`         | agent, admin | Assign `{ assigned_to }` (`null` = unassign; agents can only assign themselves)                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | GET    | `/api/users/agents`               | agent, admin | Active agents and admins (for the "Assign to" dropdown)                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| GET    | `/api/users`                      | admin, hr    | All users                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| GET    | `/api/users`                      | admin, hr    | All users (newest first). Paging and sorting: `page`, `pageSize`, `sort`, `order` → `{ items, total, page, pageSize }` (without `page`: the plain array). See [Pagination and sorting](#pagination-and-sorting)                                                                                                                                                                                                                                                                                                               |
 | POST   | `/api/users`                      | admin, hr    | Create an account `{ name, email, role, department_id?, job_title? }` → `{ user, password_delivery }`, plus `temporaryPassword` when email isn't set up; with email set up the user gets a one-time setup link (HR: employees only, role optional). See [Creating an account](#creating-an-account-post-apiusers)                                                                                                                                                                                                             |
 | POST   | `/api/users/:id/resend-link`      | admin, hr    | `{ purpose? }`. A new one-time link by email (the old one stops working) → `{ user, password_delivery }`; 409 when email isn't set up, the user already set a password, or is deactivated (HR: employees only)                                                                                                                                                                                                                                                                                                                |
 | GET    | `/api/auth/set-password/validate` | anyone       | `?token=` → `{ status: valid \| expired \| used \| invalid, purpose }` for the set-password page                                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -952,6 +1013,7 @@ src/
   app.js                  Express app: middleware, routes, error handling
   db.js                   MySQL connection pool
   overdue.js              The shared "is this ticket overdue?" SQL rule
+  pagination.js           Paging and sorting for GET /api/tickets and /api/users: the sort allow-lists, page + count
   temporaryPassword.js    Random temporary passwords for password resets
   passwordTokens.js       One-time password links (setup and reset): tokens (hashed), 48-hour expiry, one use
   mail/
