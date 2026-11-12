@@ -152,6 +152,11 @@ start if the database name doesn't begin with `ticketflow_test_`.
 Tests live in `tests/**/*.test.js`. `tests/helpers.js` has `api` (a supertest client for the app), `resetData()`,
 `createUser()` and `loginAs()`.
 
+**Slow hooks.** If a `beforeEach` or `afterEach` is still running after 5 s, `tests/slowHooks.js` prints a
+`[slow hook]` warning: which hook (file and line), which test, which helper step it was in (e.g.
+`resetData: TRUNCATE users`), and the database's `PROCESSLIST` at that moment; then how long the hook took in total.
+Normal runs print nothing. It's there to explain rare stalls on CI; it never changes a result.
+
 ## Code style and continuous integration
 
 **Style.** Prettier formats the code with the same settings as the frontend (`.prettierrc.json`: no semicolons,
