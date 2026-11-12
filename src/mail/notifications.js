@@ -17,6 +17,7 @@
 const pool = require('../db')
 const { getMailer, redact, sendMailSafe } = require('./mailer')
 const templates = require('./templates')
+const { companyName } = require('../settings')
 const { TOKEN_HOURS, issueToken } = require('../passwordTokens')
 const { recordAudit } = require('../audit')
 
@@ -102,6 +103,7 @@ function passwordLink({ userId, token, purpose, actorId }) {
     for (const person of recipients([user], null)) {
       const link = templates.links.setPassword(appUrl(), token)
       const message = templates.passwordLink({
+        company: await companyName(),
         purpose,
         name: person.name,
         email: person.email,
@@ -120,7 +122,13 @@ function ticketCreated({ ticketId, actorId }) {
     if (!ticket) return
     const link = templates.links.ticket(appUrl(), ticket.id)
     for (const person of recipients(await itTeam(), actor)) {
-      const message = templates.ticketCreated({ recipientName: person.name, ticket, actor: actor?.name, link })
+      const message = templates.ticketCreated({
+        company: await companyName(),
+        recipientName: person.name,
+        ticket,
+        actor: actor?.name,
+        link,
+      })
       await deliver('ticketCreated', person.email, { ...message, link })
     }
   })
@@ -132,7 +140,13 @@ function ticketAssigned({ ticketId, assigneeId, actorId }) {
     if (!ticket) return
     const link = templates.links.ticket(appUrl(), ticket.id)
     for (const person of recipients([assignee], actor)) {
-      const message = templates.ticketAssigned({ recipientName: person.name, ticket, actor: actor?.name, link })
+      const message = templates.ticketAssigned({
+        company: await companyName(),
+        recipientName: person.name,
+        ticket,
+        actor: actor?.name,
+        link,
+      })
       await deliver('ticketAssigned', person.email, { ...message, link })
     }
   })
@@ -168,6 +182,7 @@ function commentAdded({ commentId, actorId }) {
     const link = templates.links.ticket(appUrl(), ticket.id)
     for (const person of recipients(people, actor)) {
       const message = templates.commentAdded({
+        company: await companyName(),
         recipientName: person.name,
         ticket,
         actor: actor?.name,
@@ -186,7 +201,13 @@ function ticketResolved({ ticketId, actorId }) {
     if (!ticket) return
     const link = templates.links.ticket(appUrl(), ticket.id)
     for (const person of recipients([await loadUser(ticket.requester_id)], actor)) {
-      const message = templates.ticketResolved({ recipientName: person.name, ticket, actor: actor?.name, link })
+      const message = templates.ticketResolved({
+        company: await companyName(),
+        recipientName: person.name,
+        ticket,
+        actor: actor?.name,
+        link,
+      })
       await deliver('ticketResolved', person.email, { ...message, link })
     }
   })
@@ -230,6 +251,7 @@ function forgotPassword({ email, ip }) {
     if (!user) return
     const url = templates.links.setPassword(appUrl(), link.token)
     const message = templates.passwordLink({
+      company: await companyName(),
       purpose: 'reset',
       requested: true,
       name: user.name,
