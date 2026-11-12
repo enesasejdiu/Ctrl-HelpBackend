@@ -57,6 +57,9 @@ async function rollback({ dbName = process.env.DB_NAME, backupFirst = true } = {
     await connection.query('DELETE FROM schema_migrations WHERE filename = ?', [latest.filename])
     console.log(`Rolled back ${latest.filename}`)
   } finally {
+    // Release the lock explicitly: closing the connection releases it too, but the server does that a moment later,
+    // so the next migrate or rollback (e.g. several in a row) could still find it taken and give up
+    await connection.query('SELECT RELEASE_LOCK(?)', [migrationLockName(dbName)]).catch(() => {})
     await connection.end()
   }
 }
