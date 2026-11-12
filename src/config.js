@@ -14,6 +14,7 @@
 const path = require('path')
 const { z } = require('zod')
 const { DEFAULT_LOCKOUT_MINUTES, MAX_LOCKOUT_MINUTES, parseLockoutMinutes } = require('./lockout')
+const { DEFAULT_MAX_FILE_BYTES, parseMaxFileBytes } = require('./attachmentLimit')
 
 const MIN_SECRET_LENGTH = 32
 
@@ -233,6 +234,23 @@ function lockoutProblems(env) {
     : []
 }
 
+// ATTACHMENT_MAX_BYTES (src/attachments.js) may only lower the attachment size limit in the test environment, like
+// LOCKOUT_MINUTES. Anywhere else any value other than 10 MB (10485760) is refused: real users always get 10 MB.
+function attachmentLimitProblems(env) {
+  const raw = env.ATTACHMENT_MAX_BYTES
+  if (raw === undefined || raw === '') return []
+  if (env.NODE_ENV !== 'test') {
+    return Number(raw) === DEFAULT_MAX_FILE_BYTES
+      ? []
+      : [
+          `ATTACHMENT_MAX_BYTES can only be changed when NODE_ENV=test; attachments are always limited to 10 MB here (got ${raw}). Remove it from .env`,
+        ]
+  }
+  return parseMaxFileBytes(raw) === null
+    ? [`ATTACHMENT_MAX_BYTES must be a whole number of bytes from 1 to ${DEFAULT_MAX_FILE_BYTES} (got ${raw})`]
+    : []
+}
+
 function loadConfig(env = process.env, { scope = 'server' } = {}) {
   const schema = scope === 'database' ? databaseSchema : serverSchema
   const result = schema.safeParse(env)
@@ -240,7 +258,7 @@ function loadConfig(env = process.env, { scope = 'server' } = {}) {
   let mail = null
   let notices = []
   if (scope === 'server') {
-    issues.push(...lockoutProblems(env), ...uploadDirProblems(env))
+    issues.push(...lockoutProblems(env), ...attachmentLimitProblems(env), ...uploadDirProblems(env))
     // Collected together with the other problems, so one start lists everything that is wrong
     try {
       ;({ mail, notices } = loadMailConfig(env))

@@ -30,6 +30,8 @@ const PUBLIC = [
   'POST /api/auth/set-password',
   // Asking for a reset link by email: for people who can't log in
   'POST /api/auth/forgot-password',
+  // The company name and whether email is set up, for the sign-in page (nothing private)
+  'GET /api/settings/public',
   // What the sign-in page may offer (email_enabled)
   'GET /api/auth/config',
 ]

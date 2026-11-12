@@ -10,7 +10,7 @@ require('dotenv').config()
 
 const bcrypt = require('bcryptjs')
 const pool = require('../src/db')
-const { categories, priorities } = require('./reference-data')
+const { categories, priorities, defaultPriority } = require('./reference-data')
 
 const PASSWORD = 'password123'
 const HOUR = 60 * 60 * 1000
@@ -312,18 +312,23 @@ async function seed({ force = process.argv.includes('--force') } = {}) {
     departmentIds[name] = r.insertId
   }
 
-  // 2–3. Lookup tables
+  // 2–3. Lookup tables, in their standard order, with the standard default priority (as migration 015 sets them up)
   const categoryIds = {}
-  for (const [name, description] of categories) {
-    const [r] = await pool.query('INSERT INTO categories (name, description) VALUES (?, ?)', [name, description])
+  for (const [index, [name, description]] of categories.entries()) {
+    const [r] = await pool.query('INSERT INTO categories (name, description, sort_order) VALUES (?, ?, ?)', [
+      name,
+      description,
+      index + 1,
+    ])
     categoryIds[name] = r.insertId
   }
   const priorityIds = {}
   for (const [name, level, targetHours] of priorities) {
-    const [r] = await pool.query('INSERT INTO priorities (name, level, target_hours) VALUES (?, ?, ?)', [
+    const [r] = await pool.query('INSERT INTO priorities (name, level, target_hours, is_default) VALUES (?, ?, ?, ?)', [
       name,
       level,
       targetHours,
+      name === defaultPriority,
     ])
     priorityIds[name] = r.insertId
   }

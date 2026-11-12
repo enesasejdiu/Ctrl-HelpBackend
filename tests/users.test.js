@@ -677,21 +677,26 @@ describe('PATCH /api/users/:id never removes the last active admin', () => {
       await blocker.query("SELECT id FROM users WHERE role = 'admin' FOR UPDATE")
 
       const requests = Promise.all([patch(b.id, tokenA, body), patch(a.id, tokenB, body)])
-      // Wait until both requests are queued behind the lock. Only lock waits in this test's own database count (the
-      // MySQL server is shared), and if they don't both get there in time the test fails here: letting them go one
-      // after the other would test something else (the second admin would just be logged out, 401/403, not 409).
+      // Wait until both requests are queued behind the lock, i.e. both are running the guard's locking SELECT. Only
+      // this test's own database counts (the server is shared). If they don't both get there in time the test fails
+      // here: letting them go one after the other would test something else (the second admin would just be logged
+      // out, 401/403, not 409).
+      // Counted from PROCESSLIST, not information_schema.INNODB_TRX: InnoDB only refreshes INNODB_TRX from a cache
+      // after it has gone unread for ~100 ms, so polling it faster can keep showing a picture from before the
+      // requests started. On MariaDB 11.8 (CI) that hid both waiting requests while SHOW ENGINE INNODB STATUS showed
+      // them in LOCK WAIT. PROCESSLIST isn't cached, and the guard's SELECT only stays there while it's blocked.
       const deadline = Date.now() + 10000
       let waiting = 0
       while (waiting < 2 && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 20))
         ;[[{ waiting }]] = await blocker.query(
           `SELECT COUNT(*) AS waiting
-           FROM information_schema.INNODB_TRX t
-           JOIN information_schema.PROCESSLIST p ON p.ID = t.trx_mysql_thread_id
-           WHERE t.trx_state = 'LOCK WAIT' AND p.DB = DATABASE()`,
+           FROM information_schema.PROCESSLIST
+           WHERE DB = DATABASE() AND COMMAND = 'Query'
+             AND INFO LIKE 'SELECT id FROM users WHERE role = ''admin'' AND is_active = TRUE AND id <> % FOR UPDATE'`,
         )
       }
-      expect(waiting).toBe(2)
+      expect(Number(waiting)).toBe(2)
       await blocker.commit()
       results = await requests
     } finally {

@@ -7,6 +7,7 @@
 // - Links are built by the caller from APP_URL only (see links below), never from request headers.
 // - Subjects are one line: line breaks and control characters in a title become spaces.
 const strings = require('./strings')
+const { DEFAULT_COMPANY_NAME } = require('../settings')
 
 const EXCERPT_LENGTH = 300
 const SUBJECT_TITLE_LENGTH = 120
@@ -50,9 +51,18 @@ const links = {
 }
 
 // Builds the email from blocks: { text } paragraphs, { quote } (an excerpt, shown indented) and one { button, link }.
-function render({ subject, greetingName, blocks, reason }) {
+// company: the company name from the admin settings; it fills {company} in every text, the subject and the header.
+function render({ subject, greetingName, blocks, reason, company = DEFAULT_COMPANY_NAME }) {
+  const withCompany = (text) => fill(text, { company })
+  subject = withCompany(subject)
+  blocks = blocks.map((block) => ({
+    ...block,
+    ...(block.text !== undefined && { text: withCompany(block.text) }),
+    ...(block.button !== undefined && { button: withCompany(block.button) }),
+  }))
   const greeting = greetingName ? fill(strings.greeting, { name: greetingName }) : strings.greetingNoName
-  const footer = fill(strings.footer, { reason })
+  const footer = withCompany(fill(strings.footer, { reason }))
+  const footerAutomatic = withCompany(strings.footerAutomatic)
 
   const textParts = [greeting]
   const htmlParts = [`<p style="margin:0 0 16px">${escapeHtml(greeting)}</p>`]
@@ -82,14 +92,14 @@ function render({ subject, greetingName, blocks, reason }) {
     }
   }
 
-  const text = `${textParts.join('\n\n')}\n\n--\n${footer}\n${strings.footerAutomatic}\n`
+  const text = `${textParts.join('\n\n')}\n\n--\n${footer}\n${footerAutomatic}\n`
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>${escapeHtml(subject)}</title></head>
 <body style="margin:0;padding:24px;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#111827">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;margin:0 auto;background:#ffffff;border-radius:8px">
-<tr><td style="padding:16px 24px;border-bottom:1px solid #e5e7eb;font-size:18px;font-weight:700;color:#4f46e5">${escapeHtml(strings.appName)}</td></tr>
+<tr><td style="padding:16px 24px;border-bottom:1px solid #e5e7eb;font-size:18px;font-weight:700;color:#4f46e5">${escapeHtml(company)}</td></tr>
 <tr><td style="padding:24px;font-size:15px;line-height:1.5">${htmlParts.join('\n')}</td></tr>
-<tr><td style="padding:16px 24px;border-top:1px solid #e5e7eb;font-size:12px;color:#6b7280">${escapeHtml(footer)}<br>${escapeHtml(strings.footerAutomatic)}</td></tr>
+<tr><td style="padding:16px 24px;border-top:1px solid #e5e7eb;font-size:12px;color:#6b7280">${escapeHtml(footer)}<br>${escapeHtml(footerAutomatic)}</td></tr>
 </table>
 </body></html>`
   return { subject, text, html }
@@ -100,8 +110,8 @@ const ticketSubject = (template, ticket) =>
 const ticketButton = (ticket) => fill(strings.openTicket, { id: ticket.id })
 
 // A one-time password link: purpose 'setup' (new account), 'reset' (an admin or HR reset the password) or 'forgot'
-// (the person asked for it with "Forgot password": 1 hour, and "your password hasn't changed")
-function passwordLink({ purpose, name, email, actor, link, hours }) {
+// (the person asked for it with "Forgot password": 1 hour, and "your password hasn't changed"). company fills {company}.
+function passwordLink({ purpose, name, email, actor, link, hours, company }) {
   if (purpose === 'forgot') {
     const s = strings.passwordForgot
     return render({
@@ -109,6 +119,7 @@ function passwordLink({ purpose, name, email, actor, link, hours }) {
       greetingName: name,
       blocks: [{ text: fill(s.intro, { email }) }, { button: s.button, link }, { text: s.expiry }, { text: s.ignore }],
       reason: s.reason,
+      company,
     })
   }
   const s = purpose === 'reset' ? strings.passwordReset : strings.accountSetup
@@ -122,17 +133,18 @@ function passwordLink({ purpose, name, email, actor, link, hours }) {
       { text: strings.passwordLink.unexpected },
     ],
     reason: s.reason,
+    company,
   })
 }
 
 // After a "Forgot password" link set a new password: a notice, without any link
-function passwordChanged({ name }) {
+function passwordChanged({ name, company }) {
   const s = strings.passwordChanged
-  return render({ subject: s.subject, greetingName: name, blocks: [{ text: s.body }], reason: s.reason })
+  return render({ subject: s.subject, greetingName: name, blocks: [{ text: s.body }], reason: s.reason, company })
 }
 
 // New ticket → IT
-function ticketCreated({ recipientName, ticket, actor, link }) {
+function ticketCreated({ recipientName, ticket, actor, link, company }) {
   const s = strings.ticketCreated
   return render({
     subject: ticketSubject(s.subject, ticket),
@@ -144,11 +156,12 @@ function ticketCreated({ recipientName, ticket, actor, link }) {
       { button: ticketButton(ticket), link },
     ],
     reason: s.reason,
+    company,
   })
 }
 
 // Assigned or reassigned → the new assignee
-function ticketAssigned({ recipientName, ticket, actor, link }) {
+function ticketAssigned({ recipientName, ticket, actor, link, company }) {
   const s = strings.ticketAssigned
   return render({
     subject: ticketSubject(s.subject, ticket),
@@ -159,11 +172,12 @@ function ticketAssigned({ recipientName, ticket, actor, link }) {
       { button: ticketButton(ticket), link },
     ],
     reason: s.reason,
+    company,
   })
 }
 
 // New comment → the other side. reason: 'requester' | 'assignee' | 'it'
-function commentAdded({ recipientName, ticket, actor, comment, link, reason }) {
+function commentAdded({ recipientName, ticket, actor, comment, link, reason, company }) {
   const s = strings.commentAdded
   const reasons = { requester: s.reasonRequester, assignee: s.reasonAssignee, it: s.reasonIt }
   return render({
@@ -175,11 +189,12 @@ function commentAdded({ recipientName, ticket, actor, comment, link, reason }) {
       { button: ticketButton(ticket), link },
     ],
     reason: reasons[reason],
+    company,
   })
 }
 
 // Resolved → the employee who opened it
-function ticketResolved({ recipientName, ticket, actor, link }) {
+function ticketResolved({ recipientName, ticket, actor, link, company }) {
   const s = strings.ticketResolved
   return render({
     subject: ticketSubject(s.subject, ticket),
@@ -191,6 +206,7 @@ function ticketResolved({ recipientName, ticket, actor, link }) {
       { button: ticketButton(ticket), link },
     ],
     reason: s.reason,
+    company,
   })
 }
 

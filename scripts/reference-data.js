@@ -1,5 +1,6 @@
-// The categories and priorities the app needs to work (tickets must have one of each).
-// Shared by scripts/seed.js and tests/globalSetup.js, so the demo data and the test database use the same list.
+// The categories and priorities the app needs to work (tickets must have one of each), in the order lists show them.
+// Migration 015 inserts the same lists into an empty database (tests/migrations.test.js checks they match), and
+// scripts/seed.js puts them back after wiping the demo data.
 
 // [name, description]
 const categories = [
@@ -19,4 +20,7 @@ const priorities = [
   ['Critical', 4, 4],
 ]
 
-module.exports = { categories, priorities }
+// The priority a new ticket gets when none is chosen
+const defaultPriority = 'Medium'
+
+module.exports = { categories, priorities, defaultPriority }

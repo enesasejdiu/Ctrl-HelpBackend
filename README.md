@@ -54,23 +54,24 @@ npm run dev          # starts the API with auto-reload
 The API runs on **http://localhost:5050**. Check it with http://localhost:5050/api/health → `{ "status": "ok" }`.
 (Port 5000 is not used because macOS AirPlay occupies it.)
 
-| Script                               | Description                                                                                |
-| ------------------------------------ | ------------------------------------------------------------------------------------------ |
-| `npm start`                          | Start the server                                                                           |
-| `npm run dev`                        | Start with nodemon (auto-reload)                                                           |
-| `npm run db:migrate`                 | Create the database or apply new migrations                                                |
-| `npm run db:seed`                    | Insert the demo data (empty database only)                                                 |
-| `npm run db:rollback`                | Undo the most recent migration (backs up first)                                            |
-| `npm run db:department-report`       | Read-only: the free-text department values migration 005 will turn into departments        |
-| `npm run db:verify-departments`      | Read-only: checks that migration 005 linked every user correctly                           |
-| `npm run db:backup`                  | Back up the database to `backups/`                                                         |
-| `npm run db:sessions:cleanup`        | Delete sessions that ended more than 7 days ago (also runs daily in the server)            |
-| `npm run db:password-tokens:cleanup` | Delete password links used or expired more than 7 days ago (also runs daily in the server) |
-| `npm test`                           | Run all tests once (see [Running tests](#running-tests))                                   |
-| `npm run test:coverage`              | Run the tests with a coverage report                                                       |
-| `npm run lint`                       | Check the code with ESLint (fails on any error or warning)                                 |
-| `npm run format`                     | Format every file with Prettier                                                            |
-| `npm run format:check`               | Check that every file is formatted (what CI runs)                                          |
+| Script                               | Description                                                                                                                             |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm start`                          | Start the server                                                                                                                        |
+| `npm run dev`                        | Start with nodemon (auto-reload)                                                                                                        |
+| `npm run db:migrate`                 | Create the database or apply new migrations                                                                                             |
+| `npm run db:seed`                    | Insert the demo data (empty database only)                                                                                              |
+| `npm run db:rollback`                | Undo the most recent migration (backs up first)                                                                                         |
+| `npm run db:department-report`       | Read-only: the free-text department values migration 005 will turn into departments                                                     |
+| `npm run db:verify-departments`      | Read-only: checks that migration 005 linked every user correctly                                                                        |
+| `npm run db:backup`                  | Back up the database to `backups/`                                                                                                      |
+| `npm run db:sessions:cleanup`        | Delete sessions that ended more than 7 days ago (also runs daily in the server)                                                         |
+| `npm run db:password-tokens:cleanup` | Delete password links used or expired more than 7 days ago (also runs daily in the server)                                              |
+| `npm run job:auto-close`             | Close tickets resolved for `auto_close_days` (default 7) now; `-- --dry-run` only lists them (also runs daily at 03:00 Europe/Budapest) |
+| `npm test`                           | Run all tests once (see [Running tests](#running-tests))                                                                                |
+| `npm run test:coverage`              | Run the tests with a coverage report                                                                                                    |
+| `npm run lint`                       | Check the code with ESLint (fails on any error or warning)                                                                              |
+| `npm run format`                     | Format every file with Prettier                                                                                                         |
+| `npm run format:check`               | Check that every file is formatted (what CI runs)                                                                                       |
 
 ## Updating and migrations
 
@@ -134,7 +135,13 @@ npm run db:seed -- --force
 npm test               # run all tests once
 npm run test:watch     # re-run on every file change
 npm run test:coverage  # also prints a coverage table (HTML report in coverage/)
+npm run test:real-size # only the one 10 MB attachment test
 ```
+
+`npm test` and `npm run test:coverage` are two Jest runs: first every test (one file after another), then, in a
+separate run, the one test that uploads a real file just over 10 MB (`tests/real-size/`, `jest.real-size.config.js`).
+All other attachment tests use a 200 KB limit (`ATTACHMENT_MAX_BYTES`, set in `tests/setupEnv.js`), so no other test
+builds big files.
 
 MySQL must be running (the same server and login as in `.env`).
 
@@ -145,6 +152,11 @@ start if the database name doesn't begin with `ticketflow_test_`.
 
 Tests live in `tests/**/*.test.js`. `tests/helpers.js` has `api` (a supertest client for the app), `resetData()`,
 `createUser()` and `loginAs()`.
+
+**Slow hooks.** If a `beforeEach` or `afterEach` is still running after 5 s, `tests/slowHooks.js` prints a
+`[slow hook]` warning: which hook (file and line), which test, which helper step it was in (e.g.
+`resetData: TRUNCATE users`), and the database's `PROCESSLIST` at that moment; then how long the hook took in total.
+Normal runs print nothing. It's there to explain rare stalls on CI; it never changes a result.
 
 ## Code style and continuous integration
 
@@ -682,9 +694,45 @@ open → assigned → in_progress ⇄ waiting_for_user → resolved → closed
 Moving a ticket back to an unfinished status clears `resolved_at` and `closed_at`, so it no longer counts as resolved
 in the statistics. Moving a closed ticket back to **resolved** clears `closed_at`. The resolution note is kept.
 
-Staff can set any status. Every change to status, priority or assignee is saved in `ticket_history`.
+Staff can set any status. Every change to status, priority or assignee is saved in `ticket_history`. What a status
+change does to `resolved_at` and `closed_at` is decided in one place, `src/ticketStatus.js`, which every route and job
+uses. A ticket left **resolved** for `auto_close_days` (default 7) is closed by the daily job; see [Auto-close](#auto-close).
 A ticket is **overdue** when it is not resolved/closed and is older than its priority's target time
 (Low 120h, Medium 72h, High 24h, Critical 4h).
+
+## Auto-close
+
+Every day at **03:00 Europe/Budapest** the API closes tickets that have been **resolved** for `auto_close_days`
+(default **7**; `0` switches it off): `status = 'resolved' AND resolved_at <= now − auto_close_days × 24 h`.
+`resolved_at` is set when a ticket is resolved and cleared when it leaves resolved (reopened, back to in progress, ...),
+so a reopened ticket counts its days again from its next resolve.
+
+Each ticket it closes gets `status = closed` and `closed_at = now`, a history row by the system (`changed_by` NULL,
+shown as "System" on the ticket page) and an audit entry `ticket_auto_closed` (no actor, `ticket_id` set). **No email is
+sent** for automatic closes.
+
+**How it runs** (`src/jobs/autoClose.js`):
+
+- in batches of 500; every `UPDATE` repeats the condition, so a ticket reopened after its batch was picked isn't closed
+- one run at a time: a database lock (`GET_LOCK`, per database, like the migration lock); a run that finds it taken
+  logs that and does nothing, so several API servers or a manual run during the nightly one are safe
+- idempotent: a second run right after closes nothing
+- a failing batch is logged and the job goes on with the next; it never stops the API. It ends with one line:
+  `[auto-close] Done: checked N, closed N, failed N, … ms`
+
+**By hand:** `npm run job:auto-close` runs it once now. `npm run job:auto-close -- --dry-run` only lists the ticket ids
+and the count that would be closed, and changes nothing. Use the dry run first on a real database.
+
+**The schedule** (`src/jobs/schedule.js`, with [croner](https://github.com/hexagon/croner)) runs inside the API process:
+
+| Setting               | Default           | Notes                                                  |
+| --------------------- | ----------------- | ------------------------------------------------------ |
+| `AUTO_CLOSE_CRON`     | `0 3 * * *`       | A cron expression: minute 0 of hour 3, every day       |
+| `AUTO_CLOSE_TIMEZONE` | `Europe/Budapest` | An IANA time zone; the time is local time in that zone |
+
+Because the time zone is explicit, 03:00 means 02:00 UTC in winter (CET) and 01:00 UTC in summer (CEST), and the job
+runs exactly once on the days the clocks change. An invalid setting is logged and the job isn't scheduled; the API keeps
+running. `auto_close_days` is changed with `PATCH /api/settings { auto_close_days }` (admin, a whole number 0–365).
 
 ## Attachments
 
@@ -697,7 +745,7 @@ tickets, so HR only sees its own. **Deleting** a file is for whoever uploaded it
 | Rule          | Value                                                                           |
 | ------------- | ------------------------------------------------------------------------------- |
 | Allowed types | `png`, `jpg`/`jpeg`, `gif`, `webp`, `pdf`, `txt`, `log`, `csv`                  |
-| Size          | at most **10 MB** per file; empty files are refused                             |
+| Size          | at most **10 MB** per file (always; see below); empty files are refused         |
 | Per upload    | **1–5 files**, all in the multipart field `files`, and nothing else in the body |
 | Per ticket    | at most **20** attachments                                                      |
 
@@ -707,6 +755,10 @@ extension must also match the content: a `photo.png` that is really text, or a P
 type stored (and sent on download) is the one found from the content, never what the browser claimed.
 
 An upload is all or nothing: if one file is refused, none is saved.
+
+**The 10 MB limit can only change in tests.** With `NODE_ENV=test`, `ATTACHMENT_MAX_BYTES` (a whole number of bytes, 1
+to 10485760) lowers it, like `LOCKOUT_MINUTES` for the lockout; the 413 message and `max_bytes` then show that limit.
+Anywhere else the server refuses to start with any other value, and the limit is always 10 MB.
 
 ### Storage: `UPLOAD_DIR`
 
@@ -886,6 +938,108 @@ A role or active-status change is logged as its own event, not as `user_updated`
 already has logs nothing, and neither does a refused request. Account changes are logged in the same transaction
 as the change itself.
 
+## Admin settings
+
+Admins manage the ticket categories, the priorities (with their target time) and the company name in the app
+(migration 015, `src/routes/settings.js`). Everyone logged in can read the lists, because tickets need them; only
+admins can change them (others get 403, no session 401).
+
+### Categories
+
+| Request                      | What it does                                                                                                                     |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/categories`        | The active categories, by `sort_order`, then name. Admins: `?include_inactive=1` adds archived ones, and each has `ticket_count` |
+| `POST /api/categories`       | `{ name, description?, sort_order? }` → 201 the category (`sort_order` left out: after the last one)                             |
+| `PATCH /api/categories/:id`  | `{ name?, description?, sort_order?, is_active? }` → the category. `is_active: false` archives it                                |
+| `DELETE /api/categories/:id` | → 204, only when no ticket uses it; otherwise 409 `CATEGORY_IN_USE` with `ticket_count` (archive it instead)                     |
+
+```json
+{
+  "id": 1,
+  "name": "Hardware",
+  "description": "Laptops, desktops, monitors, printers and other devices",
+  "sort_order": 1,
+  "is_active": true,
+  "created_at": "2026-11-12T08:00:00.000Z",
+  "updated_at": "2026-11-12T08:00:00.000Z",
+  "ticket_count": 14
+}
+```
+
+### Priorities
+
+| Request                      | What it does                                                                                                                                   |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/priorities`        | The active priorities, least urgent first (by `rank`), with `target_hours` and `is_default`. Admins: `?include_inactive=1`, and `ticket_count` |
+| `POST /api/priorities`       | `{ name, rank, target_hours, is_default? }` → 201 the priority (409 `RANK_TAKEN` for a rank in use)                                            |
+| `PATCH /api/priorities/:id`  | Any of `{ name, rank, target_hours, is_default, is_active }` → the priority                                                                    |
+| `PUT /api/priorities/order`  | `{ ids }`: every priority exactly once, least urgent first. Ranks become 1, 2, 3, ... in one transaction (otherwise 422 `INVALID_ORDER`)       |
+| `DELETE /api/priorities/:id` | → 204, only when unused and not the default (409 `PRIORITY_IN_USE` with `ticket_count` / `PRIORITY_IS_DEFAULT`)                                |
+
+```json
+{
+  "id": 2,
+  "name": "Medium",
+  "rank": 2,
+  "target_hours": 72,
+  "is_default": true,
+  "is_active": true,
+  "created_at": "2026-11-12T08:00:00.000Z",
+  "updated_at": "2026-11-12T08:00:00.000Z"
+}
+```
+
+- `rank` orders priorities from least to most urgent (1 = least). Ranks are unique. Sorting tickets by priority, and
+  the ticket list's default order (most urgent first), follow it, also after a reorder. In the database the column is
+  `priorities.level` (`RANK` is a reserved word in MySQL 8); `/api/meta` and tickets still also call it `level`.
+- `target_hours`: a whole number from 1 to 8760. The overdue rule uses it (`src/overdue.js`).
+- Exactly one priority is the default: `is_default: true` on one clears it on the others, in the same transaction.
+  The default can't be unset directly, archived or deleted (409 `PRIORITY_IS_DEFAULT`); make another one the default
+  first. Because the default is always active, there is always at least one active priority.
+- A new ticket without `priority_id` gets the default priority.
+
+### Archived categories and priorities
+
+An archived one (`is_active: false`) can't be given to a ticket: `POST /api/tickets` and
+`PATCH /api/tickets/:id/priority` answer 422 `CATEGORY_INACTIVE` / `PRIORITY_INACTIVE`. Tickets that already have
+one keep it and still show its name. `/api/meta` lists archived ones too, with `is_active`, because the ticket list
+filters by them; a new-ticket form should offer only the active ones.
+
+### Company name
+
+| Request                    | Who    | What it does                                                                                                                                      |
+| -------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/settings/public` | anyone | `{ company_name, email_enabled }` for the sign-in page and the app header (no login)                                                              |
+| `GET /api/settings`        | admin  | `{ company_name, auto_close_days }`                                                                                                               |
+| `PATCH /api/settings`      | admin  | `{ company_name?, auto_close_days? }` (at least one; company_name trimmed, 1–100 characters; auto_close_days a whole number 0–365) → the settings |
+
+`company_name` starts as "TicketFlow". Emails use it in the subject (`[Acme #12] New ticket: ...`), the header and
+the texts. The sender address stays `MAIL_FROM` from `.env`.
+
+### Validation and errors
+
+Names are trimmed, 1–50 characters, and unique regardless of letter case (409 `NAME_TAKEN`, with `errors` for
+`name`). Invalid input, including unknown fields, gets the usual 400 `{ message, errors }`. An unknown id is 404.
+422 is for requests that are well-formed but can't be done: an archived category or priority on a ticket, and a
+reorder list that doesn't name every priority once. Ticket requests take ids only, as they always have (they never
+accepted names, so there is nothing deprecated).
+
+### Cache
+
+Categories, priorities and the company name are read on almost every request, so the API keeps them in memory after
+the first read and drops that copy after every change it makes (`src/settings.js`). **This assumes one API server.**
+With several, a change made through one shows on the others only after they restart. A change made directly in the
+database shows after the next change through the API, or a restart.
+
+### Migration 015
+
+Categories and priorities were already tables that tickets point at, so no ticket data is converted. 015 adds
+`sort_order`, `is_active` and timestamps to categories (numbered in name order, as lists showed them), makes the
+priority level unique, adds `is_default` ("Medium" if there is one, otherwise the second rank), `is_active` and
+timestamps to priorities, and creates the `settings` table. A database without any categories or priorities (a fresh
+install) gets the standard ones, so tickets can be created without `db:seed`. db:migrate prints a check that every
+ticket still has its category and priority. The rollback keeps every category, priority and ticket link.
+
 ## API endpoints
 
 All endpoints except health, login, logout and the two set-password ones need a session: the `tf_session` cookie (an `Authorization` header is
@@ -916,9 +1070,9 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | POST   | `/api/auth/logout-all`            | logged in    | Ends every session of the user, this one included, and clears the cookies → 204                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | GET    | `/api/auth/me`                    | logged in    | The current user: `{ id, name, email, role, department_id, department_name, job_title, created_at, last_login_at, must_change_password }` (`null` when empty; never the password hash). Login returns the same user object                                                                                                                                                                                                                                                                                                    |
 | POST   | `/api/auth/change-password`       | logged in    | Change your password `{ currentPassword, newPassword }` → `{ message, user }`, with fresh session cookies; clears `must_change_password` and ends the user's other sessions (400 `INVALID_CURRENT_PASSWORD` if the current password is wrong). See [Changing your own password](#changing-your-own-password-post-apiauthchange-password)                                                                                                                                                                                      |
-| GET    | `/api/meta`                       | logged in    | Categories and priorities (for dropdowns), and `password_delivery` (`email` or `temporary_password`)                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| GET    | `/api/meta`                       | logged in    | Every category and priority, archived ones too (`is_active`; priorities with `rank`, `level` and `is_default`; admins also get `ticket_count` per category), and `password_delivery` (`email` or `temporary_password`)                                                                                                                                                                                                                                                                                                        |
 | GET    | `/api/tickets`                    | logged in    | List tickets (employees: own only). Filters: `status`, `priority`, `category`, `assigned=me\|unassigned`, `q`, `overdue=1`                                                                                                                                                                                                                                                                                                                                                                                                    |
-| POST   | `/api/tickets`                    | logged in    | Create a ticket `{ title, description, category_id, priority_id }`                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| POST   | `/api/tickets`                    | logged in    | Create a ticket `{ title, description, category_id, priority_id? }` (no `priority_id`: the default; an archived category or priority: 422)                                                                                                                                                                                                                                                                                                                                                                                    |
 | GET    | `/api/tickets/:id`                | logged in    | One ticket with comments, history and `attachments` (employees: own tickets, no internal notes)                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | GET    | `/api/tickets/:id/attachments`    | logged in    | The ticket's attachments (requester and staff). See [Attachments](#attachments)                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | POST   | `/api/tickets/:id/attachments`    | logged in    | Upload 1–5 files (multipart, field `files`; requester and staff) → 201 the new attachments. See [Attachments](#attachments)                                                                                                                                                                                                                                                                                                                                                                                                   |
@@ -945,6 +1099,18 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | DELETE | `/api/departments/:id`            | admin, hr    | Delete an empty department → 204 (409 `DEPARTMENT_NOT_EMPTY` with `user_count`). See [Departments](#departments)                                                                                                                                                                                                                                                                                                                                                                                                              |
 | GET    | `/api/audit`                      | admin        | The audit log, newest first, filtered and paged → `{ entries, total, page, pageSize }`. See [Audit log](#audit-log)                                                                                                                                                                                                                                                                                                                                                                                                           |
 | GET    | `/api/audit/actions`              | admin        | Every audit action name (for the filter dropdown). See [Audit log](#audit-log)                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| GET    | `/api/settings/public`            | anyone       | `{ company_name, email_enabled }` for the sign-in page. See [Admin settings](#admin-settings)                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| GET    | `/api/settings`                   | admin        | `{ company_name, auto_close_days }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| PATCH  | `/api/settings`                   | admin        | `{ company_name?, auto_close_days? }` (at least one) → the settings. See [Auto-close](#auto-close)                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| GET    | `/api/categories`                 | logged in    | Active categories (admins: `?include_inactive=1`, with `ticket_count`)                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| POST   | `/api/categories`                 | admin        | `{ name, description?, sort_order? }` → 201 (409 `NAME_TAKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| PATCH  | `/api/categories/:id`             | admin        | `{ name?, description?, sort_order?, is_active? }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| DELETE | `/api/categories/:id`             | admin        | → 204, or 409 `CATEGORY_IN_USE` with `ticket_count`                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| GET    | `/api/priorities`                 | logged in    | Active priorities by rank, with `target_hours` and `is_default` (admins: `?include_inactive=1`)                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| POST   | `/api/priorities`                 | admin        | `{ name, rank, target_hours, is_default? }` → 201 (409 `NAME_TAKEN` / `RANK_TAKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| PATCH  | `/api/priorities/:id`             | admin        | Any of `{ name, rank, target_hours, is_default, is_active }` (409 `PRIORITY_IS_DEFAULT`)                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| PUT    | `/api/priorities/order`           | admin        | `{ ids }` → ranks 1..n in that order (422 `INVALID_ORDER`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| DELETE | `/api/priorities/:id`             | admin        | → 204, or 409 `PRIORITY_IN_USE` / `PRIORITY_IS_DEFAULT`                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
 A Postman collection with every request is in [`docs/TicketFlow.postman_collection.json`](docs/TicketFlow.postman_collection.json).
 Import it, run one of the **Login** requests (Postman keeps the session cookies, and the collection sends `tf_csrf` as
@@ -975,6 +1141,10 @@ src/
   db.js                   MySQL connection pool
   overdue.js              The shared "is this ticket overdue?" SQL rule
   temporaryPassword.js    Random temporary passwords for password resets
+  ticketStatus.js         What a status change does to resolved_at and closed_at (every route and job uses it)
+  jobs/
+    autoClose.js          Closes tickets resolved for auto_close_days (npm run job:auto-close)
+    schedule.js           When the daily jobs run (croner, 03:00 Europe/Budapest)
   passwordTokens.js       One-time password links (setup and reset): tokens (hashed), 48-hour expiry, one use
   mail/
     mailer.js             The only code that uses nodemailer: sendMailSafe(), isEmailConfigured(), SMTP / log / test modes
@@ -1029,13 +1199,14 @@ TASKS.md                  Development task list
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `users`             | Accounts: name, email, password hash, role (employee/agent/hr/admin), department_id, job title, active flag, last login, wrong-password count and lock (`failed_login_count`, `locked_until`), `session_version` (raising it ends the user's sessions). `department` is the old free-text value, no longer used |
 | `departments`       | Departments people belong to; `users.department_id` links to them (see [Departments](#departments))                                                                                                                                                                                                             |
-| `categories`        | Ticket categories (Hardware, Software, Network, Access, Email, Other)                                                                                                                                                                                                                                           |
-| `priorities`        | Priority levels with their target resolution time in hours                                                                                                                                                                                                                                                      |
+| `categories`        | Ticket categories (as standard Hardware, Software, Network, Access, Email, Other): `name` (unique in any letter case), `description`, `sort_order`, `is_active` (migration 015). See [Admin settings](#admin-settings)                                                                                          |
+| `priorities`        | Priorities: `name`, `level` (the rank, unique; 1 = least urgent), `target_hours`, `is_default` (exactly one), `is_active` (migration 015)                                                                                                                                                                       |
 | `tickets`           | Tickets: requester, assignee, category, priority, status, resolution note, timestamps                                                                                                                                                                                                                           |
 | `comments`          | Comments on tickets; `is_internal` marks staff-only notes                                                                                                                                                                                                                                                       |
-| `ticket_history`    | Audit trail: who changed which field (status, priority, assignee) from what to what, and when                                                                                                                                                                                                                   |
+| `ticket_history`    | Audit trail: who changed which field (status, priority, assignee) from what to what, and when; `changed_by` NULL = the system (the auto-close job, migration 016)                                                                                                                                               |
 | `sessions`          | One row per login (migration 008): `user_id`, `created_at`, `expires_at`, `revoked_at`, `last_seen_at`, `ip`, `user_agent`. The token's `sid` is the row id. Rows are deleted 7 days after they end                                                                                                             |
-| `audit_log`         | Security events (migration 009): `created_at`, `actor_id`, `action`, `target_user_id`, `details` (JSON), `ip`. Never a secret. See [Audit log](#audit-log)                                                                                                                                                      |
+| `audit_log`         | Security events (migration 009): `created_at`, `actor_id`, `action`, `target_user_id`, `details` (JSON), `ip`. Never a secret. See [Audit log](#audit-log); `ticket_id` (migration 016) for entries about a ticket, e.g. `ticket_auto_closed`                                                                   |
 | `attachments`       | Files on tickets (migration 012): `ticket_id` (deleted with the ticket), `uploaded_by`, `original_name`, `stored_name` (the random file name in `UPLOAD_DIR`), `mime_type` (from the content), `size_bytes`, `created_at`. See [Attachments](#attachments)                                                      |
 | `password_tokens`   | One-time password links (migrations 010, 011, 014): the SHA-256 hash of each token (never the token), `purpose` (`setup` / `reset` / `forgot`), `expires_at` (48 hours; `forgot` 1 hour), `used_at`. See [How passwords are delivered](#how-passwords-are-delivered)                                            |
+| `settings`          | Admin settings, one row per key: `company_name` (migration 015), `auto_close_days` (016)                                                                                                                                                                                                                        |
 | `schema_migrations` | Which migrations this database has run, and when                                                                                                                                                                                                                                                                |

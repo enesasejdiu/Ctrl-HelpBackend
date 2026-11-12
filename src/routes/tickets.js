@@ -13,6 +13,8 @@ const { OVERDUE_SQL } = require('../overdue')
 const schemas = require('../schemas/tickets')
 const { addComment } = require('../schemas/comments')
 const notify = require('../mail/notifications')
+const { statusSets } = require('../ticketStatus')
+const settings = require('../settings')
 const { canSeeTicket, listAttachments } = require('../attachments')
 const { receiveFiles, uploadAttachments, listTicketAttachments } = require('./attachments')
 
@@ -109,17 +111,31 @@ router.get('/', validate(schemas.listTickets), async (req, res) => {
   res.json(rows.map(formatTicket))
 })
 
-// POST /api/tickets { title, description, category_id, priority_id }
-router.post('/', validate(schemas.createTicket), async (req, res) => {
-  const { title, description, category_id: categoryId, priority_id: priorityId } = req.valid.body
+// An archived category or priority can't be given to a ticket (old tickets that have one keep it)
+const inactive = (what) =>
+  new HttpError(422, `This ${what} is archived and can't be chosen`, `${what.toUpperCase()}_INACTIVE`, {
+    errors: [{ field: `${what}_id`, message: `This ${what} is archived and can't be chosen` }],
+  })
 
-  const [categories] = await pool.query('SELECT id FROM categories WHERE id = ?', [categoryId])
-  if (categories.length === 0) {
-    throw new HttpError(400, 'Invalid category')
-  }
-  const [priorities] = await pool.query('SELECT id FROM priorities WHERE id = ?', [priorityId])
-  if (priorities.length === 0) {
-    throw new HttpError(400, 'Invalid priority')
+// POST /api/tickets { title, description, category_id, priority_id? }
+// priority_id left out: the default priority. Unknown ids → 400 Invalid category/priority; archived ones → 422
+// CATEGORY_INACTIVE / PRIORITY_INACTIVE.
+router.post('/', validate(schemas.createTicket), async (req, res) => {
+  const { title, description, category_id: categoryId } = req.valid.body
+
+  const category = await settings.usableCategory(categoryId)
+  if (category.problem === 'missing') throw new HttpError(400, 'Invalid category')
+  if (category.problem === 'inactive') throw inactive('category')
+
+  let priorityId = req.valid.body.priority_id
+  if (priorityId == null) {
+    const fallback = await settings.defaultPriority()
+    if (!fallback) throw new HttpError(400, 'Choose a priority (no default priority is set)')
+    priorityId = fallback.id
+  } else {
+    const priority = await settings.usablePriority(priorityId)
+    if (priority.problem === 'missing') throw new HttpError(400, 'Invalid priority')
+    if (priority.problem === 'inactive') throw inactive('priority')
   }
 
   const [result] = await pool.query(
@@ -146,8 +162,8 @@ router.get('/:id', validate(schemas.getTicket), async (req, res) => {
     [ticket.id],
   )
   const [history] = await pool.query(
-    `SELECT h.*, u.name AS changed_by_name
-     FROM ticket_history h JOIN users u ON u.id = h.changed_by
+    `SELECT h.*, COALESCE(u.name, 'System') AS changed_by_name
+     FROM ticket_history h LEFT JOIN users u ON u.id = h.changed_by
      WHERE h.ticket_id = ?
      ORDER BY h.changed_at, h.id`,
     [ticket.id],
@@ -217,8 +233,10 @@ router.patch('/:id/status', validate(schemas.updateStatus), async (req, res) => 
     }
   }
 
-  const sets = ['status = ?']
-  const params = [status]
+  // The status and its timestamps (resolved_at, closed_at) come from src/ticketStatus.js, like every status change.
+  // Going back to an unfinished status keeps the resolution text, to show as the previous resolution and prefill the
+  // next one.
+  const { sets, params } = statusSets(status)
 
   if (status === 'resolved') {
     // A new note replaces the old one; otherwise keep the note from an earlier resolve
@@ -226,18 +244,8 @@ router.patch('/:id/status', validate(schemas.updateStatus), async (req, res) => 
     if (!resolution) {
       throw new HttpError(400, 'Please write a resolution note')
     }
-    sets.push('resolution = ?', 'resolved_at = NOW()')
+    sets.push('resolution = ?')
     params.push(resolution)
-  } else if (status === 'closed') {
-    // resolved_at stays: closed tickets still count as resolved in the statistics
-    sets.push('closed_at = NOW()')
-  } else {
-    // Back to an unfinished status: the statistics treat resolved_at as "this ticket is resolved".
-    // The resolution text stays, to show as the previous resolution and prefill the next one.
-    sets.push('resolved_at = NULL')
-  }
-  if (status !== 'closed') {
-    sets.push('closed_at = NULL')
   }
 
   await pool.query(`UPDATE tickets SET ${sets.join(', ')} WHERE id = ?`, [...params, ticket.id])
@@ -254,15 +262,16 @@ router.patch('/:id/priority', requireRole('agent', 'admin'), validate(schemas.up
   const ticket = await loadTicket(req.valid.params.id, req.user)
   const { priority_id: priorityId } = req.valid.body
 
-  const [rows] = await pool.query('SELECT id, name FROM priorities WHERE id = ?', [priorityId])
-  if (rows.length === 0) {
+  const priority = await settings.usablePriority(priorityId)
+  if (priority.problem === 'missing') {
     throw new HttpError(400, 'Invalid priority')
   }
 
-  // Nothing to change or log if the priority is the same
+  // Nothing to change or log if the priority is the same (a ticket may keep an archived one it already has)
   if (priorityId !== ticket.priority_id) {
+    if (priority.problem === 'inactive') throw inactive('priority')
     await pool.query('UPDATE tickets SET priority_id = ? WHERE id = ?', [priorityId, ticket.id])
-    await logHistory(ticket.id, req.user.id, 'priority', ticket.priority_name, rows[0].name)
+    await logHistory(ticket.id, req.user.id, 'priority', ticket.priority_name, priority.row.name)
   }
 
   res.json(await loadTicket(ticket.id, req.user))
@@ -302,7 +311,13 @@ router.patch('/:id/assign', requireRole('agent', 'admin'), validate(schemas.assi
     newStatus = 'open'
   }
 
-  await pool.query('UPDATE tickets SET assigned_to = ?, status = ? WHERE id = ?', [assigneeId, newStatus, ticket.id])
+  // The status (and its timestamps) only changes when it moves; src/ticketStatus.js knows what that means
+  const change = newStatus !== ticket.status ? statusSets(newStatus) : { sets: [], params: [] }
+  await pool.query(`UPDATE tickets SET ${['assigned_to = ?', ...change.sets].join(', ')} WHERE id = ?`, [
+    assigneeId,
+    ...change.params,
+    ticket.id,
+  ])
   if (assigneeId !== ticket.assigned_to) {
     await logHistory(ticket.id, req.user.id, 'assigned_to', ticket.assignee_name, assigneeName)
     // The new assignee hears about it (not when they took the ticket themselves; notifications skip the actor)
