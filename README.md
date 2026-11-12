@@ -865,6 +865,108 @@ A role or active-status change is logged as its own event, not as `user_updated`
 already has logs nothing, and neither does a refused request. Account changes are logged in the same transaction
 as the change itself.
 
+## Admin settings
+
+Admins manage the ticket categories, the priorities (with their target time) and the company name in the app
+(migration 015, `src/routes/settings.js`). Everyone logged in can read the lists, because tickets need them; only
+admins can change them (others get 403, no session 401).
+
+### Categories
+
+| Request                      | What it does                                                                                                                     |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/categories`        | The active categories, by `sort_order`, then name. Admins: `?include_inactive=1` adds archived ones, and each has `ticket_count` |
+| `POST /api/categories`       | `{ name, description?, sort_order? }` → 201 the category (`sort_order` left out: after the last one)                             |
+| `PATCH /api/categories/:id`  | `{ name?, description?, sort_order?, is_active? }` → the category. `is_active: false` archives it                                |
+| `DELETE /api/categories/:id` | → 204, only when no ticket uses it; otherwise 409 `CATEGORY_IN_USE` with `ticket_count` (archive it instead)                     |
+
+```json
+{
+  "id": 1,
+  "name": "Hardware",
+  "description": "Laptops, desktops, monitors, printers and other devices",
+  "sort_order": 1,
+  "is_active": true,
+  "created_at": "2026-11-12T08:00:00.000Z",
+  "updated_at": "2026-11-12T08:00:00.000Z",
+  "ticket_count": 14
+}
+```
+
+### Priorities
+
+| Request                      | What it does                                                                                                                                   |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/priorities`        | The active priorities, least urgent first (by `rank`), with `target_hours` and `is_default`. Admins: `?include_inactive=1`, and `ticket_count` |
+| `POST /api/priorities`       | `{ name, rank, target_hours, is_default? }` → 201 the priority (409 `RANK_TAKEN` for a rank in use)                                            |
+| `PATCH /api/priorities/:id`  | Any of `{ name, rank, target_hours, is_default, is_active }` → the priority                                                                    |
+| `PUT /api/priorities/order`  | `{ ids }`: every priority exactly once, least urgent first. Ranks become 1, 2, 3, ... in one transaction (otherwise 422 `INVALID_ORDER`)       |
+| `DELETE /api/priorities/:id` | → 204, only when unused and not the default (409 `PRIORITY_IN_USE` with `ticket_count` / `PRIORITY_IS_DEFAULT`)                                |
+
+```json
+{
+  "id": 2,
+  "name": "Medium",
+  "rank": 2,
+  "target_hours": 72,
+  "is_default": true,
+  "is_active": true,
+  "created_at": "2026-11-12T08:00:00.000Z",
+  "updated_at": "2026-11-12T08:00:00.000Z"
+}
+```
+
+- `rank` orders priorities from least to most urgent (1 = least). Ranks are unique. Sorting tickets by priority, and
+  the ticket list's default order (most urgent first), follow it, also after a reorder. In the database the column is
+  `priorities.level` (`RANK` is a reserved word in MySQL 8); `/api/meta` and tickets still also call it `level`.
+- `target_hours`: a whole number from 1 to 8760. The overdue rule uses it (`src/overdue.js`).
+- Exactly one priority is the default: `is_default: true` on one clears it on the others, in the same transaction.
+  The default can't be unset directly, archived or deleted (409 `PRIORITY_IS_DEFAULT`); make another one the default
+  first. Because the default is always active, there is always at least one active priority.
+- A new ticket without `priority_id` gets the default priority.
+
+### Archived categories and priorities
+
+An archived one (`is_active: false`) can't be given to a ticket: `POST /api/tickets` and
+`PATCH /api/tickets/:id/priority` answer 422 `CATEGORY_INACTIVE` / `PRIORITY_INACTIVE`. Tickets that already have
+one keep it and still show its name. `/api/meta` lists archived ones too, with `is_active`, because the ticket list
+filters by them; a new-ticket form should offer only the active ones.
+
+### Company name
+
+| Request                    | Who    | What it does                                                                         |
+| -------------------------- | ------ | ------------------------------------------------------------------------------------ |
+| `GET /api/settings/public` | anyone | `{ company_name, email_enabled }` for the sign-in page and the app header (no login) |
+| `GET /api/settings`        | admin  | `{ company_name }`                                                                   |
+| `PATCH /api/settings`      | admin  | `{ company_name }` (trimmed, 1–100 characters) → the settings                        |
+
+`company_name` starts as "TicketFlow". Emails use it in the subject (`[Acme #12] New ticket: ...`), the header and
+the texts. The sender address stays `MAIL_FROM` from `.env`.
+
+### Validation and errors
+
+Names are trimmed, 1–50 characters, and unique regardless of letter case (409 `NAME_TAKEN`, with `errors` for
+`name`). Invalid input, including unknown fields, gets the usual 400 `{ message, errors }`. An unknown id is 404.
+422 is for requests that are well-formed but can't be done: an archived category or priority on a ticket, and a
+reorder list that doesn't name every priority once. Ticket requests take ids only, as they always have (they never
+accepted names, so there is nothing deprecated).
+
+### Cache
+
+Categories, priorities and the company name are read on almost every request, so the API keeps them in memory after
+the first read and drops that copy after every change it makes (`src/settings.js`). **This assumes one API server.**
+With several, a change made through one shows on the others only after they restart. A change made directly in the
+database shows after the next change through the API, or a restart.
+
+### Migration 015
+
+Categories and priorities were already tables that tickets point at, so no ticket data is converted. 015 adds
+`sort_order`, `is_active` and timestamps to categories (numbered in name order, as lists showed them), makes the
+priority level unique, adds `is_default` ("Medium" if there is one, otherwise the second rank), `is_active` and
+timestamps to priorities, and creates the `settings` table. A database without any categories or priorities (a fresh
+install) gets the standard ones, so tickets can be created without `db:seed`. db:migrate prints a check that every
+ticket still has its category and priority. The rollback keeps every category, priority and ticket link.
+
 ## API endpoints
 
 All endpoints except health, login, logout and the two set-password ones need a session: the `tf_session` cookie (an `Authorization` header is
@@ -895,9 +997,9 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | POST   | `/api/auth/logout-all`            | logged in    | Ends every session of the user, this one included, and clears the cookies → 204                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | GET    | `/api/auth/me`                    | logged in    | The current user: `{ id, name, email, role, department_id, department_name, job_title, created_at, last_login_at, must_change_password }` (`null` when empty; never the password hash). Login returns the same user object                                                                                                                                                                                                                                                                                                    |
 | POST   | `/api/auth/change-password`       | logged in    | Change your password `{ currentPassword, newPassword }` → `{ message, user }`, with fresh session cookies; clears `must_change_password` and ends the user's other sessions (400 `INVALID_CURRENT_PASSWORD` if the current password is wrong). See [Changing your own password](#changing-your-own-password-post-apiauthchange-password)                                                                                                                                                                                      |
-| GET    | `/api/meta`                       | logged in    | Categories and priorities (for dropdowns), and `password_delivery` (`email` or `temporary_password`)                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| GET    | `/api/meta`                       | logged in    | Every category and priority, archived ones too (`is_active`; priorities with `rank`, `level` and `is_default`; admins also get `ticket_count` per category), and `password_delivery` (`email` or `temporary_password`)                                                                                                                                                                                                                                                                                                        |
 | GET    | `/api/tickets`                    | logged in    | List tickets (employees: own only). Filters: `status`, `priority`, `category`, `assigned=me\|unassigned`, `q`, `overdue=1`                                                                                                                                                                                                                                                                                                                                                                                                    |
-| POST   | `/api/tickets`                    | logged in    | Create a ticket `{ title, description, category_id, priority_id }`                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| POST   | `/api/tickets`                    | logged in    | Create a ticket `{ title, description, category_id, priority_id? }` (no `priority_id`: the default; an archived category or priority: 422)                                                                                                                                                                                                                                                                                                                                                                                    |
 | GET    | `/api/tickets/:id`                | logged in    | One ticket with comments, history and `attachments` (employees: own tickets, no internal notes)                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | GET    | `/api/tickets/:id/attachments`    | logged in    | The ticket's attachments (requester and staff). See [Attachments](#attachments)                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | POST   | `/api/tickets/:id/attachments`    | logged in    | Upload 1–5 files (multipart, field `files`; requester and staff) → 201 the new attachments. See [Attachments](#attachments)                                                                                                                                                                                                                                                                                                                                                                                                   |
@@ -923,6 +1025,18 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | DELETE | `/api/departments/:id`            | admin, hr    | Delete an empty department → 204 (409 `DEPARTMENT_NOT_EMPTY` with `user_count`). See [Departments](#departments)                                                                                                                                                                                                                                                                                                                                                                                                              |
 | GET    | `/api/audit`                      | admin        | The audit log, newest first, filtered and paged → `{ entries, total, page, pageSize }`. See [Audit log](#audit-log)                                                                                                                                                                                                                                                                                                                                                                                                           |
 | GET    | `/api/audit/actions`              | admin        | Every audit action name (for the filter dropdown). See [Audit log](#audit-log)                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| GET    | `/api/settings/public`            | anyone       | `{ company_name, email_enabled }` for the sign-in page. See [Admin settings](#admin-settings)                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| GET    | `/api/settings`                   | admin        | `{ company_name }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| PATCH  | `/api/settings`                   | admin        | `{ company_name }` → the settings                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| GET    | `/api/categories`                 | logged in    | Active categories (admins: `?include_inactive=1`, with `ticket_count`)                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| POST   | `/api/categories`                 | admin        | `{ name, description?, sort_order? }` → 201 (409 `NAME_TAKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| PATCH  | `/api/categories/:id`             | admin        | `{ name?, description?, sort_order?, is_active? }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| DELETE | `/api/categories/:id`             | admin        | → 204, or 409 `CATEGORY_IN_USE` with `ticket_count`                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| GET    | `/api/priorities`                 | logged in    | Active priorities by rank, with `target_hours` and `is_default` (admins: `?include_inactive=1`)                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| POST   | `/api/priorities`                 | admin        | `{ name, rank, target_hours, is_default? }` → 201 (409 `NAME_TAKEN` / `RANK_TAKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| PATCH  | `/api/priorities/:id`             | admin        | Any of `{ name, rank, target_hours, is_default, is_active }` (409 `PRIORITY_IS_DEFAULT`)                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| PUT    | `/api/priorities/order`           | admin        | `{ ids }` → ranks 1..n in that order (422 `INVALID_ORDER`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| DELETE | `/api/priorities/:id`             | admin        | → 204, or 409 `PRIORITY_IN_USE` / `PRIORITY_IS_DEFAULT`                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
 A Postman collection with every request is in [`docs/TicketFlow.postman_collection.json`](docs/TicketFlow.postman_collection.json).
 Import it, run one of the **Login** requests (Postman keeps the session cookies, and the collection sends `tf_csrf` as
@@ -1007,8 +1121,8 @@ TASKS.md                  Development task list
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `users`             | Accounts: name, email, password hash, role (employee/agent/hr/admin), department_id, job title, active flag, last login, wrong-password count and lock (`failed_login_count`, `locked_until`), `session_version` (raising it ends the user's sessions). `department` is the old free-text value, no longer used |
 | `departments`       | Departments people belong to; `users.department_id` links to them (see [Departments](#departments))                                                                                                                                                                                                             |
-| `categories`        | Ticket categories (Hardware, Software, Network, Access, Email, Other)                                                                                                                                                                                                                                           |
-| `priorities`        | Priority levels with their target resolution time in hours                                                                                                                                                                                                                                                      |
+| `categories`        | Ticket categories (as standard Hardware, Software, Network, Access, Email, Other): `name` (unique in any letter case), `description`, `sort_order`, `is_active` (migration 015). See [Admin settings](#admin-settings)                                                                                          |
+| `priorities`        | Priorities: `name`, `level` (the rank, unique; 1 = least urgent), `target_hours`, `is_default` (exactly one), `is_active` (migration 015)                                                                                                                                                                       |
 | `tickets`           | Tickets: requester, assignee, category, priority, status, resolution note, timestamps                                                                                                                                                                                                                           |
 | `comments`          | Comments on tickets; `is_internal` marks staff-only notes                                                                                                                                                                                                                                                       |
 | `ticket_history`    | Audit trail: who changed which field (status, priority, assignee) from what to what, and when                                                                                                                                                                                                                   |
@@ -1016,4 +1130,5 @@ TASKS.md                  Development task list
 | `audit_log`         | Security events (migration 009): `created_at`, `actor_id`, `action`, `target_user_id`, `details` (JSON), `ip`. Never a secret. See [Audit log](#audit-log)                                                                                                                                                      |
 | `attachments`       | Files on tickets (migration 012): `ticket_id` (deleted with the ticket), `uploaded_by`, `original_name`, `stored_name` (the random file name in `UPLOAD_DIR`), `mime_type` (from the content), `size_bytes`, `created_at`. See [Attachments](#attachments)                                                      |
 | `password_tokens`   | One-time password links (migrations 010, 011): the SHA-256 hash of each token (never the token), `purpose` (`setup` / `reset`), `expires_at` (48 hours), `used_at`. See [How passwords are delivered](#how-passwords-are-delivered)                                                                             |
+| `settings`          | Admin settings, one row per key: `company_name` (migration 015)                                                                                                                                                                                                                                                 |
 | `schema_migrations` | Which migrations this database has run, and when                                                                                                                                                                                                                                                                |

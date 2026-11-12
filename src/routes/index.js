@@ -10,4 +10,7 @@ module.exports = [
   ['/api/departments', require('./departments')],
   ['/api/attachments', require('./attachments').router],
   ['/api/audit', require('./audit')],
+  ['/api/categories', require('./settings').categories],
+  ['/api/priorities', require('./settings').priorities],
+  ['/api/settings', require('./settings').company],
 ]

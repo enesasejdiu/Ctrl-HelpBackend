@@ -13,6 +13,7 @@ const { OVERDUE_SQL } = require('../overdue')
 const schemas = require('../schemas/tickets')
 const { addComment } = require('../schemas/comments')
 const notify = require('../mail/notifications')
+const settings = require('../settings')
 const { canSeeTicket, listAttachments } = require('../attachments')
 const { receiveFiles, uploadAttachments, listTicketAttachments } = require('./attachments')
 
@@ -109,17 +110,31 @@ router.get('/', validate(schemas.listTickets), async (req, res) => {
   res.json(rows.map(formatTicket))
 })
 
-// POST /api/tickets { title, description, category_id, priority_id }
-router.post('/', validate(schemas.createTicket), async (req, res) => {
-  const { title, description, category_id: categoryId, priority_id: priorityId } = req.valid.body
+// An archived category or priority can't be given to a ticket (old tickets that have one keep it)
+const inactive = (what) =>
+  new HttpError(422, `This ${what} is archived and can't be chosen`, `${what.toUpperCase()}_INACTIVE`, {
+    errors: [{ field: `${what}_id`, message: `This ${what} is archived and can't be chosen` }],
+  })
 
-  const [categories] = await pool.query('SELECT id FROM categories WHERE id = ?', [categoryId])
-  if (categories.length === 0) {
-    throw new HttpError(400, 'Invalid category')
-  }
-  const [priorities] = await pool.query('SELECT id FROM priorities WHERE id = ?', [priorityId])
-  if (priorities.length === 0) {
-    throw new HttpError(400, 'Invalid priority')
+// POST /api/tickets { title, description, category_id, priority_id? }
+// priority_id left out: the default priority. Unknown ids → 400 Invalid category/priority; archived ones → 422
+// CATEGORY_INACTIVE / PRIORITY_INACTIVE.
+router.post('/', validate(schemas.createTicket), async (req, res) => {
+  const { title, description, category_id: categoryId } = req.valid.body
+
+  const category = await settings.usableCategory(categoryId)
+  if (category.problem === 'missing') throw new HttpError(400, 'Invalid category')
+  if (category.problem === 'inactive') throw inactive('category')
+
+  let priorityId = req.valid.body.priority_id
+  if (priorityId == null) {
+    const fallback = await settings.defaultPriority()
+    if (!fallback) throw new HttpError(400, 'Choose a priority (no default priority is set)')
+    priorityId = fallback.id
+  } else {
+    const priority = await settings.usablePriority(priorityId)
+    if (priority.problem === 'missing') throw new HttpError(400, 'Invalid priority')
+    if (priority.problem === 'inactive') throw inactive('priority')
   }
 
   const [result] = await pool.query(
@@ -254,15 +269,16 @@ router.patch('/:id/priority', requireRole('agent', 'admin'), validate(schemas.up
   const ticket = await loadTicket(req.valid.params.id, req.user)
   const { priority_id: priorityId } = req.valid.body
 
-  const [rows] = await pool.query('SELECT id, name FROM priorities WHERE id = ?', [priorityId])
-  if (rows.length === 0) {
+  const priority = await settings.usablePriority(priorityId)
+  if (priority.problem === 'missing') {
     throw new HttpError(400, 'Invalid priority')
   }
 
-  // Nothing to change or log if the priority is the same
+  // Nothing to change or log if the priority is the same (a ticket may keep an archived one it already has)
   if (priorityId !== ticket.priority_id) {
+    if (priority.problem === 'inactive') throw inactive('priority')
     await pool.query('UPDATE tickets SET priority_id = ? WHERE id = ?', [priorityId, ticket.id])
-    await logHistory(ticket.id, req.user.id, 'priority', ticket.priority_name, rows[0].name)
+    await logHistory(ticket.id, req.user.id, 'priority', ticket.priority_name, priority.row.name)
   }
 
   res.json(await loadTicket(ticket.id, req.user))

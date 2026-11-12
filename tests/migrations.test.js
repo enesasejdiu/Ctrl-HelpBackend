@@ -137,8 +137,8 @@ describe('schema', () => {
 })
 
 describe('up → down → up', () => {
-  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 012 down to 003
-  test('rolling back 012, 011, 010, 009, 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
+  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 015 down to 003
+  test('rolling back 015, 012, 011, 010, 009, 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
     const { db, dbName } = await newDatabase()
     const schema = async () => {
       const tables = {}
@@ -154,18 +154,18 @@ describe('up → down → up', () => {
       (await db.query('SELECT filename FROM schema_migrations ORDER BY filename'))[0].map((r) => r.filename)
 
     const before = await schema()
-    for (let i = 0; i < 10; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
+    for (let i = 0; i < 11; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
     expect(await applied()).toEqual(['001_initial.sql', '002_hr_role_and_password_change.sql'])
     const [departments] = await db.query("SHOW TABLES LIKE 'departments'")
     expect(departments).toHaveLength(0)
-    for (const table of ['password_setup_tokens', 'password_tokens', 'attachments']) {
+    for (const table of ['password_setup_tokens', 'password_tokens', 'attachments', 'settings']) {
       const [tokens] = await db.query(`SHOW TABLES LIKE '${table}'`)
       expect(tokens).toHaveLength(0)
     }
 
     await quietly(() => migrate({ dbName, backupFirst: false }))
     expect(await schema()).toEqual(before)
-    expect((await applied()).at(-1)).toBe('012_attachments.sql')
+    expect((await applied()).at(-1)).toBe('015_settings.sql')
   })
 
   test('011 keeps the links issued under 010 as setup links; rolling it back drops only reset links', async () => {
@@ -386,5 +386,113 @@ describe('the migration lock (one per database)', () => {
     const long = 'ticketflow_test_' + 'x'.repeat(80)
     expect(migrationLockName(long).length).toBeLessThanOrEqual(64)
     expect(migrationLockName(long)).not.toBe(migrationLockName(long + 'y'))
+  })
+})
+
+describe('migration 015 (admin settings)', () => {
+  const reference = require('../scripts/reference-data')
+  const rows = async (db, sql) => (await db.query(sql))[0]
+
+  test('a fresh database gets the standard categories and priorities, Medium as the default, and the company name', async () => {
+    const { db } = await newDatabase()
+    const categories = await rows(
+      db,
+      'SELECT name, description, sort_order, is_active FROM categories ORDER BY sort_order',
+    )
+    expect(categories).toEqual(
+      reference.categories.map(([name, description], i) => ({ name, description, sort_order: i + 1, is_active: 1 })),
+    )
+    const priorities = await rows(
+      db,
+      'SELECT name, level, target_hours, is_default, is_active FROM priorities ORDER BY level',
+    )
+    expect(priorities).toEqual(
+      reference.priorities.map(([name, level, hours]) => ({
+        name,
+        level,
+        target_hours: hours,
+        is_default: name === reference.defaultPriority ? 1 : 0,
+        is_active: 1,
+      })),
+    )
+    expect(await rows(db, 'SELECT setting_key, setting_value FROM settings')).toEqual([
+      { setting_key: 'company_name', setting_value: 'TicketFlow' },
+    ])
+  })
+
+  // A database from before 015, with its own lists and tickets using them
+  async function before015() {
+    const { db, dbName } = await newDatabase('012')
+    await db.query(`
+      INSERT INTO categories (name) VALUES ('Zeta'), ('Alpha'), ('Mid');
+      INSERT INTO priorities (name, level, target_hours) VALUES ('Lowest', 1, 200), ('Normal', 2, 50), ('Urgent', 3, 2);
+      INSERT INTO users (name, email, password_hash) VALUES ('T', 't.015@test.local', 'x');`)
+    const [[user]] = await db.query("SELECT id FROM users WHERE email = 't.015@test.local'")
+    for (const [category, priority] of [
+      ['Zeta', 'Urgent'],
+      ['Alpha', 'Lowest'],
+      ['Mid', 'Normal'],
+      ['Alpha', 'Urgent'],
+    ]) {
+      await db.query(
+        `INSERT INTO tickets (title, description, requester_id, category_id, priority_id)
+         SELECT 'T', 'D', ?, c.id, p.id FROM categories c, priorities p WHERE c.name = ? AND p.name = ?`,
+        [user.id, category, priority],
+      )
+    }
+    const links = () =>
+      rows(
+        db,
+        'SELECT t.id, c.name AS category, p.name AS priority FROM tickets t JOIN categories c ON c.id = t.category_id JOIN priorities p ON p.id = t.priority_id ORDER BY t.id',
+      )
+    return { db, dbName, links, linksBefore: await links() }
+  }
+
+  test('an existing database keeps its own lists (no standard rows added) and every ticket keeps its links', async () => {
+    const { db, dbName, links, linksBefore } = await before015()
+    await quietly(() => migrate({ dbName, backupFirst: false }))
+    expect(linksBefore).toHaveLength(4)
+    expect(await links()).toEqual(linksBefore)
+    expect(
+      await rows(
+        db,
+        'SELECT COUNT(*) AS n FROM tickets t LEFT JOIN categories c ON c.id = t.category_id LEFT JOIN priorities p ON p.id = t.priority_id WHERE c.id IS NULL OR p.id IS NULL',
+      ),
+    ).toEqual([{ n: 0 }])
+    // Its own names only, ordered by name as before; ranks keep the meaning order
+    expect(await rows(db, 'SELECT name, sort_order FROM categories ORDER BY sort_order')).toEqual([
+      { name: 'Alpha', sort_order: 1 },
+      { name: 'Mid', sort_order: 2 },
+      { name: 'Zeta', sort_order: 3 },
+    ])
+    // No "Medium": the second rank becomes the default
+    expect(await rows(db, 'SELECT name, level, is_default FROM priorities ORDER BY level')).toEqual([
+      { name: 'Lowest', level: 1, is_default: 0 },
+      { name: 'Normal', level: 2, is_default: 1 },
+      { name: 'Urgent', level: 3, is_default: 0 },
+    ])
+  })
+
+  test('at most one default and unique ranks, enforced by the database', async () => {
+    const { db } = await newDatabase()
+    await expect(db.query("UPDATE priorities SET is_default = TRUE WHERE name = 'High'")).rejects.toMatchObject({
+      code: 'ER_DUP_ENTRY',
+    })
+    await expect(db.query("UPDATE priorities SET level = 1 WHERE name = 'High'")).rejects.toMatchObject({
+      code: 'ER_DUP_ENTRY',
+    })
+  })
+
+  test('rolling it back keeps every category, priority and ticket link; migrating again works', async () => {
+    const { db, dbName, links, linksBefore } = await before015()
+    await quietly(() => migrate({ dbName, backupFirst: false }))
+    await quietly(() => rollback({ dbName, backupFirst: false }))
+    expect(await links()).toEqual(linksBefore)
+    expect(await rows(db, "SHOW TABLES LIKE 'settings'")).toHaveLength(0)
+    const columns = (await rows(db, 'SHOW COLUMNS FROM priorities')).map((c) => c.Field)
+    expect(columns).toEqual(['id', 'name', 'level', 'target_hours'])
+    await quietly(() => migrate({ dbName, backupFirst: false }))
+    expect(await links()).toEqual(linksBefore)
+    expect(await rows(db, 'SELECT COUNT(*) AS n FROM priorities WHERE is_default')).toEqual([{ n: 1 }])
   })
 })
