@@ -3,6 +3,8 @@ const request = require('supertest')
 const bcrypt = require('bcryptjs')
 const app = require('../src/app')
 const pool = require('../src/db')
+const settings = require('../src/settings')
+const reference = require('../scripts/reference-data')
 const { assertTestDbName } = require('./testDb')
 const { step } = require('./slowHooks')
 const notifications = require('../src/mail/notifications')
@@ -14,8 +16,8 @@ const api = request(app)
 const DEFAULT_PASSWORD = 'password123'
 let userCount = 0
 
-// Empties audit_log, sessions, password_tokens, users, departments, tickets, comments and ticket_history.
-// Categories, priorities and schema_migrations stay.
+// Empties audit_log, attachments, sessions, password_tokens, users, departments, tickets, comments and ticket_history,
+// and puts the standard categories, priorities and company name back (restoreReferenceData). schema_migrations stays.
 async function resetData() {
   assertTestDbName(process.env.DB_NAME) // second safety net: never empty a real database
   // FOREIGN_KEY_CHECKS is per connection, so every statement must run on the same one
@@ -39,6 +41,44 @@ async function resetData() {
     await connection.query('SET FOREIGN_KEY_CHECKS = 1')
     connection.release()
   }
+  await restoreReferenceData()
+}
+
+// Puts the standard categories and priorities back (with ids 1, 2, … in list order, so tests can send category_id: 1)
+// and the built-in company name, and clears the settings cache. Admins can change all of these through the API, and
+// resetData() doesn't empty them, so without this one test file's changes would leak into the next (same database):
+// tests/auth-enforcement.test.js calls every route as an admin, and its DELETE /api/categories/1 and
+// DELETE /api/priorities/1 really deleted Hardware and Low. Empties tickets (and what hangs off them) too, since every
+// ticket points at a category and a priority.
+async function restoreReferenceData() {
+  assertTestDbName(process.env.DB_NAME)
+  const connection = await step('restoreReferenceData: get a pool connection', () => pool.getConnection())
+  try {
+    await connection.query('SET FOREIGN_KEY_CHECKS = 0')
+    for (const table of ['attachments', 'ticket_history', 'comments', 'tickets', 'categories', 'priorities']) {
+      await step(`restoreReferenceData: TRUNCATE ${table}`, () => connection.query(`TRUNCATE TABLE ${table}`))
+    }
+    for (const [index, [name, description]] of reference.categories.entries()) {
+      await connection.query('INSERT INTO categories (name, description, sort_order) VALUES (?, ?, ?)', [
+        name,
+        description,
+        index + 1,
+      ])
+    }
+    for (const [name, level, hours] of reference.priorities) {
+      await connection.query('INSERT INTO priorities (name, level, target_hours, is_default) VALUES (?, ?, ?, ?)', [
+        name,
+        level,
+        hours,
+        name === reference.defaultPriority,
+      ])
+    }
+  } finally {
+    await connection.query('SET FOREIGN_KEY_CHECKS = 1')
+    connection.release()
+  }
+  await pool.query("UPDATE settings SET setting_value = 'TicketFlow' WHERE setting_key = 'company_name'")
+  settings.clearCache()
 }
 
 // Inserts a user straight into the database. Returns the user's columns plus `password` (plain text), for loginAs.
@@ -202,6 +242,7 @@ module.exports = {
   inviteTokenFor,
   api,
   resetData,
+  restoreReferenceData,
   createUser,
   loginAs,
   sessionOf,

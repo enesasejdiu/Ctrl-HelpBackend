@@ -1,43 +1,11 @@
 // Tests for the admin settings: /api/categories, /api/priorities and /api/settings (routes/settings.js, migration 015),
 // and how tickets, /api/meta, emails and the cache follow them.
 const pool = require('../src/db')
-const settings = require('../src/settings')
 const reference = require('../scripts/reference-data')
-const { api, resetData, createUser, loginAs, auth, sentMail, useEmail } = require('./helpers')
+const { api, resetData, restoreReferenceData, createUser, loginAs, auth, sentMail, useEmail } = require('./helpers')
 const { MAX_TARGET_HOURS } = require('../src/schemas/settings')
 
 let people
-
-// Back to the standard lists, no tickets, the built-in company name, and an empty cache
-async function restoreReferenceData() {
-  const connection = await pool.getConnection()
-  try {
-    await connection.query('SET FOREIGN_KEY_CHECKS = 0')
-    for (const table of ['attachments', 'ticket_history', 'comments', 'tickets', 'categories', 'priorities']) {
-      await connection.query(`TRUNCATE TABLE ${table}`)
-    }
-    for (const [index, [name, description]] of reference.categories.entries()) {
-      await connection.query('INSERT INTO categories (name, description, sort_order) VALUES (?, ?, ?)', [
-        name,
-        description,
-        index + 1,
-      ])
-    }
-    for (const [name, level, hours] of reference.priorities) {
-      await connection.query('INSERT INTO priorities (name, level, target_hours, is_default) VALUES (?, ?, ?, ?)', [
-        name,
-        level,
-        hours,
-        name === reference.defaultPriority,
-      ])
-    }
-  } finally {
-    await connection.query('SET FOREIGN_KEY_CHECKS = 1')
-    connection.release()
-  }
-  await pool.query("UPDATE settings SET setting_value = 'TicketFlow' WHERE setting_key = 'company_name'")
-  settings.clearCache()
-}
 
 beforeAll(async () => {
   await resetData()
