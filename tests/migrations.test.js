@@ -104,7 +104,7 @@ describe('schema', () => {
     expect(String(version.dflt)).toBe('0')
   })
 
-  test('password_tokens stores a unique 64-character hash and a purpose per token, deleted with its user (migrations 010, 011, 013)', async () => {
+  test('password_tokens stores a unique 64-character hash and a purpose per token, deleted with its user (migrations 010, 011, 014)', async () => {
     expect(await column('password_tokens', 'token_hash')).toMatchObject({ type: 'char(64)', nullable: 'NO' })
     expect(await column('password_tokens', 'purpose')).toMatchObject({
       type: "enum('setup','reset','forgot')",
@@ -140,8 +140,8 @@ describe('schema', () => {
 })
 
 describe('up → down → up', () => {
-  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 013 down to 003
-  test('rolling back 013, 012, 011, 010, 009, 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
+  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 014 down to 003
+  test('rolling back 014, 012, 011, 010, 009, 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
     const { db, dbName } = await newDatabase()
     const schema = async () => {
       const tables = {}
@@ -168,7 +168,7 @@ describe('up → down → up', () => {
 
     await quietly(() => migrate({ dbName, backupFirst: false }))
     expect(await schema()).toEqual(before)
-    expect((await applied()).at(-1)).toBe('013_forgot_password_tokens.sql')
+    expect((await applied()).at(-1)).toBe('014_forgot_password_tokens.sql')
   })
 
   test('011 keeps the links issued under 010 as setup links; rolling it back drops only reset links', async () => {
@@ -195,10 +195,10 @@ describe('up → down → up', () => {
     expect(left.map((r) => r.token_hash)).toEqual(['b'.repeat(64)])
   })
 
-  test("013 adds 'forgot' and keeps the other links; rolling it back drops only forgot links", async () => {
+  test("014 adds 'forgot' and keeps the other links; rolling it back drops only forgot links", async () => {
     const { db, dbName } = await newDatabase('012')
     const [{ insertId: userId }] = await db.query(
-      "INSERT INTO users (name, email, password_hash) VALUES ('T', 't.013@test.local', 'x')",
+      "INSERT INTO users (name, email, password_hash) VALUES ('T', 't.014@test.local', 'x')",
     )
     await db.query(
       "INSERT INTO password_tokens (user_id, token_hash, purpose, expires_at) VALUES (?, ?, 'reset', NOW())",
