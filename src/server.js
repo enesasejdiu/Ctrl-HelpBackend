@@ -20,7 +20,7 @@ const { startSessionCleanup } = require('./sessionStore')
 const PORT = config.PORT
 
 // Express 5 passes listen errors (e.g. port already in use) to this callback instead of throwing
-app.listen(PORT, (err) => {
+const server = app.listen(PORT, (err) => {
   if (err) {
     console.error(`Failed to start server on port ${PORT}: ${err.message}`)
     process.exit(1)
@@ -35,8 +35,12 @@ app.listen(PORT, (err) => {
 })
 
 // Deletes sessions that ended more than 7 days ago: now, then once a day (see src/sessionStore.js)
-startSessionCleanup()
+const sessionCleanup = startSessionCleanup()
 // Closes tickets resolved for auto_close_days, every day at 03:00 Europe/Budapest (src/jobs/schedule.js)
-require('./jobs/schedule').startAutoCloseSchedule()
+const autoClose = require('./jobs/schedule').startAutoCloseSchedule()
 // The same for password links used or expired more than 7 days ago (see src/passwordTokens.js)
-require('./passwordTokens').startPasswordTokenCleanup(require('./db'))
+const pool = require('./db')
+const tokenCleanup = require('./passwordTokens').startPasswordTokenCleanup(pool)
+
+// SIGTERM (docker stop) or SIGINT (Ctrl+C): finish open requests, close the database pool, exit 0 (src/shutdown.js)
+require('./shutdown').handleShutdownSignals({ server, pool, timers: [sessionCleanup, tokenCleanup], jobs: [autoClose] })
