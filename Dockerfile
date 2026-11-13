@@ -39,9 +39,12 @@ USER node
 
 EXPOSE 5050
 
-# Healthy once GET /api/health answers 200. Uses Node's own fetch (Alpine has no curl).
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+# Healthy once GET /api/health answers 200. Uses Node's own fetch (Alpine has no curl). The first 60 seconds don't
+# count, as the migrations run before the server starts.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --start-interval=2s --retries=3 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:' + (process.env.PORT || 5050) + '/api/health').then((r) => process.exit(r.status === 200 ? 0 : 1), () => process.exit(1))"]
 
-ENTRYPOINT ["/sbin/tini", "--"]
+# scripts/docker-entrypoint.sh applies new migrations before the server starts (and stops the container if they fail);
+# other commands (docker run ... node scripts/rollback.js) run without that step
+ENTRYPOINT ["/sbin/tini", "--", "sh", "/app/scripts/docker-entrypoint.sh"]
 CMD ["node", "src/server.js"]

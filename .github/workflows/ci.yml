@@ -106,8 +106,8 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # Builds the production image (Dockerfile) without pushing it anywhere, so a broken Dockerfile or .dockerignore turns
-  # CI red. No database is needed: the image is only built, not run.
+  # Builds the production image (Dockerfile) without pushing it anywhere, and checks deploy/docker-compose.yml, so a
+  # broken Dockerfile, .dockerignore or Compose file turns CI red. No database is needed: nothing is run.
   docker:
     name: Docker image
     runs-on: ubuntu-24.04
@@ -117,6 +117,13 @@ jobs:
 
       - name: Build the API image (no push)
         run: docker build --tag ticketflow-api:ci .
+
+      # deploy/docker-compose.yml is valid: the example settings with placeholder secrets filled in. The frontend
+      # repository isn't checked out here; config doesn't need it.
+      - name: Check the Docker Compose file
+        run: |
+          sed -E 's/^(MYSQL_ROOT_PASSWORD|DB_PASSWORD|JWT_SECRET)=$/\1=ci-placeholder/' deploy/.env.example > "$RUNNER_TEMP/compose.env"
+          docker compose -f deploy/docker-compose.yml --env-file "$RUNNER_TEMP/compose.env" config --quiet
 
       # The size, so a sudden jump shows up in the log
       - name: Show the image size
