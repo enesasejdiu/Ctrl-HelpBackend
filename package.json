@@ -22,6 +22,7 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage && npm run test:real-size",
     "test:real-size": "jest --config jest.real-size.config.js",
+    "test:repeat": "node scripts/repeat-tests.js 3",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint . --max-warnings=0"
@@ -58,8 +59,10 @@
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.14.0",
     "jest": "^30.5.2",
+    "mailparser": "^3.14.3",
     "nodemon": "3.1.14",
     "prettier": "^3.9.10",
+    "smtp-server": "^3.21.4",
     "supertest": "^7.3.2"
   }
 }
