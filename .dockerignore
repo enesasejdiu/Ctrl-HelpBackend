@@ -1,0 +1,12 @@
+# Kept out of the Docker build context, so they can never end up in the image (the Dockerfile also copies only
+# src/, scripts/, migrations/ and package*.json). Secrets (.env) and data (backups, uploads) above all.
+node_modules
+.env*
+backups
+uploads
+coverage
+.git
+.github
+tests
+docs
+*.log

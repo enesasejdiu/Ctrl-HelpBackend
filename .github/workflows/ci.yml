@@ -1,6 +1,7 @@
 # Backend CI: formatting, lint and the full test suite (with coverage) on every push to main and every pull request.
 # The tests run against a real database server in a service container, on both databases the app supports
-# (MySQL 8.4 and MariaDB 11) and on Node 22 and 24: 4 jobs. A pull request should only be merged when all 4 are green.
+# (MySQL 8.4 and MariaDB 11) and on Node 22 and 24: 4 jobs. A fifth job builds the Docker image. A pull request should
+# only be merged when all 5 are green.
 name: Backend CI
 
 on:
@@ -104,3 +105,19 @@ jobs:
           path: coverage/
           retention-days: 7
           if-no-files-found: ignore
+
+  # Builds the production image (Dockerfile) without pushing it anywhere, so a broken Dockerfile or .dockerignore turns
+  # CI red. No database is needed: the image is only built, not run.
+  docker:
+    name: Docker image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the API image (no push)
+        run: docker build --tag ticketflow-api:ci .
+
+      # The size, so a sudden jump shows up in the log
+      - name: Show the image size
+        run: docker image ls ticketflow-api:ci

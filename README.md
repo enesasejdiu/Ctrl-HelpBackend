@@ -129,6 +129,60 @@ npm run db:backup
 npm run db:seed -- --force
 ```
 
+## Docker
+
+The [`Dockerfile`](Dockerfile) builds a production image of the API: Node 24 on Alpine (an exact version), production
+dependencies only, and only `src/`, `scripts/`, `migrations/` and `package.json`. Tests, docs, backups, uploads and
+**`.env` are never in the image** (they are also listed in [`.dockerignore`](.dockerignore)): every setting is passed
+when the container starts. It runs as the non-root `node` user with `NODE_ENV=production`, so the startup check
+refuses weak or missing settings, as on any production server. The image is about 190 MB.
+
+**Build**
+
+```bash
+docker build -t ticketflow-api .
+```
+
+**Run.** Put the settings in a file that stays out of git (for example `/etc/ticketflow/api.env`, readable only by
+you) and pass it with `--env-file`. Required: `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `JWT_SECRET`
+(at least 32 random characters) and `CLIENT_URL` (https). Optional: `PORT` (default 5050), the email settings
+([Email](#email); `MAIL_ENABLED=true` also needs an https `APP_URL`) and `AUTO_CLOSE_CRON` / `AUTO_CLOSE_TIMEZONE`.
+`DB_HOST=localhost` would mean the container itself: use the database server's name or address, or
+`host.docker.internal` for a database on the Docker host.
+
+```bash
+docker run -d --name ticketflow-api \
+  --env-file /etc/ticketflow/api.env \
+  -p 5050:5050 \
+  -v ticketflow-uploads:/app/uploads \
+  --restart unless-stopped \
+  ticketflow-api
+```
+
+Attachments are written to `/app/uploads` (the default `UPLOAD_DIR`). Mount a volume there, as above, or they are
+lost when the container is replaced. Back the volume up together with the database ([Attachments](#attachments)).
+
+**Health check.** Every 30 seconds the container asks `GET /api/health` (with Node itself, as Alpine has no `curl`);
+`docker ps` shows `healthy` once it answers 200, and `unhealthy` after 3 failed checks in a row.
+
+**Migrations.** Run them with the same image and settings, before starting a new version:
+
+```bash
+docker run --rm --env-file /etc/ticketflow/api.env \
+  -v ticketflow-backups:/app/backups \
+  ticketflow-api node scripts/migrate.js
+```
+
+`db:migrate` backs up a database that already has tables before changing it, to `/app/backups`; mount a volume there
+(as above) to keep that backup. Never run `scripts/seed.js` against a real database.
+
+**Stopping.** `docker stop` (or Ctrl+C with `docker run -it`) sends SIGTERM/SIGINT, which `tini` passes on to Node: the
+API stops accepting connections, finishes requests in progress, closes the database pool and exits 0
+([`src/shutdown.js`](src/shutdown.js)). Requests still open after 8 seconds are cut off (exit 1), before Docker's own
+limit of 10 seconds.
+
+CI builds the image on every push and pull request (the "Docker image" job), without pushing it anywhere.
+
 ## Running tests
 
 ```bash
@@ -165,14 +219,15 @@ single quotes, 120 characters per line). ESLint (`eslint.config.js`) checks the 
 leaves the layout to Prettier. Before pushing, run `npm run format` and `npm run lint`.
 
 **CI.** [GitHub Actions](.github/workflows/ci.yml) ("Backend CI") runs on every push to `main` and every pull request.
-It runs 4 jobs, one for each of **MySQL 8.4** and **MariaDB 11** on **Node 22** and **24**. Each job starts that
+It runs 4 test jobs, one for each of **MySQL 8.4** and **MariaDB 11** on **Node 22** and **24**. Each job starts that
 database in a container and runs `npm ci`, `npm audit --omit=dev --audit-level=high` (fails on high or critical
 known issues in the packages the app runs with), `npm run format:check`, `npm run lint` and `npm run test:coverage`.
 MySQL 8.4 keeps its default `ONLY_FULL_GROUP_BY` mode, so queries that MariaDB would allow but MySQL refuses are
 caught. The coverage report is kept as a download on the run for 7 days. A newer push to the same branch cancels
-the older run.
+the older run. A fifth job, **Docker image**, builds the production image from the [`Dockerfile`](#docker) (without
+pushing it), so a broken Dockerfile turns CI red too.
 
-**Merge a pull request only when all 4 jobs are green.**
+**Merge a pull request only when all 5 jobs are green.**
 
 **Dependabot** ([`.github/dependabot.yml`](.github/dependabot.yml)) opens update pull requests every Monday: one for
 all minor and patch npm updates together, one per major npm update (those can break things), and one for the GitHub
@@ -1185,6 +1240,7 @@ the demo data; see [Backups and reseeding](#backups-and-reseeding) to reset it.
 ## Project structure
 
 ```
+Dockerfile                Production image of the API (README "Docker"); .dockerignore keeps the rest out
 docs/
   TicketFlow.postman_collection.json   Postman collection for every endpoint
 migrations/
@@ -1201,6 +1257,7 @@ scripts/
   reference-data.js       The categories and priorities (used by seed.js and the tests)
 src/
   server.js               Entry point: loads .env and starts the server
+  shutdown.js             Graceful shutdown on SIGTERM/SIGINT: finish open requests, close the pool, exit 0
   app.js                  Express app: middleware, routes, error handling
   db.js                   MySQL connection pool
   overdue.js              The shared "is this ticket overdue?" SQL rule
