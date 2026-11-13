@@ -37,6 +37,13 @@ function readMigrations() {
   })
 }
 
+// The only migrations allowed to run after a higher number has already run. Both were merged on 2026-11-12, after
+// 015_settings.sql and 016_auto_close.sql, and existing databases (ours and Aulona's) already had 015 applied. Neither
+// depends on 015 or 016, nor they on it: 013 only adds indexes, 014 only adds a token purpose. Renumbering them instead
+// would break every database built fresh since, which recorded them under these names. Never add to this list: number
+// new migrations above the highest one (CI checks that).
+const MAY_RUN_AFTER_HIGHER = new Set(['013_list_sort_indexes.sql', '014_forgot_password_tokens.sql'])
+
 // Returns the migrations to run, or throws if the files no longer match what this database has run
 function findPending(migrations, applied) {
   const byFile = new Map(migrations.map((migration) => [migration.file, migration]))
@@ -56,9 +63,11 @@ function findPending(migrations, applied) {
   const appliedFiles = new Set(applied.map((row) => row.filename))
   const pending = migrations.filter((migration) => !appliedFiles.has(migration.file))
 
-  // Order matters, so a new file can't slip in below one that has already run
+  // Order matters, so a new file can't slip in below one that has already run (except the two listed above)
   const latest = [...appliedFiles].sort().at(-1)
-  const outOfOrder = pending.find((migration) => latest && migration.file < latest)
+  const outOfOrder = pending.find(
+    (migration) => latest && migration.file < latest && !MAY_RUN_AFTER_HIGHER.has(migration.file),
+  )
   if (outOfOrder) {
     throw new Error(`${outOfOrder.file} is new but numbered below ${latest}, which is already applied. Renumber it`)
   }
@@ -156,4 +165,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { migrate }
+module.exports = { migrate, findPending, MAY_RUN_AFTER_HIGHER }
