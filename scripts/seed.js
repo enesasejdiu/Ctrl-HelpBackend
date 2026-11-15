@@ -286,6 +286,7 @@ async function seed({ force = process.argv.includes('--force') } = {}) {
       'sessions',
       // Attachment rows point at tickets; their files in UPLOAD_DIR are left on disk (only the rows are wiped)
       'attachments',
+      'ticket_ratings',
       'ticket_history',
       'comments',
       'tickets',

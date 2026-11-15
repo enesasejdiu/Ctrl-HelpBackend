@@ -166,7 +166,15 @@ router.post('/', validate(schemas.createTicket), async (req, res) => {
   res.status(201).json(await loadTicket(result.insertId, req.user))
 })
 
-// GET /api/tickets/:id → ticket + comments + history (oldest first)
+// The ticket's satisfaction rating as the API shows it, or null when it has none (yet)
+async function loadRating(ticketId) {
+  const [rows] = await pool.query('SELECT stars, comment, created_at FROM ticket_ratings WHERE ticket_id = ?', [
+    ticketId,
+  ])
+  return rows[0] ?? null
+}
+
+// GET /api/tickets/:id → ticket + comments + history (oldest first) + attachments + rating (null until rated)
 router.get('/:id', validate(schemas.getTicket), async (req, res) => {
   const ticket = await loadTicket(req.valid.params.id, req.user)
 
@@ -192,7 +200,41 @@ router.get('/:id', validate(schemas.getTicket), async (req, res) => {
     comments: comments.map((c) => ({ ...c, is_internal: Boolean(c.is_internal) })),
     history,
     attachments: await listAttachments(pool, ticket.id),
+    // Everyone who can see the ticket sees its rating
+    rating: await loadRating(ticket.id),
   })
+})
+
+// POST /api/tickets/:id/rating { stars: 1–5, comment?: up to 500 } → 201 { stars, comment, created_at }
+// Only the requester rates, only a closed ticket, and only once:
+//   someone else (staff included) → 403 NOT_REQUESTER; rated before → 409 ALREADY_RATED (also when it was reopened
+//   since); not closed → 400 TICKET_NOT_CLOSED. Bad stars or comment → 400 with field errors.
+// The ticket's assignee at this moment is kept with the rating, for their average on the dashboard (GET /api/stats).
+router.post('/:id/rating', validate(schemas.rateTicket), async (req, res) => {
+  const ticket = await loadTicket(req.valid.params.id, req.user)
+  const { stars, comment } = req.valid.body
+
+  if (ticket.requester_id !== req.user.id) {
+    throw new HttpError(403, 'Only the person who reported this ticket can rate it', 'NOT_REQUESTER')
+  }
+  const alreadyRated = () => new HttpError(409, 'This ticket has already been rated', 'ALREADY_RATED')
+  if (await loadRating(ticket.id)) throw alreadyRated()
+  if (ticket.status !== 'closed') {
+    throw new HttpError(400, 'Only a closed ticket can be rated', 'TICKET_NOT_CLOSED')
+  }
+
+  try {
+    await pool.query(
+      'INSERT INTO ticket_ratings (ticket_id, rated_by, agent_id, stars, comment) VALUES (?, ?, ?, ?, ?)',
+      [ticket.id, req.user.id, ticket.assigned_to, stars, comment],
+    )
+  } catch (err) {
+    // Two requests at once (two tabs): the unique key lets only one in
+    if (err.code === 'ER_DUP_ENTRY') throw alreadyRated()
+    throw err
+  }
+
+  res.status(201).json(await loadRating(ticket.id))
 })
 
 // Attachments belong to a ticket, so the same rule decides who may list or add them: the requester and staff.
