@@ -59,6 +59,8 @@ services:
       CLIENT_URL: ${CLIENT_URL:?Set CLIENT_URL in deploy/.env}
       APP_URL: ${APP_URL:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Proxies in front of the API: 1 = web (nginx); 2 when Caddy (HTTPS) is in front of web as well
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-1}
       # Error tracking (README "Error tracking"): off without SENTRY_DSN
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}

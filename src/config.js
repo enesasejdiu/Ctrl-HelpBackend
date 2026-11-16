@@ -100,6 +100,16 @@ const serverSchema = databaseSchema.extend({
       .regex(/^[^\s]+$/, 'SENTRY_RELEASE must have no spaces')
       .optional(),
   ),
+  // How many proxies are in front of the API in production (src/app.js "trust proxy"): 1 = nginx (default), 2 = Caddy →
+  // nginx. A blank value counts as not set.
+  TRUST_PROXY_HOPS: blankIsUnset(
+    z.coerce
+      .number({ error: 'TRUST_PROXY_HOPS must be a number of proxies (1 = nginx, 2 = Caddy and nginx)' })
+      .int('TRUST_PROXY_HOPS must be a whole number')
+      .min(1, 'TRUST_PROXY_HOPS must be from 1 to 5')
+      .max(5, 'TRUST_PROXY_HOPS must be from 1 to 5')
+      .default(1),
+  ),
   // The lowest level written to the log (src/logger.js). Optional: default info. A blank value counts as not set.
   LOG_LEVEL: z.preprocess(
     (value) => (typeof value === 'string' ? value.trim().toLowerCase() || undefined : value),
