@@ -142,10 +142,14 @@ jobs:
         run: docker image ls ticketflow-api:ci
 
   # The HTTPS examples (docs/https.md): the proxy's config is checked by the proxy itself (caddy validate + fmt, or
-  # nginx -t), then the whole app runs behind it from deploy/docker-compose.yml plus the HTTPS file, with a local
-  # certificate instead of Let's Encrypt (that needs a real domain): Caddy with DOMAIN=localhost (its own local CA),
-  # nginx with the temporary self-signed certificate of the guide's first-certificate step 1. deploy/check-https.sh
-  # then checks the redirect, HSTS, TLS versions, the API, the Secure cookies, the visitor's IP and uploads.
+  # nginx -t), then the whole app runs behind it, with a local certificate instead of Let's Encrypt (that needs a real
+  # domain):
+  #   caddy  deploy/docker-compose.yml + the Caddy file, DOMAIN=localhost (Caddy's own local CA)
+  #   nginx  deploy/docker-compose.yml + the nginx file, with the guide's temporary self-signed certificate (step 1)
+  #   apt    deploy/docker-compose.yml alone, and nginx + certbot installed from apt on the runner (Ubuntu), set up with
+  #          the guide's commands, including the sed that puts the domain into https.conf (helpdesk.example.org)
+  # deploy/check-https.sh then checks the redirect, HSTS, TLS versions, the API, the Secure cookies, the visitor's IP
+  # and uploads.
   https:
     name: HTTPS example (${{ matrix.proxy }})
     runs-on: ubuntu-24.04
@@ -153,12 +157,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        proxy: [caddy, nginx]
+        include:
+          - proxy: caddy
+            domain: localhost
+            compose_file: docker-compose.yml:docker-compose.https.caddy.yml
+            proxy_container: ticketflow-caddy-1
+          - proxy: nginx
+            domain: tickets.example.com
+            compose_file: docker-compose.yml:docker-compose.https.nginx.yml
+            proxy_container: ticketflow-proxy-1
+          - proxy: apt
+            domain: helpdesk.example.org
+            compose_file: docker-compose.yml
+            proxy_container: ''
     defaults:
       run:
         working-directory: deploy
     env:
-      COMPOSE_FILE: docker-compose.yml:docker-compose.https.${{ matrix.proxy }}.yml
+      COMPOSE_FILE: ${{ matrix.compose_file }}
+      DOMAIN: ${{ matrix.domain }}
       # The frontend repository, checked out next to the backend below (relative to deploy/)
       FRONTEND_DIR: ../frontend
     steps:
@@ -168,22 +185,25 @@ jobs:
           repository: enesasejdiu/Ctrl-HelpFrontend
           path: frontend
 
-      # Throwaway settings for this run only: random secrets, and the https address of the test domain
+      # Throwaway settings for this run only: random secrets, and the https address of the test domain. apt: web on
+      # the loopback address only, and the host's nginx counted as a proxy (the guide's apt step 1).
       - name: deploy/.env
         run: |
-          domain=${{ matrix.proxy == 'caddy' && 'localhost' || 'tickets.example.com' }}
           {
-            sed -E '/^(MYSQL_ROOT_PASSWORD|DB_PASSWORD|BACKUP_PASSWORD|JWT_SECRET|CLIENT_URL|APP_URL)=/d' .env.example
+            sed -E '/^(MYSQL_ROOT_PASSWORD|DB_PASSWORD|BACKUP_PASSWORD|JWT_SECRET|CLIENT_URL|APP_URL|WEB_PORT|TRUST_PROXY_HOPS)=/d' .env.example
             echo "MYSQL_ROOT_PASSWORD=$(openssl rand -hex 16)"
             echo "DB_PASSWORD=$(openssl rand -hex 16)"
             echo "BACKUP_PASSWORD=$(openssl rand -hex 16)"
             echo "JWT_SECRET=$(openssl rand -hex 48)"
-            echo "CLIENT_URL=https://$domain"
-            echo "APP_URL=https://$domain"
-            echo "DOMAIN=$domain"
+            echo "CLIENT_URL=https://$DOMAIN"
+            echo "APP_URL=https://$DOMAIN"
+            echo "DOMAIN=$DOMAIN"
             echo "ACME_EMAIL=admin@example.com"
+            if [ "${{ matrix.proxy }}" = apt ]; then
+              echo "WEB_PORT=127.0.0.1:8080"
+              echo "TRUST_PROXY_HOPS=2"
+            fi
           } > .env
-          echo "DOMAIN=$domain" >> "$GITHUB_ENV"
 
       - name: Check the Caddyfile (caddy validate, caddy fmt)
         if: matrix.proxy == 'caddy'
@@ -200,10 +220,35 @@ jobs:
           docker compose run --rm --no-deps proxy nginx -t
           docker compose run --rm certbot --version
 
-      - name: Start the app behind the proxy
+      - name: Start the app${{ matrix.proxy != 'apt' && ' behind the proxy' || '' }}
         run: |
           docker compose up -d --build --wait --wait-timeout 300
           docker compose ps
+
+      # The guide's apt variant, its commands as written (run in deploy/, so the repository's deploy/nginx/https.conf
+      # is nginx/https.conf here): the domain sed, install, the site, the temporary certificate, nginx -t and reload.
+      # The certbot certonly steps need Let's Encrypt and a real domain, so they are not run.
+      - name: nginx + certbot from apt (the guide's commands)
+        if: matrix.proxy == 'apt'
+        run: |
+          sed -i 's/tickets\.example\.com/helpdesk.example.org/g' nginx/https.conf
+          sudo apt-get update -q && sudo apt-get install -y -q nginx certbot
+          sudo mkdir -p /var/www/certbot
+          sudo cp nginx/https.conf /etc/nginx/conf.d/ticketflow.conf
+          sudo sed -i 's|http://web:8080;|http://127.0.0.1:8080;|' /etc/nginx/conf.d/ticketflow.conf
+          sudo rm -f /etc/nginx/sites-enabled/default
+          grep -n 'helpdesk.example.org\|ticketflow_web' /etc/nginx/conf.d/ticketflow.conf
+          D=helpdesk.example.org
+          sudo mkdir -p /etc/letsencrypt/live/$D
+          sudo openssl req -x509 -nodes -newkey rsa:2048 -days 1 -subj /CN=$D -keyout /etc/letsencrypt/live/$D/privkey.pem -out /etc/letsencrypt/live/$D/fullchain.pem
+          # The guide's "sudo nginx -t && sudo systemctl reload nginx", one command per line so a failure stops here.
+          # On a server, installing nginx starts it; the runner's may be installed but stopped, hence restart.
+          nginx -v
+          sudo nginx -t
+          sudo systemctl restart nginx
+          systemctl is-active nginx
+          certbot --version
+          systemctl list-timers certbot.timer --all | grep certbot.timer
 
       # Demo data, for a user to log in as (the database is brand new and thrown away with the run)
       - name: Demo data
@@ -215,15 +260,25 @@ jobs:
           INSECURE: '1'
           LOGIN_EMAIL: admin@ticketflow.local
           LOGIN_PASSWORD: password123
-          PROXY_CONTAINER: ticketflow-${{ matrix.proxy == 'caddy' && 'caddy' || 'proxy' }}-1
+          PROXY_CONTAINER: ${{ matrix.proxy_container }}
           WEB_CONTAINER: ticketflow-web-1
         run: bash check-https.sh "$DOMAIN"
 
       - name: The web container is not published any more
+        if: matrix.proxy != 'apt'
         run: |
           docker port ticketflow-web-1
           test -z "$(docker port ticketflow-web-1)"
           ! curl -s --max-time 5 http://127.0.0.1:8080/
+
+      # apt: published on the loopback address only, so the host's nginx reaches it and the network doesn't
+      - name: The web container is on 127.0.0.1:8080 only
+        if: matrix.proxy == 'apt'
+        run: |
+          docker port ticketflow-web-1
+          test "$(docker port ticketflow-web-1)" = '8080/tcp -> 127.0.0.1:8080'
+          ip="$(hostname -I | awk '{print $1}')"
+          ! curl -s --max-time 5 "http://$ip:8080/"
 
       - name: The renewal container runs (nginx)
         if: matrix.proxy == 'nginx'
@@ -231,7 +286,12 @@ jobs:
 
       - name: Logs
         if: always()
-        run: docker compose logs --no-color --tail 40 ${{ matrix.proxy == 'caddy' && 'caddy' || 'proxy certbot-renew' }} web api || true
+        run: |
+          case "${{ matrix.proxy }}" in
+            caddy) docker compose logs --no-color --tail 40 caddy web api ;;
+            nginx) docker compose logs --no-color --tail 40 proxy certbot-renew web api ;;
+            apt) docker compose logs --no-color --tail 40 web api; sudo tail -40 /var/log/nginx/error.log ;;
+          esac || true
 
       - name: Remove the stack and its data
         if: always()
