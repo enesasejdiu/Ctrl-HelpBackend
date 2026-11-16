@@ -165,7 +165,11 @@ lost when the container is replaced. Back the volume up together with the databa
 **Health check.** Every 30 seconds the container asks `GET /api/health` (with Node itself, as Alpine has no `curl`);
 `docker ps` shows `healthy` once it answers 200, and `unhealthy` after 3 failed checks in a row.
 
-**Migrations.** Run them with the same image and settings, before starting a new version:
+**Migrations run automatically.** Each time the container starts the server, its entrypoint
+([`scripts/docker-entrypoint.sh`](scripts/docker-entrypoint.sh)) applies new migrations first (the same as
+`npm run db:migrate`). If they fail, the container stops with the error (exit 1) instead of starting the API on an
+out-of-date database: fix the cause and start it again. Set `MIGRATE_ON_START=false` to skip this and run them
+yourself:
 
 ```bash
 docker run --rm --env-file /etc/ticketflow/api.env \
@@ -173,8 +177,13 @@ docker run --rm --env-file /etc/ticketflow/api.env \
   ticketflow-api node scripts/migrate.js
 ```
 
-`db:migrate` backs up a database that already has tables before changing it, to `/app/backups`; mount a volume there
-(as above) to keep that backup. Never run `scripts/seed.js` against a real database.
+Other commands (`node scripts/rollback.js`, `npm run create-admin`, `sh`) run without migrating first. `db:migrate`
+backs up a database that already has tables before changing it, to `/app/backups`; mount a volume there (as above) to
+keep that backup. Never run `scripts/seed.js` against a real database.
+
+**The first admin.** Nobody can log in to a new database yet, so create the first admin from the command line:
+`docker run --rm -it --env-file /etc/ticketflow/api.env ticketflow-api npm run create-admin` (see
+[Run with Docker Compose](#run-with-docker-compose)).
 
 **Stopping.** `docker stop` (or Ctrl+C with `docker run -it`) sends SIGTERM/SIGINT, which `tini` passes on to Node: the
 API stops accepting connections, finishes requests in progress, closes the database pool and exits 0
@@ -182,6 +191,94 @@ API stops accepting connections, finishes requests in progress, closes the datab
 limit of 10 seconds.
 
 CI builds the image on every push and pull request (the "Docker image" job), without pushing it anywhere.
+
+## Run with Docker Compose
+
+[`deploy/docker-compose.yml`](deploy/docker-compose.yml) runs the whole app on one machine: **db** (MySQL 8.4),
+**api** (this repository's [Dockerfile](#docker)) and **web** (the frontend repository's Dockerfile: nginx serving the
+app and passing `/api` on to the API). Only **web** is reachable from outside, on port 8080; the database and the API
+are on Compose's internal network.
+
+### From a clean machine
+
+You need Docker with the Compose plugin (`docker compose version`), and both repositories next to each other:
+
+```bash
+git clone https://github.com/enesasejdiu/Ctrl-HelpBackend.git
+git clone https://github.com/enesasejdiu/Ctrl-HelpFrontend.git
+cd Ctrl-HelpBackend/deploy
+cp .env.example .env
+chmod 600 .env
+```
+
+Fill in `deploy/.env` ([`deploy/.env.example`](deploy/.env.example) explains every setting): `MYSQL_ROOT_PASSWORD`,
+`DB_PASSWORD` and `JWT_SECRET` (generate them, the commands are in the file) and `CLIENT_URL` (the https address people
+will use). Email is optional. `deploy/.env` is git-ignored: never commit it. If the frontend is somewhere else, set
+`FRONTEND_DIR` (relative to `deploy/`). Then build and start everything:
+
+```bash
+docker compose up -d --build --wait
+docker compose ps        # db, api and web: "healthy"
+```
+
+The first start creates the database and its user, then the API applies every migration before it starts
+(`docker compose logs api`). The app is at **http://localhost:8080** (`WEB_PORT`). In production, put a reverse proxy
+or load balancer that terminates HTTPS in front of port 8080: the session cookies only work over HTTPS (browsers make
+an exception for `localhost`).
+
+### The first admin
+
+```bash
+docker compose run --rm api npm run create-admin
+```
+
+It asks for the name and email (or pass `-- --name "Ann Admin" --email ann@example.com`) and prints, once, either a
+one-time set-password link (when email is set up; valid for 48 hours, nothing is emailed) or a temporary password,
+which must be changed at the first login. Log in, then create everyone else under Users. It refuses an email that
+already has an account. `npm run create-admin` works the same outside Docker.
+
+### Updating
+
+```bash
+cd Ctrl-HelpBackend && git pull
+cd ../Ctrl-HelpFrontend && git pull
+cd ../Ctrl-HelpBackend/deploy
+docker compose up -d --build --wait
+```
+
+New migrations run automatically when the new API container starts, after a backup of the database (in the
+`backups` volume). If a migration fails, the API container stops with the error in `docker compose logs api`, and
+`docker compose ps` shows it restarting; fix the cause and run `docker compose up -d` again.
+
+### Where the data lives
+
+Three named volumes, which `docker compose down` keeps (`docker volume ls`):
+
+| Volume               | Holds                                                       |
+| -------------------- | ----------------------------------------------------------- |
+| `ticketflow_db`      | MySQL's data files: every table                             |
+| `ticketflow_uploads` | Attachment files (the database only has their names)        |
+| `ticketflow_backups` | The backups `db:migrate` takes before changing the database |
+
+`docker compose down` stops and removes the containers and keeps the data; `docker compose up -d` brings everything
+back. **`docker compose down -v` also deletes the volumes, so every ticket, user and file is gone.**
+
+### Backups
+
+Back up the database and the attachment files together, from `deploy/`:
+
+```bash
+# The database (a .sql file on this machine)
+docker compose exec -T db sh -c 'exec mysqldump --single-transaction -u root -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"' \
+  > ticketflow-$(date +%F).sql
+# The attachment files
+docker run --rm -v ticketflow_uploads:/data -v "$PWD":/backup alpine:3.24 \
+  tar czf /backup/uploads-$(date +%F).tar.gz -C /data .
+```
+
+To restore: `docker compose exec -T db sh -c 'exec mysql -u root -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"' <
+ticketflow-<date>.sql`, and unpack the tar file into the `ticketflow_uploads` volume the same way (`tar xzf`). Keep the
+backups somewhere else than this machine; they contain emails and password hashes.
 
 ## Logs
 
@@ -193,13 +290,36 @@ An access line, written when a request's response is finished (one per request; 
 checks don't flood the log):
 
 ```json
-{"level":"info","time":"2026-11-16T09:41:07.312Z","request_id":"9b2f6c1e-3d4a-4f8e-b1c2-7a5d0e9f4c21","req":{"method":"GET","path":"/api/tickets?page=&search="},"res":{"status":200},"duration_ms":18,"user_id":42,"msg":"GET /api/tickets?page=&search= 200 18ms"}
+{
+  "level": "info",
+  "time": "2026-11-16T09:41:07.312Z",
+  "request_id": "9b2f6c1e-3d4a-4f8e-b1c2-7a5d0e9f4c21",
+  "req": { "method": "GET", "path": "/api/tickets?page&search" },
+  "res": { "status": 200 },
+  "duration_ms": 18,
+  "user_id": 42,
+  "msg": "GET /api/tickets?page&search 200 18ms"
+}
 ```
 
 An unexpected error, logged by the error handler (`src/middleware/errors.js`) on the same request:
 
 ```json
-{"level":"error","time":"2026-11-16T09:41:09.004Z","request_id":"4e7a…","method":"POST","path":"/api/tickets","status":500,"user_id":42,"err":{"type":"Error","message":"connect ECONNREFUSED 10.0.0.5:3306","stack":"Error: connect ECONNREFUSED …\n    at …"},"msg":"connect ECONNREFUSED 10.0.0.5:3306"}
+{
+  "level": "error",
+  "time": "2026-11-16T09:41:09.004Z",
+  "request_id": "4e7a…",
+  "method": "POST",
+  "path": "/api/tickets",
+  "status": 500,
+  "user_id": 42,
+  "err": {
+    "type": "Error",
+    "message": "connect ECONNREFUSED 10.0.0.5:3306",
+    "stack": "Error: connect ECONNREFUSED …\n    at …"
+  },
+  "msg": "connect ECONNREFUSED 10.0.0.5:3306"
+}
 ```
 
 - **Request id**: every request gets one. It is on every line logged for that request (`request_id`) and sent back in
@@ -209,12 +329,12 @@ An unexpected error, logged by the error handler (`src/middleware/errors.js`) on
   only gets `{ "message": "Something went wrong (reference: <request id>)", "request_id": "<request id>" }`, so a user
   can quote the reference. A 4xx is logged at `warn` with its message, without a stack.
 - **What is never logged**: request bodies, headers (so no `Authorization`, `Cookie` or `Set-Cookie`) and query string
-  values (the path keeps only the keys: `?token=`). Passwords, temporary passwords, set-password and reset links,
+  values (the path keeps only the keys: `?token`). Passwords, temporary passwords, set-password and reset links,
   tokens, `JWT_SECRET` and `SMTP_PASS` therefore never reach the log; `redact` in `src/logger.js` also blanks those
   fields (`[redacted]`) if an object with them is ever logged. `tests/logging.test.js` sends all of them and checks the
   captured output.
 
-**`LOG_LEVEL`** (`.env`): `fatal`, `error`, `warn`, **`info`** (default), `debug`, `trace` or `silent`. Anything else
+**`LOG_LEVEL`** (`.env`, or `deploy/.env` with Docker Compose): `fatal`, `error`, `warn`, **`info`** (default), `debug`, `trace` or `silent`. Anything else
 stops the server at startup with the list.
 
 **All lines of one request**: take the reference from the error message (or the `X-Request-Id` header) and search for
@@ -269,7 +389,8 @@ known issues in the packages the app runs with), `npm run format:check`, `npm ru
 MySQL 8.4 keeps its default `ONLY_FULL_GROUP_BY` mode, so queries that MariaDB would allow but MySQL refuses are
 caught. The coverage report is kept as a download on the run for 7 days. A newer push to the same branch cancels
 the older run. A fifth job, **Docker image**, builds the production image from the [`Dockerfile`](#docker) (without
-pushing it), so a broken Dockerfile turns CI red too.
+pushing it) and checks `deploy/docker-compose.yml` (`docker compose config`), so a broken Dockerfile or Compose
+file turns CI red too.
 
 **Merge a pull request only when all 5 jobs are green.**
 
@@ -1317,6 +1438,9 @@ the demo data; see [Backups and reseeding](#backups-and-reseeding) to reset it.
 
 ```
 Dockerfile                Production image of the API (README "Docker"); .dockerignore keeps the rest out
+deploy/
+  docker-compose.yml      MySQL, API and web together (README "Run with Docker Compose")
+  .env.example            Its settings; copy to deploy/.env (git-ignored)
 docs/
   TicketFlow.postman_collection.json   Postman collection for every endpoint
 migrations/
@@ -1325,6 +1449,8 @@ migrations/
   down/                   Rollback files, named like the migration they undo (npm run db:rollback)
 scripts/
   migrate.js              Creates the database and applies new migrations (npm run db:migrate)
+  docker-entrypoint.sh    The API image's entrypoint: migrations, then the server
+  create-admin.js         Creates an admin from the command line (npm run create-admin)
   rollback.js             Undoes the most recent migration (npm run db:rollback)
   seed.js                 Wipes all tables and inserts demo data, departments included (npm run db:seed)
   backup-db.js            Writes a SQL backup to backups/ (npm run db:backup)

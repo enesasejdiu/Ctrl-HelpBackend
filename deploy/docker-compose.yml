@@ -1,0 +1,88 @@
+# The whole TicketFlow app with Docker Compose: MySQL, the API and the web frontend. README "Run with Docker Compose".
+#   cd deploy && cp .env.example .env    then fill in .env
+#   docker compose up -d --build         build and start everything; migrations run automatically
+#   docker compose run --rm api npm run create-admin    the first admin
+# The app is then at http://localhost:8080 (WEB_PORT). Only the web service is reachable from outside: the database
+# and the API are on Compose's internal network, and the web service passes /api on to the API.
+#
+# Every setting comes from deploy/.env (git-ignored). The ${VAR:?...} ones are required: Compose refuses to start
+# without them and says which is missing.
+
+name: ticketflow
+
+services:
+  db:
+    # Pinned, so a pull never silently changes the database server. MySQL 8.4 is one of the two databases CI tests on.
+    image: mysql:8.4.13
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in deploy/.env}
+      # Created on the first start (empty data volume): the app's database, and a user that may only use that database
+      MYSQL_DATABASE: ${DB_NAME:-ticketflow}
+      MYSQL_USER: ${DB_USER:-ticketflow}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in deploy/.env}
+    volumes:
+      - db:/var/lib/mysql
+    # Healthy once the real server accepts connections. While the image is still setting up a new data volume it runs
+    # a temporary server without networking, so this keeps failing until that is done.
+    healthcheck:
+      test: ['CMD-SHELL', 'mysqladmin ping -h 127.0.0.1 -u "$$MYSQL_USER" --password="$$MYSQL_PASSWORD" --silent']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+      start_interval: 2s
+
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: ticketflow-api:local
+    restart: unless-stopped
+    # Starts once MySQL is healthy. Its entrypoint applies new migrations first, and the container stops if they fail.
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME:-ticketflow}
+      DB_USER: ${DB_USER:-ticketflow}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in deploy/.env}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in deploy/.env}
+      CLIENT_URL: ${CLIENT_URL:?Set CLIENT_URL in deploy/.env}
+      APP_URL: ${APP_URL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      MAIL_ENABLED: ${MAIL_ENABLED:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      IT_NOTIFY_EMAIL: ${IT_NOTIFY_EMAIL:-}
+      AUTO_CLOSE_CRON: ${AUTO_CLOSE_CRON:-}
+      AUTO_CLOSE_TIMEZONE: ${AUTO_CLOSE_TIMEZONE:-}
+    volumes:
+      - uploads:/app/uploads # attachment files
+      - backups:/app/backups # the backup db:migrate takes before changing a database with data
+    # No "ports": the API is not reachable from the host, only from the web service (and the other containers)
+
+  web:
+    build:
+      # The frontend repository, next to this one by default (FRONTEND_DIR is relative to this deploy/ folder)
+      context: ${FRONTEND_DIR:-../../Ctrl-HelpFrontend}
+    image: ticketflow-web:local
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      # nginx passes /api/ on to the API service
+      API_URL: http://api:5050
+    ports:
+      - '${WEB_PORT:-8080}:8080'
+
+volumes:
+  db: # MySQL's data files
+  uploads: # attachment files (the database only has their names)
+  backups: # db:migrate's backups
