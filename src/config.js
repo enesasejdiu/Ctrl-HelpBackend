@@ -15,6 +15,7 @@ const path = require('path')
 const { z } = require('zod')
 const { DEFAULT_LOCKOUT_MINUTES, MAX_LOCKOUT_MINUTES, parseLockoutMinutes } = require('./lockout')
 const { DEFAULT_MAX_FILE_BYTES, parseMaxFileBytes } = require('./attachmentLimit')
+const { LOG_LEVELS, DEFAULT_LOG_LEVEL } = require('./logger')
 
 const MIN_SECRET_LENGTH = 32
 
@@ -69,6 +70,11 @@ const serverSchema = databaseSchema.extend({
     .trim()
     .min(1, 'UPLOAD_DIR is empty: remove it to use the default ./uploads, or set a folder')
     .optional(),
+  // The lowest level written to the log (src/logger.js). Optional: default info. A blank value counts as not set.
+  LOG_LEVEL: z.preprocess(
+    (value) => (typeof value === 'string' ? value.trim().toLowerCase() || undefined : value),
+    z.enum(LOG_LEVELS, { error: `LOG_LEVEL must be one of ${LOG_LEVELS.join(', ')}` }).default(DEFAULT_LOG_LEVEL),
+  ),
 })
 
 // Folder names that web servers commonly serve as static files. Attachments must never be inside one: anyone could

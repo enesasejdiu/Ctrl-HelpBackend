@@ -1,3 +1,4 @@
+const { captureLogs } = require('../src/logger')
 // Email notifications (src/mail/notifications.js) through the real routes, with nodemailer's jsonTransport: who gets
 // which email for each event, and nobody else. Also: escaping, links, and that a failing SMTP server never fails a
 // request or leaks secrets into the log.
@@ -298,7 +299,7 @@ describe('when the SMTP server fails', () => {
         throw new Error('Invalid login: 535 for mailer/smtp-pass-do-not-log (http://x/set-password?token=abc123)')
       },
     })
-    return jest.spyOn(console, 'error').mockImplementation(() => {})
+    return captureLogs()
   }
 
   test('creating a ticket still succeeds, and the error is logged without secrets', async () => {
@@ -309,7 +310,7 @@ describe('when the SMTP server fails', () => {
     expect(saved).toBeDefined()
 
     await sentMail()
-    const logged = errors.mock.calls.map((call) => call.join(' ')).join('\n')
+    const logged = errors.lines.map((line) => line.msg).join('\n')
     expect(logged).toContain(`Could not send "ticketCreated" to ${people.agentA.email}`)
     expect(logged).toContain('Invalid login: 535')
     expect(logged).not.toContain('smtp-pass-do-not-log')
@@ -328,7 +329,7 @@ describe('when the SMTP server fails', () => {
     expect(row).toBeDefined()
 
     await sentMail()
-    const logged = errors.mock.calls.map((call) => call.join(' ')).join('\n')
+    const logged = errors.lines.map((line) => line.msg).join('\n')
     expect(logged).toContain('Could not send "accountSetup" to una@test.local')
     expect(logged).not.toMatch(/set-password\?token=[A-Za-z0-9_-]{20,}/)
     expect(logged).not.toContain('smtp-pass-do-not-log')

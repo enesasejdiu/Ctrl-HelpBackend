@@ -394,11 +394,11 @@ router.post(
   async (req, res) => {
     const { email } = req.valid.body
     // The same line for every request: a fingerprint, never the address, and nothing about whether it exists
-    console.log(`[auth] Password reset requested (email #${emailFingerprint(email)})`)
+    req.log.info(`[auth] Password reset requested (email #${emailFingerprint(email)})`)
 
     const [[user]] = await pool.query('SELECT id, is_active, must_change_password FROM users WHERE email = ?', [email])
     if (!isEmailConfigured()) {
-      console.warn('[auth] "Forgot password" was used, but email is not set up: no reset link was sent')
+      req.log.warn('[auth] "Forgot password" was used, but email is not set up: no reset link was sent')
     } else if (user && user.is_active && !user.must_change_password) {
       notify.forgotPassword({ userId: user.id, ip: req.ip })
     }

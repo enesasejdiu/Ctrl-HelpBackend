@@ -181,7 +181,7 @@ router.get('/:id/download', validate(schemas.attachmentParams), loadAttachment, 
     ;({ size } = await fs.promises.stat(file))
   } catch (err) {
     if (err.code !== 'ENOENT') throw err
-    console.error(`Attachment ${attachment.id}: its file ${attachment.stored_name} is missing in UPLOAD_DIR`)
+    req.log.error(`Attachment ${attachment.id}: its file ${attachment.stored_name} is missing in UPLOAD_DIR`)
     throw new HttpError(404, 'The file is missing on the server', 'FILE_MISSING')
   }
 
@@ -230,7 +230,7 @@ router.delete('/:id', validate(schemas.attachmentParams), loadAttachment, async 
   try {
     await removeFile(attachment.stored_name)
   } catch (err) {
-    console.error(`Attachment ${attachment.id} deleted, but its file could not be removed: ${err.message}`)
+    req.log.error({ err }, `Attachment ${attachment.id} deleted, but its file could not be removed: ${err.message}`)
   }
   res.status(204).end()
 })

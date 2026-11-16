@@ -268,8 +268,10 @@ describe('the real entry points', () => {
       prod({ JWT_SECRET: 'secret', PORT: '5999', DB_NAME: 'ticketflow_test_never_used' }),
     )
     expect(res.status).toBe(1)
-    expect(res.stderr).toMatch(/Invalid configuration/)
-    expect(res.stderr).toMatch(/JWT_SECRET is a placeholder/)
+    // Through the logger: one JSON line (fatal/error) on stdout
+    const output = `${res.stdout}${res.stderr}`
+    expect(output).toMatch(/Invalid configuration/)
+    expect(output).toMatch(/JWT_SECRET is a placeholder/)
     expect(res.stdout).not.toMatch(/API running/)
   })
 
@@ -279,8 +281,9 @@ describe('the real entry points', () => {
       prod({ MAIL_ENABLED: 'true', SMTP_HOST: '', PORT: '5999', DB_NAME: 'ticketflow_test_never_used' }),
     )
     expect(res.status).toBe(1)
-    expect(res.stderr).toMatch(/Invalid configuration/)
-    expect(res.stderr).toMatch(/SMTP_HOST is missing/)
+    const output = `${res.stdout}${res.stderr}`
+    expect(output).toMatch(/Invalid configuration/)
+    expect(output).toMatch(/SMTP_HOST is missing/)
     expect(`${res.stdout}${res.stderr}`).not.toContain(GOOD.SMTP_PASS)
     expect(res.stdout).not.toMatch(/API running/)
   })
@@ -316,6 +319,25 @@ describe('LOCKOUT_MINUTES', () => {
       expect([value, exited]).toEqual([value, true])
       expect(log.error.mock.calls[0][0]).toMatch(/LOCKOUT_MINUTES must be a whole number of minutes from 1 to 1440/)
     }
+  })
+})
+
+describe('LOG_LEVEL', () => {
+  test('not set (or blank) is info', () => {
+    expect(loadConfig(prod()).config.LOG_LEVEL).toBe('info')
+    expect(loadConfig(prod({ LOG_LEVEL: '  ' })).config.LOG_LEVEL).toBe('info')
+  })
+
+  test.each(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent', 'DEBUG'])('%s is accepted', (level) => {
+    expect(loadConfig(prod({ LOG_LEVEL: level })).config.LOG_LEVEL).toBe(level.toLowerCase())
+  })
+
+  test('anything else is refused with the list of levels', () => {
+    const { exited, log } = run(prod({ LOG_LEVEL: 'verbose' }))
+    expect(exited).toBe(true)
+    expect(log.error.mock.calls[0][0]).toMatch(
+      /LOG_LEVEL must be one of fatal, error, warn, info, debug, trace, silent/,
+    )
   })
 })
 

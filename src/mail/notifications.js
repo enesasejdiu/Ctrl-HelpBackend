@@ -21,6 +21,7 @@ const templates = require('./templates')
 const { companyName } = require('../settings')
 const { TOKEN_HOURS, issueToken } = require('../passwordTokens')
 const { recordAudit } = require('../audit')
+const { logger } = require('../logger')
 
 const { FORGOT_PASSWORD_EMAIL_LIMIT, FORGOT_PASSWORD_EMAIL_WINDOW_MINUTES } = require('../middleware/rateLimit')
 
@@ -32,7 +33,7 @@ function inBackground(event, work) {
     try {
       await work()
     } catch (err) {
-      console.error(`[mail] ${event}: notification not sent: ${redact(err.message, getMailer().config)}`)
+      logger.error(`[mail] ${event}: notification not sent: ${redact(err.message, getMailer().config)}`)
     }
   })()
   pending.add(job)
@@ -244,7 +245,7 @@ function forgotPassword({ userId, ip }) {
           await recordAudit('password_reset_requested', { targetUserId: row.id, req: { ip }, db: conn })
         } else {
           // The user's id only: never the address, and nothing about other requests
-          console.log(`[auth] Reset email limit reached for user #${row.id}; no email sent`)
+          logger.info(`[auth] Reset email limit reached for user #${row.id}; no email sent`)
         }
       }
       await conn.commit()
