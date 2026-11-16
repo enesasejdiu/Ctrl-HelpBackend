@@ -241,9 +241,12 @@ jobs:
           D=helpdesk.example.org
           sudo mkdir -p /etc/letsencrypt/live/$D
           sudo openssl req -x509 -nodes -newkey rsa:2048 -days 1 -subj /CN=$D -keyout /etc/letsencrypt/live/$D/privkey.pem -out /etc/letsencrypt/live/$D/fullchain.pem
-          # On a server, installing nginx starts it; the runner's may be installed but stopped
-          sudo systemctl enable --now nginx
-          sudo nginx -t && sudo systemctl reload nginx
+          # The guide's "sudo nginx -t && sudo systemctl reload nginx", one command per line so a failure stops here.
+          # On a server, installing nginx starts it; the runner's may be installed but stopped, hence restart.
+          nginx -v
+          sudo nginx -t
+          sudo systemctl restart nginx
+          systemctl is-active nginx
           certbot --version
           systemctl list-timers certbot.timer --all | grep certbot.timer
 

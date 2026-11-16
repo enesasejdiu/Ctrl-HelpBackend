@@ -166,7 +166,8 @@ What's in `https.conf`:
 
 - **Port 80** serves `/.well-known/acme-challenge/` from `/var/www/certbot` (certbot's webroot) and redirects
   everything else with `301` to `https://`.
-- **Port 443**, with `http2 on`:
+- **Port 443**, with HTTP/2 (`listen 443 ssl http2`, which works on the older nginx in Debian and Ubuntu too; nginx
+  1.25.1 and newer print a harmless deprecation warning for it):
   - the certificate from `/etc/letsencrypt/live/<domain>/` (`fullchain.pem`, `privkey.pem`);
   - TLS 1.2 and 1.3 only, with Mozilla's "intermediate" ciphers (without the DHE ones, so no dhparam file);
   - `ssl_session_cache shared:TLS:10m`, session tickets off;
