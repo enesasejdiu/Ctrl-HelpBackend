@@ -95,7 +95,7 @@ function startPasswordTokenCleanup(db, { everyMs = DAY_MS, log = console } = {})
         if (deleted > 0)
           log.log(`Password link cleanup: deleted ${deleted} links used or expired over ${KEEP_ENDED_DAYS} days ago`)
       })
-      .catch((err) => log.error(`Password link cleanup failed: ${err.message}`))
+      .catch((err) => log.error(`Password link cleanup failed: ${err.message}`, err))
   run()
   return setInterval(run, everyMs).unref()
 }

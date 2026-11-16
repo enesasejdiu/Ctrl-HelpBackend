@@ -148,6 +148,11 @@ describe('failures', () => {
     })
     expect(errorLine.err.stack).toContain('Error: connect ECONNREFUSED')
     expect(errorLine.err.stack).toMatch(/\n\s+at /)
+    // The access line keeps its usual shape: no second (made-up) error
+    const [access] = accessLines()
+    expect(access).toMatchObject({ request_id: id, res: { status: 500 }, user_id: user.id })
+    expect(access).not.toHaveProperty('err')
+    expect(access.msg).toMatch(/^GET \/api\/tickets 500 \d+ms$/)
   })
 
   test('a 4xx is logged at warn with its message, without a stack', async () => {

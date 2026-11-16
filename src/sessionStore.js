@@ -82,7 +82,7 @@ function startSessionCleanup({ everyMs = DAY_MS, log = console } = {}) {
         if (deleted > 0)
           log.log(`Session cleanup: deleted ${deleted} sessions ended more than ${KEEP_ENDED_DAYS} days ago`)
       })
-      .catch((err) => log.error(`Session cleanup failed: ${err.message}`))
+      .catch((err) => log.error(`Session cleanup failed: ${err.message}`, err))
   run()
   return setInterval(run, everyMs).unref()
 }

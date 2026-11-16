@@ -147,7 +147,11 @@ const requestLogger = pinoHttp({
   customProps: (req) => (req.user?.id ? { user_id: req.user.id } : {}),
   customSuccessMessage: (req, res, ms) =>
     `${req.method} ${safePath(req.originalUrl ?? req.url)} ${res.statusCode} ${Math.round(ms)}ms`,
-  customErrorMessage: (req, res) => `${req.method} ${safePath(req.originalUrl ?? req.url)} ${res.statusCode}`,
+  customErrorMessage: (req, res, err, ms) =>
+    `${req.method} ${safePath(req.originalUrl ?? req.url)} ${res.statusCode} ${Math.round(ms)}ms`,
+  // For a 5xx pino-http adds an error of its own ("failed with status code 500"). The error handler has already
+  // logged the real one with its stack, so the access line stays the same shape as for any other request.
+  customErrorObject: (req, res, err, value) => ({ ...value, err: undefined }),
 })
 
 // ---- tests ----
