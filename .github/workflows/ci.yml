@@ -129,8 +129,12 @@ jobs:
       # repository isn't checked out here; config doesn't need it.
       - name: Check the Docker Compose file
         run: |
-          sed -E 's/^(MYSQL_ROOT_PASSWORD|DB_PASSWORD|JWT_SECRET)=$/\1=ci-placeholder/' deploy/.env.example > "$RUNNER_TEMP/compose.env"
+          sed -E 's/^(MYSQL_ROOT_PASSWORD|DB_PASSWORD|JWT_SECRET|BACKUP_PASSWORD)=$/\1=ci-placeholder/' deploy/.env.example > "$RUNNER_TEMP/compose.env"
           docker compose -f deploy/docker-compose.yml --env-file "$RUNNER_TEMP/compose.env" config --quiet
+
+      # The backup service's scripts (deploy/backup/backup.sh, deploy/mysql/backup-user.sh); shellcheck is on the runner
+      - name: Check the backup scripts
+        run: shellcheck deploy/backup/backup.sh deploy/mysql/backup-user.sh
 
       # The size, so a sudden jump shows up in the log
       - name: Show the image size

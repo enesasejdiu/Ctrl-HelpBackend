@@ -1,4 +1,5 @@
-# The whole TicketFlow app with Docker Compose: MySQL, the API and the web frontend. README "Run with Docker Compose".
+# The whole TicketFlow app with Docker Compose: MySQL, the API, the web frontend and daily backups. README "Run with
+# Docker Compose" and "Backups".
 #   cd deploy && cp .env.example .env    then fill in .env
 #   docker compose up -d --build         build and start everything; migrations run automatically
 #   docker compose run --rm api npm run create-admin    the first admin
@@ -21,8 +22,13 @@ services:
       MYSQL_DATABASE: ${DB_NAME:-ticketflow}
       MYSQL_USER: ${DB_USER:-ticketflow}
       MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in deploy/.env}
+      # The read-only user the backup service dumps with (mysql/backup-user.sh: created with a new data volume; for an
+      # existing one run it once, README "Backups")
+      BACKUP_USER: ${BACKUP_USER:-ticketflow_backup}
+      BACKUP_PASSWORD: ${BACKUP_PASSWORD:?Set BACKUP_PASSWORD in deploy/.env}
     volumes:
       - db:/var/lib/mysql
+      - ./mysql/backup-user.sh:/docker-entrypoint-initdb.d/20-backup-user.sh:ro
     # Healthy once the real server accepts connections. While the image is still setting up a new data volume it runs
     # a temporary server without networking, so this keeps failing until that is done.
     healthcheck:
@@ -82,7 +88,34 @@ services:
     ports:
       - '${WEB_PORT:-8080}:8080'
 
+  # Daily backups of the database and the attachment files into the backups volume, keeping the newest BACKUP_KEEP of
+  # each (backup/backup.sh). Also: docker compose run --rm backup backup-now | list | restore <file> [--uploads <file>]
+  backup:
+    build:
+      context: ./backup
+    image: ticketflow-backup:local
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Europe/Budapest}
+      BACKUP_TIME: ${BACKUP_TIME:-02:30}
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+      DB_HOST: db
+      DB_NAME: ${DB_NAME:-ticketflow}
+      # Backups: the read-only user
+      BACKUP_USER: ${BACKUP_USER:-ticketflow_backup}
+      BACKUP_PASSWORD: ${BACKUP_PASSWORD:?Set BACKUP_PASSWORD in deploy/.env}
+      # Restore only (it writes, so it uses the app's user)
+      DB_USER: ${DB_USER:-ticketflow}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in deploy/.env}
+    volumes:
+      - backups:/backups
+      - uploads:/uploads # read for backups, written only by restore
+    # No "ports": it only talks to db
+
 volumes:
   db: # MySQL's data files
   uploads: # attachment files (the database only has their names)
-  backups: # db:migrate's backups
+  backups: # the daily backups (backup service) and db:migrate's backups
