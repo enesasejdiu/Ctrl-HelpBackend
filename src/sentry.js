@@ -33,10 +33,10 @@ function initSentry(env = process.env, { transport } = {}) {
     defaultIntegrations: false,
     integrations: [Sentry.linkedErrorsIntegration(), Sentry.dedupeIntegration()],
     skipOpenTelemetrySetup: true,
+    enableRuntimeChannelInjection: false, // no automatic instrumentation of other modules (it only serves tracing)
     tracesSampleRate: 0,
-    maxBreadcrumbs: 0,
+    maxBreadcrumbs: 0, // no breadcrumbs are kept (and scrubEvent removes any)
     serverName: 'ticketflow-api', // instead of the machine's host name
-    beforeBreadcrumb: () => null,
     beforeSend: scrubEvent,
     ...(transport && { transport }),
   })

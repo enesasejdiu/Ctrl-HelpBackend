@@ -310,3 +310,76 @@ describe('helpers', () => {
     expect(sentry.scrubEvent({ user: { email: 'e@example.com' } }).user).toBeUndefined()
   })
 })
+
+describe('settings and edge cases', () => {
+  afterEach(() => sentry.closeSentry())
+
+  test('SENTRY_ENVIRONMENT and SENTRY_RELEASE are used; without NODE_ENV the environment is development', async () => {
+    sentry.initSentry(
+      { SENTRY_DSN: FAKE_DSN, SENTRY_ENVIRONMENT: ' staging ', SENTRY_RELEASE: 'ticketflow-backend@1a2b3c4' },
+      { transport: fakeTransport },
+    )
+    const options = require('@sentry/node').getClient().getOptions()
+    expect([options.environment, options.release, options.sendDefaultPii]).toEqual([
+      'staging',
+      'ticketflow-backend@1a2b3c4',
+      false,
+    ])
+    await sentry.closeSentry()
+    sentry.initSentry({ SENTRY_DSN: FAKE_DSN }, { transport: fakeTransport })
+    expect(require('@sentry/node').getClient().getOptions().environment).toBe('development')
+    expect(sentry.isSentryOn()).toBe(true)
+  })
+
+  test('a 5xx outside a request (no id, no user, only a url) and a crash with no reason', async () => {
+    sentry.initSentry({ SENTRY_DSN: FAKE_DSN, NODE_ENV: 'test' }, { transport: fakeTransport })
+    sentry.captureServerError(new Error('no request id'), { method: 'GET', url: '/api/tickets/42?token=abc' }, 503)
+    sentry.captureServerError(new Error('nothing at all'), {})
+    sentry.captureCrash(undefined, 'unhandledRejection')
+    await sentry.flushSentry()
+    const [first, second, third] = events
+    expect(first.tags).toEqual({ kind: 'server-error', method: 'GET', route: '/api/tickets/:id', status: '503' })
+    expect(first).not.toHaveProperty('user')
+    expect(first.event_id).toMatch(/^[0-9a-f]{32}$/)
+    expect(second.tags).toMatchObject({ route: '', status: '500' })
+    expect(third.exception.values[0].value).toBe('undefined')
+  })
+
+  test('closeSentry and flushSentry do nothing when it is off', async () => {
+    await sentry.closeSentry()
+    expect(sentry.isSentryOn()).toBe(false)
+    expect(sentry.captureCrash(new Error('x'), 'uncaughtException')).toBeUndefined()
+    expect(await sentry.flushSentry()).toBe(true)
+  })
+
+  test('scrubEvent: log messages and code context are masked; an event with nothing extra stays as it is', () => {
+    const event = sentry.scrubEvent({
+      logentry: { message: 'mail to a@example.com' },
+      exception: {
+        values: [
+          {
+            value: 'v',
+            stacktrace: { frames: [{ pre_context: ['token=abc'], post_context: ['ip 10.0.0.1'], filename: 'f.js' }] },
+          },
+          { value: 'no stack' },
+        ],
+      },
+    })
+    expect(event.logentry.message).toBe('mail to [email]')
+    expect(event.exception.values[0].stacktrace.frames[0]).toEqual({
+      pre_context: ['token=[redacted]'],
+      post_context: ['ip [ip]'],
+      filename: 'f.js',
+    })
+    expect(sentry.scrubEvent({ message: 'plain' })).toEqual({ message: 'plain', user: undefined })
+    expect(sentry.scrubEvent({ request: { method: 'GET', url: '/x?y=1' } }).request).toEqual({ method: 'GET' })
+  })
+
+  test('the crash handlers with their defaults attach to the real process, and come off again', () => {
+    const before = process.listenerCount('uncaughtException')
+    const remove = installCrashHandlers()
+    expect(process.listenerCount('uncaughtException')).toBe(before + 1)
+    remove()
+    expect(process.listenerCount('uncaughtException')).toBe(before)
+  })
+})
