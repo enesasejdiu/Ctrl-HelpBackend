@@ -1,0 +1,45 @@
+# HTTPS with Caddy, on top of deploy/docker-compose.yml (docs/https.md, "Option A: Caddy"). Use both files together:
+#   cd deploy
+#   docker compose -f docker-compose.yml -f docker-compose.https.caddy.yml up -d --build
+# (or put COMPOSE_FILE=docker-compose.yml:docker-compose.https.caddy.yml in deploy/.env, then plain `docker compose`).
+#
+# Internet → caddy (80/443, the only public ports) → web (8080, not published any more) → /api → api.
+# Needs in deploy/.env: DOMAIN, ACME_EMAIL, and CLIENT_URL/APP_URL = https://<DOMAIN>. Docker Compose 2.24.4 or newer
+# (for !reset).
+
+services:
+  caddy:
+    # Pinned, so a pull never silently changes the proxy
+    image: caddy:2.11.9-alpine
+    restart: unless-stopped
+    depends_on:
+      - web
+    ports:
+      - '80:80' # the HTTP → HTTPS redirect, and Let's Encrypt's HTTP challenge
+      - '443:443' # HTTPS
+      - '443:443/udp' # HTTP/3
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in deploy/.env, e.g. tickets.example.com}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in deploy/.env, e.g. admin@example.com}
+      # Empty = Let's Encrypt. For a first try: https://acme-staging-v02.api.letsencrypt.org/directory
+      ACME_CA: ${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
+      HSTS_MAX_AGE: ${HSTS_MAX_AGE:-300}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # The certificates and the ACME account. Keep this volume: without it every restart asks for new certificates,
+      # and Let's Encrypt allows only a few for the same name per week.
+      - caddy-data:/data
+      - caddy-config:/config
+
+  web:
+    # Only Caddy talks to the web container now: no port on the host
+    ports: !reset []
+
+  api:
+    environment:
+      # Two proxies in front of the API (Caddy, then web), so it sees each visitor's real address
+      TRUST_PROXY_HOPS: 2
+
+volumes:
+  caddy-data:
+  caddy-config:

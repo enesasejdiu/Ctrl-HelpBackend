@@ -132,10 +132,106 @@ jobs:
           sed -E 's/^(MYSQL_ROOT_PASSWORD|DB_PASSWORD|JWT_SECRET|BACKUP_PASSWORD)=$/\1=ci-placeholder/' deploy/.env.example > "$RUNNER_TEMP/compose.env"
           docker compose -f deploy/docker-compose.yml --env-file "$RUNNER_TEMP/compose.env" config --quiet
 
-      # The backup service's scripts (deploy/backup/backup.sh, deploy/mysql/backup-user.sh); shellcheck is on the runner
-      - name: Check the backup scripts
-        run: shellcheck deploy/backup/backup.sh deploy/mysql/backup-user.sh
+      # The backup service's scripts (deploy/backup/backup.sh, deploy/mysql/backup-user.sh) and the HTTPS check
+      # (deploy/check-https.sh); shellcheck is on the runner
+      - name: Check the shell scripts
+        run: shellcheck deploy/backup/backup.sh deploy/mysql/backup-user.sh deploy/check-https.sh
 
       # The size, so a sudden jump shows up in the log
       - name: Show the image size
         run: docker image ls ticketflow-api:ci
+
+  # The HTTPS examples (docs/https.md): the proxy's config is checked by the proxy itself (caddy validate + fmt, or
+  # nginx -t), then the whole app runs behind it from deploy/docker-compose.yml plus the HTTPS file, with a local
+  # certificate instead of Let's Encrypt (that needs a real domain): Caddy with DOMAIN=localhost (its own local CA),
+  # nginx with the temporary self-signed certificate of the guide's first-certificate step 1. deploy/check-https.sh
+  # then checks the redirect, HSTS, TLS versions, the API, the Secure cookies, the visitor's IP and uploads.
+  https:
+    name: HTTPS example (${{ matrix.proxy }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        proxy: [caddy, nginx]
+    defaults:
+      run:
+        working-directory: deploy
+    env:
+      COMPOSE_FILE: docker-compose.yml:docker-compose.https.${{ matrix.proxy }}.yml
+      # The frontend repository, checked out next to the backend below (relative to deploy/)
+      FRONTEND_DIR: ../frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: enesasejdiu/Ctrl-HelpFrontend
+          path: frontend
+
+      # Throwaway settings for this run only: random secrets, and the https address of the test domain
+      - name: deploy/.env
+        run: |
+          domain=${{ matrix.proxy == 'caddy' && 'localhost' || 'tickets.example.com' }}
+          {
+            sed -E '/^(MYSQL_ROOT_PASSWORD|DB_PASSWORD|BACKUP_PASSWORD|JWT_SECRET|CLIENT_URL|APP_URL)=/d' .env.example
+            echo "MYSQL_ROOT_PASSWORD=$(openssl rand -hex 16)"
+            echo "DB_PASSWORD=$(openssl rand -hex 16)"
+            echo "BACKUP_PASSWORD=$(openssl rand -hex 16)"
+            echo "JWT_SECRET=$(openssl rand -hex 48)"
+            echo "CLIENT_URL=https://$domain"
+            echo "APP_URL=https://$domain"
+            echo "DOMAIN=$domain"
+            echo "ACME_EMAIL=admin@example.com"
+          } > .env
+          echo "DOMAIN=$domain" >> "$GITHUB_ENV"
+
+      - name: Check the Caddyfile (caddy validate, caddy fmt)
+        if: matrix.proxy == 'caddy'
+        run: |
+          docker compose run --rm --no-deps -e DOMAIN=tickets.example.com caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          docker compose run --rm --no-deps caddy caddy fmt /etc/caddy/Caddyfile | diff -u caddy/Caddyfile -
+
+      # The guide's step 1 (a temporary self-signed certificate), then nginx -t on the site with it
+      - name: First certificate, step 1, and nginx -t
+        if: matrix.proxy == 'nginx'
+        run: |
+          D=tickets.example.com
+          docker compose run --rm --entrypoint sh certbot -c "mkdir -p /etc/letsencrypt/live/$D && openssl req -x509 -nodes -newkey rsa:2048 -days 1 -subj /CN=$D -keyout /etc/letsencrypt/live/$D/privkey.pem -out /etc/letsencrypt/live/$D/fullchain.pem"
+          docker compose run --rm --no-deps proxy nginx -t
+          docker compose run --rm certbot --version
+
+      - name: Start the app behind the proxy
+        run: |
+          docker compose up -d --build --wait --wait-timeout 300
+          docker compose ps
+
+      # Demo data, for a user to log in as (the database is brand new and thrown away with the run)
+      - name: Demo data
+        run: docker compose exec -T api node scripts/seed.js
+
+      - name: Check it (deploy/check-https.sh)
+        env:
+          RESOLVE: 127.0.0.1
+          INSECURE: '1'
+          LOGIN_EMAIL: admin@ticketflow.local
+          LOGIN_PASSWORD: password123
+          PROXY_CONTAINER: ticketflow-${{ matrix.proxy == 'caddy' && 'caddy' || 'proxy' }}-1
+          WEB_CONTAINER: ticketflow-web-1
+        run: bash check-https.sh "$DOMAIN"
+
+      - name: The web container is not published any more
+        run: |
+          docker compose port web 8080 && exit 1
+          ! curl -s --max-time 5 http://127.0.0.1:8080/
+
+      - name: The renewal container runs (nginx)
+        if: matrix.proxy == 'nginx'
+        run: test "$(docker inspect --format '{{.State.Running}}' ticketflow-certbot-renew-1)" = true
+
+      - name: Logs
+        if: always()
+        run: docker compose logs --no-color --tail 40 ${{ matrix.proxy == 'caddy' && 'caddy' || 'proxy certbot-renew' }} web api || true
+
+      - name: Remove the stack and its data
+        if: always()
+        run: docker compose down -v || true
