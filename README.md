@@ -254,31 +254,106 @@ New migrations run automatically when the new API container starts, after a back
 
 Three named volumes, which `docker compose down` keeps (`docker volume ls`):
 
-| Volume               | Holds                                                       |
-| -------------------- | ----------------------------------------------------------- |
-| `ticketflow_db`      | MySQL's data files: every table                             |
-| `ticketflow_uploads` | Attachment files (the database only has their names)        |
-| `ticketflow_backups` | The backups `db:migrate` takes before changing the database |
+| Volume               | Holds                                                                                      |
+| -------------------- | ------------------------------------------------------------------------------------------ |
+| `ticketflow_db`      | MySQL's data files: every table                                                            |
+| `ticketflow_uploads` | Attachment files (the database only has their names)                                       |
+| `ticketflow_backups` | The daily backups (see below) and the ones `db:migrate` takes before changing the database |
 
 `docker compose down` stops and removes the containers and keeps the data; `docker compose up -d` brings everything
 back. **`docker compose down -v` also deletes the volumes, so every ticket, user and file is gone.**
 
 ### Backups
 
-Back up the database and the attachment files together, from `deploy/`:
+The `backup` service backs up **the database and the attachment files** once a day, into the `ticketflow_backups`
+volume, and keeps the newest 14 of each:
+
+| File                                          | What                                                      |
+| --------------------------------------------- | --------------------------------------------------------- |
+| `ticketflow-<YYYY-MM-DD-HHmm>.sql.gz`         | `mysqldump --single-transaction` of the database (gzip)   |
+| `ticketflow-uploads-<YYYY-MM-DD-HHmm>.tar.gz` | every attachment file (the database only has their names) |
+
+Settings in `deploy/.env`: `BACKUP_TIME` (default `02:30`), `TZ` (default `Europe/Budapest`), `BACKUP_KEEP` (default
+`14`). It dumps as `BACKUP_USER`, a MySQL user that can only read (`SELECT`, `SHOW VIEW`, `TRIGGER`):
+`deploy/mysql/backup-user.sh` creates it when the db volume is new. **For a database that already exists** (you set
+this up before the backup service existed), add `BACKUP_PASSWORD` to `deploy/.env` and create the user once:
 
 ```bash
-# The database (a .sql file on this machine)
-docker compose exec -T db sh -c 'exec mysqldump --single-transaction -u root -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"' \
-  > ticketflow-$(date +%F).sql
-# The attachment files
-docker run --rm -v ticketflow_uploads:/data -v "$PWD":/backup alpine:3.24 \
-  tar czf /backup/uploads-$(date +%F).tar.gz -C /data .
+docker compose up -d db
+docker compose exec db sh /docker-entrypoint-initdb.d/20-backup-user.sh   # safe to run again, e.g. after a new password
+docker compose up -d --build
 ```
 
-To restore: `docker compose exec -T db sh -c 'exec mysql -u root -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"' <
-ticketflow-<date>.sql`, and unpack the tar file into the `ticketflow_uploads` volume the same way (`tar xzf`). Keep the
-backups somewhere else than this machine; they contain emails and password hashes.
+Each file is written under a hidden temporary name (`.<name>.partial`), checked with `gzip -t`, and only then renamed,
+so a dump that is stopped halfway never looks like a backup (the next run removes the leftover). Old backups are only
+deleted after a run in which both files succeeded. Every run logs one line:
+
+```text
+2026-11-17T02:30:12+0100 [backup] ok ticketflow-2026-11-17-0230.sql.gz (4.7MB) ticketflow-uploads-2026-11-17-0230.tar.gz (210MB) | keeping 14 database and 14 uploads backups (BACKUP_KEEP=14)
+2026-11-17T02:30:01+0100 [backup] FAILED database: mysqldump: Got error: 1045: Access denied for user 'ticketflow_backup'@'172.18.0.6' (using password: YES) when trying to connect | kept so far: 14 database, 14 uploads backups
+```
+
+Check them with `docker compose logs backup | grep -E 'ok|FAILED'`; a `FAILED` line needs fixing (the cause is in it).
+
+Commands, from `deploy/`:
+
+```bash
+docker compose run --rm backup backup-now        # a backup now (e.g. before an update); exits 1 if it failed
+docker compose run --rm backup list              # the backups, newest first, with sizes
+docker compose run --rm backup restore <file> [--uploads <uploads file>] [--yes]
+```
+
+`db:migrate`'s own backups (`ticketflow-<date>.sql`, not gzipped) are in the same volume and are never deleted by the
+backup service.
+
+#### Copy them off this machine
+
+**A backup on the same disk is not enough**: if the disk or the machine is lost, the backups go with it. Copy them
+somewhere else every day, e.g. with cron on the host, after `BACKUP_TIME`:
+
+```bash
+# The volume's folder on the host (Linux; needs root): docker volume inspect ticketflow_backups -f '{{ .Mountpoint }}'
+rsync -a /var/lib/docker/volumes/ticketflow_backups/_data/ backup-host:/srv/ticketflow-backups/
+
+# Or without root on the host: copy them out through a container, then on to the other machine
+docker run --rm -v ticketflow_backups:/backups:ro -v "$PWD/offsite":/out alpine:3.24 sh -c 'cp /backups/ticketflow-* /out/'
+```
+
+Keep the copies private (they contain emails and password hashes) and keep more than 14 days there if you can.
+
+#### Restore
+
+1. Pick the backups: `docker compose run --rm backup list` (a database file, and the uploads file of the same time).
+2. Stop the API, so nobody changes data meanwhile: `docker compose stop api`. (Restore refuses while the API answers.)
+3. Restore: `docker compose run --rm backup restore ticketflow-2026-11-17-0230.sql.gz --uploads
+ticketflow-uploads-2026-11-17-0230.tar.gz`. It checks both files first, says what it will replace, and asks you to
+   type `RESTORE` (`--yes` skips the question, e.g. in a script). The tables in the backup replace the current ones;
+   with `--uploads` the attachment files are replaced too. It connects as `DB_USER` (the backup user can't write).
+4. Start the API again: `docker compose start api`. If the backup is older than the code, migrations run on start.
+
+A backup from another machine: copy it into the volume first, e.g.
+`docker run --rm -v ticketflow_backups:/backups -v "$PWD":/in alpine:3.24 cp /in/<file> /backups/`.
+
+#### Test a restore once a month
+
+A backup you have never restored is a guess. Once a month, restore the newest backup into a **throwaway** copy, never
+the real one:
+
+```bash
+# From deploy/: the same files as a separate Compose project, with its own volumes (restore-test_*) and settings
+cp .env /tmp/restore-test.env    # then in /tmp/restore-test.env: WEB_PORT=8090 and BACKUP_TIME=23:59
+alias rt='docker compose -p restore-test --env-file /tmp/restore-test.env'
+rt up -d --build --wait
+docker run --rm -v ticketflow_backups:/from:ro -v restore-test_backups:/to alpine:3.24 \
+  sh -c 'cp /from/ticketflow-<date>.sql.gz /from/ticketflow-uploads-<date>.tar.gz /to/'
+rt stop api
+rt run --rm backup restore ticketflow-<date>.sql.gz --uploads ticketflow-uploads-<date>.tar.gz --yes
+rt start api
+```
+
+Then open http://localhost:8090, log in, open a recent ticket and download one of its attachments. Afterwards remove
+the copy with `rt down -v` (it removes only the `restore-test_*` volumes: check the `-p restore-test`) and
+`/tmp/restore-test.env`.
 
 ## Logs
 
