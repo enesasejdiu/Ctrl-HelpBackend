@@ -12,6 +12,7 @@ const { requireAuth } = require('../middleware/auth')
 const validate = require('../middleware/validate')
 const schemas = require('../schemas/attachments')
 const { recordAudit } = require('../audit')
+const { isStaff } = require('../middleware/auth')
 const {
   maxFileBytes,
   formatBytes,
@@ -23,22 +24,52 @@ const {
   safeName,
   decodeUploadName,
   storedPath,
+  sha256,
   storeFile,
   removeFile,
-  canSeeTicket,
+  canSeeAttachment,
   canDeleteAttachment,
   publicAttachment,
   listAttachments,
 } = require('../attachments')
 
 // Parses the multipart body into memory (req.files), so every file is checked before anything is written to disk.
-// At most MAX_FILES_PER_UPLOAD files of maxFileBytes() each, all in the "files" field, and nothing else in the body.
-// Built per request, because the size limit is read on every call (see maxFileBytes in src/attachments.js).
+// At most MAX_FILES_PER_UPLOAD files of maxFileBytes() each, all in the "files" field, plus at most one text field
+// (comment_id; any other is refused in uploadAttachments). Built per request, because the size limit is read on every
+// call (see maxFileBytes in src/attachments.js).
 function fileParser(maxBytes) {
   return multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: maxBytes, files: MAX_FILES_PER_UPLOAD, fields: 0, parts: MAX_FILES_PER_UPLOAD },
+    limits: { fileSize: maxBytes, files: MAX_FILES_PER_UPLOAD, fields: 1, parts: MAX_FILES_PER_UPLOAD + 1 },
   }).array('files', MAX_FILES_PER_UPLOAD)
+}
+
+// Images and PDFs can be previewed (?inline=1); text never is, so a .txt can't be shown as a page
+const PREVIEWABLE = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'application/pdf'])
+
+// A downloaded file can't run anything, even if a browser opens it as a page: no scripts, no requests, sandboxed
+const DOWNLOAD_CSP = "default-src 'none'; sandbox"
+
+// The comment the files are added with, or null. It must be a comment on this ticket that the user can see (internal
+// notes are staff-only); anything else gets the same 422, so it says nothing about comments on other tickets.
+async function commentFor(req) {
+  const fields = schemas.uploadFields.safeParse(req.body ?? {})
+  if (!fields.success) {
+    const unknown = fields.error.issues.some((issue) => issue.code === 'unrecognized_keys')
+    throw unknown
+      ? new HttpError(400, 'Send only files, in the "files" field, and optionally comment_id', 'INVALID_UPLOAD')
+      : new HttpError(400, fields.error.issues[0].message, 'INVALID_UPLOAD')
+  }
+  const commentId = fields.data.comment_id
+  if (commentId === undefined) return null
+  const [[comment]] = await pool.query('SELECT id, is_internal FROM comments WHERE id = ? AND ticket_id = ?', [
+    commentId,
+    req.ticket.id,
+  ])
+  if (!comment || (comment.is_internal && !isStaff(req.user))) {
+    throw new HttpError(422, 'That comment is not on this ticket', 'COMMENT_NOT_ON_TICKET')
+  }
+  return comment.id
 }
 
 const tooManyFiles = () =>
@@ -63,7 +94,7 @@ function uploadError(err, maxBytes) {
           ? tooManyFiles()
           : new HttpError(400, 'Send the files in the "files" field', 'INVALID_UPLOAD')
       default:
-        return new HttpError(400, 'Send only files, in the "files" field', 'INVALID_UPLOAD')
+        return new HttpError(400, 'Send only files, in the "files" field, and optionally comment_id', 'INVALID_UPLOAD')
     }
   }
   // A broken multipart body (e.g. cut off halfway)
@@ -83,21 +114,23 @@ async function uploadAttachments(req, res) {
     throw new HttpError(400, 'Choose at least one file to upload', 'NO_FILES')
   }
 
-  // Every file must be allowed before any is saved, so a refused file never leaves the others half uploaded
+  // Every file must be allowed before any is saved, so a refused file never leaves the others half uploaded.
+  // Empty: 422 (a well-formed request that can't be accepted). Not an allowed type: 415 (Unsupported Media Type).
   const checked = files.map((file) => {
     const name = safeName(decodeUploadName(file.originalname))
     if (file.size === 0) {
-      throw new HttpError(400, `${name} is empty`, 'EMPTY_FILE', { file: name })
+      throw new HttpError(422, `${name} is empty`, 'EMPTY_FILE', { file: name })
     }
     const mimeType = detectType(file.buffer, name)
     if (!mimeType) {
-      throw new HttpError(400, `${name}: this file type isn't allowed`, 'UNSUPPORTED_FILE_TYPE', {
+      throw new HttpError(415, `${name}: this file type isn't allowed`, 'UNSUPPORTED_FILE_TYPE', {
         file: name,
         allowed: ALLOWED_EXTENSIONS,
       })
     }
-    return { name, mimeType, buffer: file.buffer, size: file.size }
+    return { name, mimeType, buffer: file.buffer, size: file.size, sha256: sha256(file.buffer) }
   })
+  const commentId = await commentFor(req)
 
   const ticketId = req.ticket.id
   const stored = []
@@ -122,15 +155,22 @@ async function uploadAttachments(req, res) {
       const storedName = await storeFile(file.buffer)
       stored.push(storedName)
       const [result] = await conn.query(
-        `INSERT INTO attachments (ticket_id, uploaded_by, original_name, stored_name, mime_type, size_bytes)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [ticketId, req.user.id, file.name, storedName, file.mimeType, file.size],
+        `INSERT INTO attachments
+           (ticket_id, comment_id, uploaded_by, original_name, stored_name, mime_type, size_bytes, sha256)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [ticketId, commentId, req.user.id, file.name, storedName, file.mimeType, file.size, file.sha256],
       )
       ids.push(result.insertId)
       // The file's name, type and size; never its content
       await recordAudit('attachment_uploaded', {
         actorId: req.user.id,
-        details: { ticket_id: ticketId, file_name: file.name, mime_type: file.mimeType, size_bytes: file.size },
+        details: {
+          ticket_id: ticketId,
+          ...(commentId ? { comment_id: commentId } : {}),
+          file_name: file.name,
+          mime_type: file.mimeType,
+          size_bytes: file.size,
+        },
         req,
         db: conn,
       })
@@ -151,29 +191,30 @@ async function uploadAttachments(req, res) {
 
 // GET /api/tickets/:id/attachments (after the ticket check) → the ticket's attachments, oldest first
 async function listTicketAttachments(req, res) {
-  res.json(await listAttachments(pool, req.ticket.id))
+  res.json(await listAttachments(pool, req.ticket.id, req.user))
 }
 
 const router = express.Router()
 router.use(requireAuth)
 
-// Loads the attachment with its ticket's requester, and checks the user may see that ticket (404 before 403)
+// Loads the attachment and checks the user may see it (its ticket, and not a staff-only one). One answer, 404, for
+// "doesn't exist" and "not yours to see", so nobody can find out which attachment ids exist.
 async function loadAttachment(req, res, next) {
   const [rows] = await pool.query(`${ATTACHMENT_SELECT} WHERE a.id = ?`, [req.valid.params.id])
   const attachment = rows[0]
-  if (!attachment) {
+  const [[ticket]] = attachment
+    ? await pool.query('SELECT requester_id FROM tickets WHERE id = ?', [attachment.ticket_id])
+    : [[null]]
+  if (!attachment || !canSeeAttachment(req.user, attachment, ticket.requester_id)) {
     throw new HttpError(404, 'Attachment not found')
-  }
-  const [[ticket]] = await pool.query('SELECT requester_id FROM tickets WHERE id = ?', [attachment.ticket_id])
-  if (!canSeeTicket(req.user, ticket.requester_id)) {
-    throw new HttpError(403, 'You can only see attachments on your own tickets')
   }
   req.attachment = attachment
   next()
 }
 
-// GET /api/attachments/:id/download → the file, always as a download (never shown inline), with its original name
-router.get('/:id/download', validate(schemas.attachmentParams), loadAttachment, async (req, res) => {
+// GET /api/attachments/:id/download → the file with its original name, as a download. With ?inline=1 an image or PDF
+// is sent for showing in the browser instead (a preview); text files are always downloads.
+router.get('/:id/download', validate(schemas.attachmentDownload), loadAttachment, async (req, res) => {
   const attachment = req.attachment
   const file = storedPath(attachment.stored_name)
   let size
@@ -188,10 +229,15 @@ router.get('/:id/download', validate(schemas.attachmentParams), loadAttachment, 
   // attachment() writes Content-Disposition: attachment, with a safe ASCII filename plus filename* for any other
   // characters. It also guesses a Content-Type from the name, which the next line replaces with the checked type.
   res.attachment(attachment.original_name)
+  // A preview: the same header with "inline" (same filename and filename*)
+  if (req.valid.query.inline === '1' && PREVIEWABLE.has(attachment.mime_type)) {
+    res.set('Content-Disposition', res.get('Content-Disposition').replace(/^attachment/, 'inline'))
+  }
   res.set({
     'Content-Type': attachment.mime_type,
     'Content-Length': String(size),
     'X-Content-Type-Options': 'nosniff',
+    'Content-Security-Policy': DOWNLOAD_CSP,
     'Cache-Control': 'private, no-store',
   })
   await pipeline(fs.createReadStream(file), res)

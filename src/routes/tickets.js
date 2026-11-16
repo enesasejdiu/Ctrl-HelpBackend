@@ -199,7 +199,8 @@ router.get('/:id', validate(schemas.getTicket), async (req, res) => {
     ...ticket,
     comments: comments.map((c) => ({ ...c, is_internal: Boolean(c.is_internal) })),
     history,
-    attachments: await listAttachments(pool, ticket.id),
+    // Without files added with internal notes, for everyone but staff (like the notes above)
+    attachments: await listAttachments(pool, ticket.id, req.user),
     // Everyone who can see the ticket sees its rating
     rating: await loadRating(ticket.id),
   })
@@ -239,8 +240,15 @@ router.post('/:id/rating', validate(schemas.rateTicket), async (req, res) => {
 
 // Attachments belong to a ticket, so the same rule decides who may list or add them: the requester and staff.
 // The ticket is checked BEFORE the upload is read, so nobody can make the server read files for a ticket they can't see.
+// A ticket the user can't see is a 404 here, the same as one that doesn't exist, so these routes never confirm that a
+// ticket id exists. (GET /api/tickets/:id itself still answers 403 there, as before.)
 async function loadVisibleTicket(req, res, next) {
-  req.ticket = await loadTicket(req.valid.params.id, req.user)
+  try {
+    req.ticket = await loadTicket(req.valid.params.id, req.user)
+  } catch (err) {
+    if (err.status === 403) throw new HttpError(404, 'Ticket not found')
+    throw err
+  }
   next()
 }
 

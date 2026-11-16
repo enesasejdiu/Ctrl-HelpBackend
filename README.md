@@ -1092,23 +1092,27 @@ running. `auto_close_days` is changed with `PATCH /api/settings { auto_close_day
 
 People can add files to a ticket: screenshots, PDFs, logs. Who may do what follows the ticket: **the requester and
 staff** (agents and admins) see a ticket, so they can list, add and download its files. HR is an employee for
-tickets, so HR only sees its own. **Deleting** a file is for whoever uploaded it, or an admin.
+tickets, so HR only sees its own. **Deleting** a file is for whoever uploaded it, or an admin. A file added with an
+**internal note** (see `comment_id` below) is staff-only, like the note. To anyone else, a ticket or file they may not
+see answers **404**, exactly like one that doesn't exist, so these endpoints never confirm that an id exists.
 
 ### Files and limits
 
-| Rule          | Value                                                                           |
-| ------------- | ------------------------------------------------------------------------------- |
-| Allowed types | `png`, `jpg`/`jpeg`, `gif`, `webp`, `pdf`, `txt`, `log`, `csv`                  |
-| Size          | at most **10 MB** per file (always; see below); empty files are refused         |
-| Per upload    | **1–5 files**, all in the multipart field `files`, and nothing else in the body |
-| Per ticket    | at most **20** attachments                                                      |
+| Rule          | Value                                                                                           |
+| ------------- | ----------------------------------------------------------------------------------------------- |
+| Allowed types | `png`, `jpg`/`jpeg`, `gif`, `webp`, `pdf`, `txt`, `log`, `csv`                                  |
+| Size          | at most **10 MB** per file (always; see below); empty files are refused                         |
+| Per upload    | **1–5 files**, all in the multipart field `files`; the only other field allowed is `comment_id` |
+| Per ticket    | at most **20** attachments                                                                      |
 
 **The type is checked from the file's content, not its name.** Images and PDFs must start with their real signature
 (magic bytes). `.txt`, `.log` and `.csv` have no signature, so they must be valid UTF-8 text without NUL bytes. The
 extension must also match the content: a `photo.png` that is really text, or a PNG named `scan.pdf`, is refused. The
 type stored (and sent on download) is the one found from the content, never what the browser claimed.
 
-An upload is all or nothing: if one file is refused, none is saved.
+An upload is all or nothing: if one file is refused, none is saved. Each saved file's **SHA-256** (hex) is stored with
+it (`sha256`, migration 018), so anyone can check that the file on disk is still the one uploaded; files uploaded
+before migration 018 have `null`.
 
 **The 10 MB limit can only change in tests.** With `NODE_ENV=test`, `ATTACHMENT_MAX_BYTES` (a whole number of bytes, 1
 to 10485760) lowers it, like `LOCKOUT_MINUTES` for the lockout; the 413 message and `max_bytes` then show that limit.
@@ -1132,49 +1136,64 @@ parts (`../`, `C:\\`), control characters and line breaks are removed from it, a
 
 ### Endpoints
 
-`POST /api/tickets/:id/attachments`: multipart, field `files`. Cookie sessions need the `X-CSRF-Token` header as for
-any change. The ticket is checked first (404, 403), before the upload is read. → **201** with the new attachments:
+`POST /api/tickets/:id/attachments`: multipart, field `files`, and optionally `comment_id`: the comment the files
+belong to, which must be a comment on this ticket that the uploader can see (employees can't use an internal note).
+Cookie sessions need the `X-CSRF-Token` header as for any change. The ticket is checked first (404), before the upload
+is read. → **201** with the new attachments:
 
 ```json
 [
   {
     "id": 7,
     "ticket_id": 42,
+    "comment_id": null,
     "original_name": "printer.png",
     "mime_type": "image/png",
     "size_bytes": 48213,
+    "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
     "uploaded_by": { "id": 4, "name": "Liridon Gashi" },
     "created_at": "2026-11-11T09:15:02.000Z"
   }
 ]
 ```
 
-`GET /api/tickets/:id/attachments` → the same shape for every attachment of the ticket, oldest first.
-`GET /api/tickets/:id` also returns them as `attachments`.
+`GET /api/tickets/:id/attachments` → the same shape for every attachment of the ticket the caller may see, oldest
+first. `GET /api/tickets/:id` also returns them as `attachments`. Files added with an internal note are only listed for
+staff.
 
-`GET /api/attachments/:id/download` → the file, always as a download, never shown in the browser:
-`Content-Disposition: attachment; filename="…"` (plus `filename*=UTF-8''…` for other characters),
-`Content-Type` as stored, `X-Content-Type-Options: nosniff`, `Cache-Control: private, no-store`.
+`GET /api/attachments/:id/download` → the file, as a download: `Content-Disposition: attachment; filename="…"` (plus
+`filename*=UTF-8''…` for other characters), `Content-Type` as stored, `X-Content-Type-Options: nosniff`,
+`Content-Security-Policy: default-src 'none'; sandbox` (even opened as a page, a file can't run scripts or load
+anything), `Cache-Control: private, no-store`. **`?inline=1`** asks for a preview: an image or PDF then comes with
+`Content-Disposition: inline` (same name, same headers), for showing in the browser. Text files are always downloads,
+and any other value of `inline` is a normal download.
 
 `DELETE /api/attachments/:id` → **204**. The row and the file on disk are both removed.
 
 ### Errors
 
-| Status | `code`                  | When                                                                                                                  |
-| ------ | ----------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| 400    | `UNSUPPORTED_FILE_TYPE` | A file's content or extension isn't allowed: `"invoice.exe: this file type isn't allowed"`, with `file` and `allowed` |
-| 400    | `EMPTY_FILE`            | A file has 0 bytes (`file`)                                                                                           |
-| 413    | `FILE_TOO_LARGE`        | A file is over 10 MB (`max_bytes`)                                                                                    |
-| 400    | `TOO_MANY_FILES`        | More than 5 files in one upload (`max_files`)                                                                         |
-| 400    | `TOO_MANY_ATTACHMENTS`  | The ticket would have more than 20 (`max_per_ticket`, `current`)                                                      |
-| 400    | `NO_FILES`              | No file in the request                                                                                                |
-| 400    | `INVALID_UPLOAD`        | Files in another field than `files`, extra text fields, or a broken multipart body                                    |
-| 403    |                         | Not the requester or staff (any endpoint); deleting someone else's file without being admin                           |
-| 404    | `FILE_MISSING`          | Download: the row exists but its file is gone from `UPLOAD_DIR` (logged on the server)                                |
+| Status | `code`                  | When                                                                                                                                                   |
+| ------ | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 415    | `UNSUPPORTED_FILE_TYPE` | A file's content or extension isn't allowed: `"invoice.exe: this file type isn't allowed"`, with `file` and `allowed`                                  |
+| 422    | `EMPTY_FILE`            | A file has 0 bytes (`file`)                                                                                                                            |
+| 422    | `COMMENT_NOT_ON_TICKET` | `comment_id` isn't a comment on this ticket that the uploader can see (also when it doesn't exist)                                                     |
+| 413    | `FILE_TOO_LARGE`        | A file is over 10 MB (`max_bytes`)                                                                                                                     |
+| 400    | `TOO_MANY_FILES`        | More than 5 files in one upload (`max_files`)                                                                                                          |
+| 400    | `TOO_MANY_ATTACHMENTS`  | The ticket would have more than 20 (`max_per_ticket`, `current`)                                                                                       |
+| 400    | `NO_FILES`              | No file in the request                                                                                                                                 |
+| 400    | `INVALID_UPLOAD`        | Files in another field than `files`, a text field other than one `comment_id`, a `comment_id` that isn't a positive number, or a broken multipart body |
+| 403    |                         | Deleting someone else's file without being admin (a file the caller can see)                                                                           |
+| 404    |                         | The ticket or file doesn't exist, or the caller may not see it (`Ticket not found`, `Attachment not found`)                                            |
+| 404    | `FILE_MISSING`          | Download: the row exists but its file is gone from `UPLOAD_DIR` (logged on the server)                                                                 |
 
 Uploads and deletes are in the [audit log](#audit-log) (`attachment_uploaded`, `attachment_deleted`) with the file's
-name and size, never its content. Deleting a ticket deletes its attachment rows (`ON DELETE CASCADE`); there is no
-API for deleting tickets.
+name and size (and `comment_id` when there is one), never its content. Deleting a ticket deletes its attachment rows
+(`ON DELETE CASCADE`); there is no API for deleting tickets. Deleting a comment keeps its files on the ticket
+(`comment_id` becomes `null`).
+
+**Not built (follow-ups):** virus scanning (matters most because files are shared between the requester and staff),
+storage quotas, cloud storage (S3), and spooling uploads to a temporary file instead of memory (today each upload is
+held in memory until it's checked; with the frontend's nginx in front, a request is at most 11 MB).
 
 ## Satisfaction ratings
 
