@@ -1,0 +1,41 @@
+# Caddy in front of TicketFlow: HTTPS on ports 80/443, everything passed on to the web container (nginx, port 8080),
+# which serves the app and passes /api on to the API. docs/https.md, "Option A: Caddy".
+# Used by deploy/docker-compose.https.caddy.yml. The {$NAME} values come from deploy/.env, through that file:
+#   DOMAIN        the address people open, e.g. tickets.example.com (DNS must point at this server first)
+#   ACME_EMAIL    where Let's Encrypt sends notices about the certificate, e.g. admin@example.com
+#   ACME_CA       which CA to ask: Let's Encrypt (default), or its staging CA for a first try
+#   HSTS_MAX_AGE  how long browsers must stick to HTTPS, in seconds: 300 at first, 31536000 once all works
+# Caddy gets the certificate on its own, renews it before it expires, and redirects http:// to https://. It keeps the
+# certificates in /data (a volume): without it, every restart would ask Let's Encrypt again and hit its rate limits.
+#
+# DOMAIN=localhost (a local try-out): Caddy then uses its own local CA instead of Let's Encrypt, like `tls internal`.
+{
+	email {$ACME_EMAIL}
+	acme_ca {$ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
+}
+
+{$DOMAIN} {
+	# Compress what the web container didn't already (it gzips text itself)
+	encode zstd gzip
+
+	# The web container already sends the page's security headers (CSP, nosniff, X-Frame-Options, Referrer-Policy,
+	# Permissions-Policy) and the API sends its own; Caddy adds HSTS for everything and hides its name.
+	header {
+		Strict-Transport-Security "max-age={$HSTS_MAX_AGE:300}"
+		-Server
+	}
+
+	# Attachments are 10 MB; the web container refuses bodies over 11 MB anyway
+	request_body {
+		max_size 11MB
+	}
+
+	reverse_proxy web:8080 {
+		# The API sends its own HSTS (180 days, in production): drop it, so the max-age above is the only one and
+		# starting with 5 minutes really means 5 minutes
+		header_down -Strict-Transport-Security
+	}
+
+	# Access log on stdout: docker compose logs caddy
+	log
+}

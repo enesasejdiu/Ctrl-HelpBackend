@@ -1,0 +1,65 @@
+# HTTPS with nginx and Let's Encrypt (certbot), on top of deploy/docker-compose.yml (docs/https.md, "Option B: nginx +
+# certbot"). Use both files together:
+#   cd deploy
+#   docker compose -f docker-compose.yml -f docker-compose.https.nginx.yml up -d --build
+# (or put COMPOSE_FILE=docker-compose.yml:docker-compose.https.nginx.yml in deploy/.env, then plain `docker compose`).
+# The FIRST certificate needs a few one-time steps before this works: docs/https.md, "Getting the first certificate".
+#
+# Internet → proxy (nginx, 80/443, the only public ports) → web (8080, not published any more) → /api → api.
+# Before use, put your domain into deploy/nginx/https.conf. Needs Docker Compose 2.24.4 or newer (for !reset).
+
+services:
+  proxy:
+    # Pinned, so a pull never silently changes the proxy
+    image: nginx:1.30.6-alpine
+    restart: unless-stopped
+    depends_on:
+      - web
+    ports:
+      - '80:80' # the HTTP → HTTPS redirect, and Let's Encrypt's HTTP challenge
+      - '443:443' # HTTPS
+    volumes:
+      - ./nginx/https.conf:/etc/nginx/conf.d/default.conf:ro
+      - letsencrypt:/etc/letsencrypt:ro
+      - certbot-www:/var/www/certbot:ro
+    # nginx reads the certificate when it (re)loads, and certbot (another container) can't reload it. So nginx reloads
+    # itself every 6 hours, which picks up a renewed certificate long before the old one expires.
+    command: ['/bin/sh', '-c', "while :; do sleep 6h; nginx -s reload; done & exec nginx -g 'daemon off;'"]
+
+  # Renews the certificate when it's due (certbot renews 30 days before it expires), checking twice a day
+  certbot-renew:
+    image: certbot/certbot:v5.10.0
+    restart: unless-stopped
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - certbot-www:/var/www/certbot
+    entrypoint:
+      [
+        '/bin/sh',
+        '-c',
+        'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done',
+      ]
+
+  # For one-off certbot commands; never started by `up`:
+  #   docker compose ... run --rm certbot certonly ...      docker compose ... run --rm certbot renew --dry-run
+  certbot:
+    image: certbot/certbot:v5.10.0
+    profiles: ['tools']
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - certbot-www:/var/www/certbot
+
+  web:
+    # Only the proxy talks to the web container now: no port on the host
+    ports: !reset []
+
+  api:
+    environment:
+      # Two proxies in front of the API (this nginx, then web), so it sees each visitor's real address
+      TRUST_PROXY_HOPS: 2
+
+volumes:
+  # The certificates, private keys and certbot's account (never in git)
+  letsencrypt:
+  # The challenge files Let's Encrypt reads over HTTP
+  certbot-www:
