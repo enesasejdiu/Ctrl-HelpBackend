@@ -322,6 +322,44 @@ describe('LOCKOUT_MINUTES', () => {
   })
 })
 
+describe('SENTRY_*', () => {
+  test('all optional: not set or blank means error tracking is off', () => {
+    for (const env of [prod(), prod({ SENTRY_DSN: '', SENTRY_ENVIRONMENT: ' ', SENTRY_RELEASE: '' })]) {
+      const { config } = loadConfig(env)
+      expect([config.SENTRY_DSN, config.SENTRY_ENVIRONMENT, config.SENTRY_RELEASE]).toEqual([
+        undefined,
+        undefined,
+        undefined,
+      ])
+    }
+  })
+
+  test('a DSN, an environment and a release are accepted', () => {
+    const { config } = loadConfig(
+      prod({
+        SENTRY_DSN: 'https://abc123@o42.ingest.sentry.io/7',
+        SENTRY_ENVIRONMENT: 'staging',
+        SENTRY_RELEASE: 'ticketflow-backend@1a2b3c4',
+      }),
+    )
+    expect(config).toMatchObject({
+      SENTRY_DSN: 'https://abc123@o42.ingest.sentry.io/7',
+      SENTRY_ENVIRONMENT: 'staging',
+      SENTRY_RELEASE: 'ticketflow-backend@1a2b3c4',
+    })
+  })
+
+  test.each([
+    [{ SENTRY_DSN: 'not a url' }, /SENTRY_DSN must be the DSN from Sentry/],
+    [{ SENTRY_ENVIRONMENT: 'my staging' }, /SENTRY_ENVIRONMENT must be one word/],
+    [{ SENTRY_RELEASE: 'v 1' }, /SENTRY_RELEASE must have no spaces/],
+  ])('%o is refused', (setting, message) => {
+    const { exited, log } = run(prod(setting))
+    expect(exited).toBe(true)
+    expect(log.error.mock.calls[0][0]).toMatch(message)
+  })
+})
+
 describe('LOG_LEVEL', () => {
   test('not set (or blank) is info', () => {
     expect(loadConfig(prod()).config.LOG_LEVEL).toBe('info')

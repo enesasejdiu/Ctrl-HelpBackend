@@ -137,3 +137,4 @@ requireAuth checks the current role and active status in the database on every r
 - [x] Satisfaction ratings: the requester rates a closed ticket once (1–5 stars, optional comment); averages in GET /api/stats
 - [x] Structured logs (pino) with a request ID on every line
 - [x] Daily backup container (keeps the last 14) with a tested restore
+- [x] Error tracking with Sentry (optional, off without a DSN)

@@ -59,6 +59,10 @@ services:
       CLIENT_URL: ${CLIENT_URL:?Set CLIENT_URL in deploy/.env}
       APP_URL: ${APP_URL:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Error tracking (README "Error tracking"): off without SENTRY_DSN
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+      SENTRY_RELEASE: ${SENTRY_RELEASE:-}
       MAIL_ENABLED: ${MAIL_ENABLED:-false}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
@@ -78,6 +82,12 @@ services:
     build:
       # The frontend repository, next to this one by default (FRONTEND_DIR is relative to this deploy/ folder)
       context: ${FRONTEND_DIR:-../../Ctrl-HelpFrontend}
+      # The frontend's own Sentry settings (built into the page; its README "Error tracking"). The environment is the
+      # same SENTRY_ENVIRONMENT as the API's, so both sides' errors show up under one name.
+      args:
+        VITE_SENTRY_DSN: ${WEB_SENTRY_DSN:-}
+        VITE_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+        VITE_SENTRY_RELEASE: ${WEB_SENTRY_RELEASE:-}
     image: ticketflow-web:local
     restart: unless-stopped
     depends_on:

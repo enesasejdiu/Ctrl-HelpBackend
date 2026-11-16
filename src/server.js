@@ -9,6 +9,13 @@ const log = asConsole(logger)
 // Refuses to start (exit 1, with a list of problems) when a setting is missing or, in production, too weak
 const config = require('./config').checkConfig('server', { log })
 
+// Error tracking (src/sentry.js): only with SENTRY_DSN; without it nothing is loaded or sent
+const sentry = require('./sentry')
+if (sentry.initSentry()) logger.info('Error tracking: Sentry is on (5xx errors and crashes, no personal data)')
+
+// A crash (an uncaught exception, an unhandled rejection): logged, sent to Sentry (if on), exit 1 (src/crash.js)
+require('./crash').installCrashHandlers()
+
 // The attachments folder must exist and be writable; better to find out now than at the first upload
 const { ensureUploadDir } = require('./attachments')
 try {

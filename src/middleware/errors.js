@@ -16,6 +16,7 @@ class HttpError extends Error {
 }
 
 const { logger, safePath } = require('../logger')
+const { captureServerError } = require('../sentry')
 
 // Catch-all for requests that matched no route; register after all routes. The path is shown without the query
 // string's values (they could be a token), as in the logs.
@@ -35,6 +36,8 @@ function logFailure(req, status, err) {
   }
   if (status >= 500) {
     log.error({ ...context, err }, err.message || 'Unexpected error')
+    // Only server errors go to Sentry (when it is on, src/sentry.js); never 4xx
+    captureServerError(err, req, status)
   } else {
     log.warn({ ...context, ...(err.code && typeof err.code === 'string' && { code: err.code }) }, err.message)
   }
