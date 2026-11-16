@@ -9,7 +9,6 @@
 # certificates in /data (a volume): without it, every restart would ask Let's Encrypt again and hit its rate limits.
 #
 # DOMAIN=localhost (a local try-out): Caddy then uses its own local CA instead of Let's Encrypt, like `tls internal`.
-
 {
 	email {$ACME_EMAIL}
 	acme_ca {$ACME_CA:https://acme-v02.api.letsencrypt.org/directory}

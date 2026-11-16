@@ -221,7 +221,8 @@ jobs:
 
       - name: The web container is not published any more
         run: |
-          docker compose port web 8080 && exit 1
+          docker port ticketflow-web-1
+          test -z "$(docker port ticketflow-web-1)"
           ! curl -s --max-time 5 http://127.0.0.1:8080/
 
       - name: The renewal container runs (nginx)
