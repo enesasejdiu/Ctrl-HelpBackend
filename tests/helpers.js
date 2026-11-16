@@ -16,8 +16,9 @@ const api = request(app)
 const DEFAULT_PASSWORD = 'password123'
 let userCount = 0
 
-// Empties audit_log, attachments, sessions, password_tokens, users, departments, tickets, comments and ticket_history,
-// and puts the standard categories, priorities and company name back (restoreReferenceData). schema_migrations stays.
+// Empties audit_log, attachments, sessions, password_tokens, users, departments, tickets, comments, ticket_history and
+// ticket_ratings, and puts the standard categories, priorities and company name back (restoreReferenceData).
+// schema_migrations stays.
 async function resetData() {
   assertTestDbName(process.env.DB_NAME) // second safety net: never empty a real database
   // FOREIGN_KEY_CHECKS is per connection, so every statement must run on the same one
@@ -29,6 +30,7 @@ async function resetData() {
       'attachments',
       'sessions',
       'password_tokens',
+      'ticket_ratings',
       'ticket_history',
       'comments',
       'tickets',
@@ -55,7 +57,15 @@ async function restoreReferenceData() {
   const connection = await step('restoreReferenceData: get a pool connection', () => pool.getConnection())
   try {
     await connection.query('SET FOREIGN_KEY_CHECKS = 0')
-    for (const table of ['attachments', 'ticket_history', 'comments', 'tickets', 'categories', 'priorities']) {
+    for (const table of [
+      'attachments',
+      'ticket_ratings',
+      'ticket_history',
+      'comments',
+      'tickets',
+      'categories',
+      'priorities',
+    ]) {
       await step(`restoreReferenceData: TRUNCATE ${table}`, () => connection.query(`TRUNCATE TABLE ${table}`))
     }
     for (const [index, [name, description]] of reference.categories.entries()) {
@@ -198,7 +208,15 @@ function expectNoPasswordHash(body) {
 // expect(await dbSnapshot()).toEqual(before)
 async function dbSnapshot() {
   const snapshot = {}
-  for (const table of ['users', 'departments', 'tickets', 'comments', 'ticket_history', 'password_tokens']) {
+  for (const table of [
+    'users',
+    'departments',
+    'tickets',
+    'comments',
+    'ticket_history',
+    'password_tokens',
+    'ticket_ratings',
+  ]) {
     const [rows] = await pool.query(`SELECT * FROM ${table} ORDER BY id`)
     snapshot[table] = rows
   }
