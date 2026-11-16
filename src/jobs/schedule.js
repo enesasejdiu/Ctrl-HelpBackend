@@ -36,7 +36,7 @@ function startAutoCloseSchedule({ log = console } = {}) {
         try {
           await runAutoClose({ log })
         } catch (err) {
-          log.error(`[auto-close] The job failed: ${err.message}`)
+          log.error(`[auto-close] The job failed: ${err.message}`, err)
         }
       },
     )

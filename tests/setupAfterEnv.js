@@ -6,6 +6,7 @@ const path = require('path')
 const pool = require('../src/db')
 const notifications = require('../src/mail/notifications')
 const { getMailer, resetMailer } = require('../src/mail/mailer')
+const { stopLogCapture } = require('../src/logger')
 
 // Before any test file creates data: the pool must really be on the throwaway ticketflow_test_* database, on a local
 // or CI server (tests/support/guard.js). Otherwise the whole file stops here.
@@ -22,6 +23,8 @@ afterEach(async () => {
   process.env.SMTP_HOST = ''
   process.env.MAIL_FROM = ''
   resetMailer()
+  // A test that captured the log (captureLogs) leaves the logger silent again
+  stopLogCapture()
 })
 
 afterAll(async () => {

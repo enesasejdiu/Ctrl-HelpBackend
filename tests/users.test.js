@@ -3,6 +3,7 @@
 const bcrypt = require('bcryptjs')
 const crypto = require('crypto')
 const pool = require('../src/db')
+const { captureLogs } = require('../src/logger')
 const {
   api,
   resetData,
@@ -809,13 +810,15 @@ describe('POST /api/users: the response, the invitation, and refusals', () => {
     const spies = ['log', 'info', 'warn', 'error', 'debug'].map((level) =>
       jest.spyOn(console, level).mockImplementation(() => {}),
     )
+    const captured = captureLogs() // the logger's lines (src/logger.js)
     try {
       const res = await api.post('/api/users').set(auth(adminToken)).send(newUserBody('employee'))
       expect(res.status).toBe(201)
-      const written = spies.flatMap((spy) => spy.mock.calls.flat().map(String)).join('\n')
+      const written = [...spies.flatMap((spy) => spy.mock.calls.flat().map(String)), captured.text()].join('\n')
       expect(written).not.toContain(res.body.temporaryPassword)
     } finally {
       spies.forEach((spy) => spy.mockRestore())
+      captured.restore()
     }
   })
 
@@ -824,14 +827,16 @@ describe('POST /api/users: the response, the invitation, and refusals', () => {
     const spies = ['log', 'info', 'warn', 'error', 'debug'].map((level) =>
       jest.spyOn(console, level).mockImplementation(() => {}),
     )
+    const captured = captureLogs() // the logger's lines (src/logger.js)
     try {
       const res = await api.post('/api/users').set(auth(adminToken)).send(newUserBody('employee'))
       expect(res.status).toBe(201)
       const token = await inviteTokenFor(res.body.user.email)
-      const written = spies.flatMap((spy) => spy.mock.calls.flat().map(String)).join('\n')
+      const written = [...spies.flatMap((spy) => spy.mock.calls.flat().map(String)), captured.text()].join('\n')
       expect(written).not.toContain(token)
     } finally {
       spies.forEach((spy) => spy.mockRestore())
+      captured.restore()
     }
   })
 })

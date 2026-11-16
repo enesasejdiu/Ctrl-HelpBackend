@@ -280,6 +280,73 @@ To restore: `docker compose exec -T db sh -c 'exec mysql -u root -p"$MYSQL_ROOT_
 ticketflow-<date>.sql`, and unpack the tar file into the `ticketflow_uploads` volume the same way (`tar xzf`). Keep the
 backups somewhere else than this machine; they contain emails and password hashes.
 
+## Logs
+
+The API logs through [pino](https://getpino.io) (`src/logger.js`). In production (`NODE_ENV=production`, the Docker
+image) every entry is **one JSON line** on stdout; in development `npm run dev` prints the same entries readably
+(pino-pretty). Tests log nothing.
+
+An access line, written when a request's response is finished (one per request; `GET /api/health` is skipped so health
+checks don't flood the log):
+
+```json
+{
+  "level": "info",
+  "time": "2026-11-16T09:41:07.312Z",
+  "request_id": "9b2f6c1e-3d4a-4f8e-b1c2-7a5d0e9f4c21",
+  "req": { "method": "GET", "path": "/api/tickets?page&search" },
+  "res": { "status": 200 },
+  "duration_ms": 18,
+  "user_id": 42,
+  "msg": "GET /api/tickets?page&search 200 18ms"
+}
+```
+
+An unexpected error, logged by the error handler (`src/middleware/errors.js`) on the same request:
+
+```json
+{
+  "level": "error",
+  "time": "2026-11-16T09:41:09.004Z",
+  "request_id": "4e7a…",
+  "method": "POST",
+  "path": "/api/tickets",
+  "status": 500,
+  "user_id": 42,
+  "err": {
+    "type": "Error",
+    "message": "connect ECONNREFUSED 10.0.0.5:3306",
+    "stack": "Error: connect ECONNREFUSED …\n    at …"
+  },
+  "msg": "connect ECONNREFUSED 10.0.0.5:3306"
+}
+```
+
+- **Request id**: every request gets one. It is on every line logged for that request (`request_id`) and sent back in
+  the `X-Request-Id` response header. An incoming `X-Request-Id` (e.g. from a proxy) is kept if it is at most 64
+  letters, digits, `.`, `_` or `-`; anything else is replaced by a new id.
+- **Failures**: a 5xx is logged at `error` with the message, stack, request id, method, path and user id. The client
+  only gets `{ "message": "Something went wrong (reference: <request id>)", "request_id": "<request id>" }`, so a user
+  can quote the reference. A 4xx is logged at `warn` with its message, without a stack.
+- **What is never logged**: request bodies, headers (so no `Authorization`, `Cookie` or `Set-Cookie`) and query string
+  values (the path keeps only the keys: `?token`). Passwords, temporary passwords, set-password and reset links,
+  tokens, `JWT_SECRET` and `SMTP_PASS` therefore never reach the log; `redact` in `src/logger.js` also blanks those
+  fields (`[redacted]`) if an object with them is ever logged. `tests/logging.test.js` sends all of them and checks the
+  captured output.
+
+**`LOG_LEVEL`** (`.env`, or `deploy/.env` with Docker Compose): `fatal`, `error`, `warn`, **`info`** (default), `debug`, `trace` or `silent`. Anything else
+stops the server at startup with the list.
+
+**All lines of one request**: take the reference from the error message (or the `X-Request-Id` header) and search for
+it:
+
+```bash
+docker compose logs api | grep 9b2f6c1e-3d4a-4f8e-b1c2-7a5d0e9f4c21
+```
+
+The scripts (`npm run db:migrate`, `create-admin`, `job:auto-close`, ...) keep printing plain text: they are run by
+a person, not read by a log system.
+
 ## Running tests
 
 ```bash
@@ -1395,6 +1462,7 @@ src/
   shutdown.js             Graceful shutdown on SIGTERM/SIGINT: finish open requests, close the pool, exit 0
   app.js                  Express app: middleware, routes, error handling
   db.js                   MySQL connection pool
+  logger.js               Structured logs (pino): request ids, the access log, redaction of secrets
   overdue.js              The shared "is this ticket overdue?" SQL rule
   pagination.js           Paging and sorting for GET /api/tickets and /api/users: the sort allow-lists, page + count
   temporaryPassword.js    Random temporary passwords for password resets

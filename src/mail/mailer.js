@@ -15,6 +15,7 @@ const fs = require('fs')
 const path = require('path')
 const nodemailer = require('nodemailer')
 const { loadMailConfig } = require('../config')
+const { logger, asConsole } = require('../logger')
 
 // Removes secrets from an error message before it is logged: the SMTP password, and any set-password token
 function redact(message, config) {
@@ -143,7 +144,8 @@ function createMailer(config, { log = console, retryDelaysMs = config.mode === '
 // The app's mailer, made on first use from the environment (already checked by src/config.js at startup)
 let mailer = null
 function getMailer() {
-  if (!mailer) mailer = createMailer(loadMailConfig(process.env).mail)
+  // The server's mailer logs through the logger (src/logger.js); createMailer itself defaults to console
+  if (!mailer) mailer = createMailer(loadMailConfig(process.env).mail, { log: asConsole(logger) })
   return mailer
 }
 

@@ -1,3 +1,4 @@
+const { captureLogs } = require('../src/logger')
 // Email through a real SMTP server: the app sends with its own nodemailer SMTP transport to an in-process smtp-server
 // (tests/support/fakeSmtp.js), and each test reads the parsed messages that actually arrived. What tests/notifications.test.js
 // checks with the in-memory jsonTransport (who gets what) is checked here on the wire: headers, From, both parts, the
@@ -17,6 +18,9 @@ const FORGOT_MESSAGE = "If an account exists for this email, we've sent a passwo
 
 let smtp
 let logs
+let captured
+// Console output and the logger's lines, as text
+const allLogs = () => [...logs, ...captured.lines.map((line) => JSON.stringify(line))]
 let people
 
 beforeAll(async () => {
@@ -40,6 +44,7 @@ beforeEach(async () => {
   smtp.clearMails()
   // Every line the app logs during the test, to check none of them carries a secret
   logs = []
+  captured = captureLogs() // the logger's lines (src/logger.js)
   for (const level of ['log', 'info', 'warn', 'error']) {
     jest.spyOn(console, level).mockImplementation((...args) => logs.push(args.map(String).join(' ')))
   }
@@ -60,7 +65,7 @@ const tokenOf = (link) => new URL(link).searchParams.get('token')
 
 // No log line contains a set-password token, a link into the app, or the SMTP password
 function expectCleanLogs(secrets = []) {
-  for (const line of logs) {
+  for (const line of allLogs()) {
     expect(line).not.toContain(APP_URL)
     expect(line).not.toContain(smtp.SMTP_PASS)
     expect(line).not.toMatch(/token=(?!\[redacted\])/i)
@@ -380,7 +385,7 @@ describe('when the SMTP server fails', () => {
       expect(await dbUser(res.body.user.id)).toBeTruthy()
 
       expect(await smtp.getMails()).toEqual([])
-      const failures = logs.filter((line) => line.includes('[mail] Could not send'))
+      const failures = allLogs().filter((line) => line.includes('[mail] Could not send'))
       expect(failures).toHaveLength(1)
       expect(failures[0]).toContain('dan@acme.test')
       expect(failures[0]).toContain('accountSetup')
@@ -396,7 +401,7 @@ describe('when the SMTP server fails', () => {
     expect((await post(`/api/users/${people.employee.id}/reset-password`, people.hr, {})).status).toBe(200)
     expect((await api.post('/api/auth/forgot-password').send({ email: people.agent.email })).status).toBe(200)
     expect(await smtp.getMails()).toEqual([])
-    expect(logs.filter((line) => line.includes('[mail] Could not send')).length).toBeGreaterThanOrEqual(4)
+    expect(allLogs().filter((line) => line.includes('[mail] Could not send')).length).toBeGreaterThanOrEqual(4)
     expectCleanLogs()
   })
 

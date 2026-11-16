@@ -2,6 +2,7 @@
 // the old password and to sessions from before the reset.
 const bcrypt = require('bcryptjs')
 const pool = require('../src/db')
+const { captureLogs } = require('../src/logger')
 const {
   api,
   resetData,
@@ -176,13 +177,15 @@ describe('POST /api/users/:id/reset-password', () => {
     const spies = ['log', 'info', 'warn', 'error', 'debug'].map((level) =>
       jest.spyOn(console, level).mockImplementation(() => {}),
     )
+    const captured = captureLogs() // the logger's lines (src/logger.js)
     try {
       const res = await reset(target.id, adminToken)
       expect(res.status).toBe(200)
-      const written = spies.flatMap((spy) => spy.mock.calls.flat().map(String)).join('\n')
+      const written = [...spies.flatMap((spy) => spy.mock.calls.flat().map(String)), captured.text()].join('\n')
       expect(written).not.toContain(res.body.temporaryPassword)
     } finally {
       spies.forEach((spy) => spy.mockRestore())
+      captured.restore()
     }
   })
 })

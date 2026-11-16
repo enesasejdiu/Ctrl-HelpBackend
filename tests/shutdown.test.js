@@ -138,7 +138,7 @@ describe('src/server.js', () => {
       const port = await freePort()
       const child = spawn(process.execPath, ['src/server.js'], {
         cwd: path.join(__dirname, '..'),
-        env: { ...process.env, PORT: String(port), DOTENV_CONFIG_QUIET: 'true' },
+        env: { ...process.env, PORT: String(port), DOTENV_CONFIG_QUIET: 'true', LOG_LEVEL: 'info' },
       })
       let output = ''
       child.stdout.on('data', (chunk) => (output += chunk))

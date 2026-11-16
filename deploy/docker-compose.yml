@@ -52,6 +52,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in deploy/.env}
       CLIENT_URL: ${CLIENT_URL:?Set CLIENT_URL in deploy/.env}
       APP_URL: ${APP_URL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
       MAIL_ENABLED: ${MAIL_ENABLED:-false}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}

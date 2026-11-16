@@ -5,6 +5,7 @@ const helmet = require('helmet')
 const cors = require('cors')
 const cookieParser = require('cookie-parser')
 const { notFound, errorHandler } = require('./middleware/errors')
+const { requestLogger } = require('./logger')
 const apiRoutes = require('./routes')
 
 // Read once, when the app is created: production adds HSTS and trusts the reverse proxy
@@ -15,6 +16,10 @@ const isProduction = process.env.NODE_ENV === 'production'
 const BODY_LIMIT = '100kb'
 
 const app = express()
+
+// First of all: gives the request its id (X-Request-Id), req.log, and the access log line when it finishes
+// (src/logger.js). /api/health is not logged.
+app.use(requestLogger)
 
 // Don't tell clients which framework this is (helmet removes the header too; this makes it explicit)
 app.disable('x-powered-by')

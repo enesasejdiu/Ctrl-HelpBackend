@@ -1,3 +1,4 @@
+const { captureLogs } = require('../src/logger')
 // Ticket attachments: POST/GET /api/tickets/:id/attachments, GET /api/attachments/:id/download, DELETE
 // /api/attachments/:id, and attachments[] in GET /api/tickets/:id. Every test file gets its own empty UPLOAD_DIR
 // (tests/setupEnv.js), so the tests can look at exactly which files are on disk.
@@ -403,9 +404,7 @@ describe('GET /api/attachments/:id/download', () => {
     const [attachment] = (await upload(sessions.requester, ticketId, [['a.png', FILES.png]])).body
     for (const file of storedFiles()) fs.rmSync(path.join(uploadDir(), file))
 
-    const errors = jest.spyOn(console, 'error').mockImplementation(() => {})
     const res = await api.get(`/api/attachments/${attachment.id}/download`).set(auth(sessions.requester))
-    errors.mockRestore()
     expect(res.status).toBe(404)
     expect(res.body.code).toBe('FILE_MISSING')
   })
@@ -791,12 +790,14 @@ describe('attachment permissions and downloads (test plan)', () => {
     const { sessions, ticketId } = await setup()
     const [attachment] = (await upload(sessions.requester, ticketId, [['a.png', FILES.png]])).body
     for (const file of storedFiles()) fs.rmSync(path.join(uploadDir(), file))
-    const errors = jest.spyOn(console, 'error').mockImplementation(() => {})
+    const logs = captureLogs()
     const res = await api.get(`/api/attachments/${attachment.id}/download`).set(auth(sessions.requester))
-    const logged = errors.mock.calls.map((args) => args.join(' '))
-    errors.mockRestore()
+    logs.restore()
     expect(res.status).toBe(404)
-    expect(logged).toEqual([expect.stringContaining(`Attachment ${attachment.id}`)])
+    const errors = logs.lines.filter((line) => line.level === 'error')
+    expect(errors).toEqual([expect.objectContaining({ msg: expect.stringContaining(`Attachment ${attachment.id}`) })])
+    // On the request's own logger: the line carries its request id
+    expect(errors[0].request_id).toBe(res.headers['x-request-id'])
   })
 
   // BUG: uploads take no comment_id (multer is set up with fields: 0, so any text field is 400 INVALID_UPLOAD); the

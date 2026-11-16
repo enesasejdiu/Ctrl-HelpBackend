@@ -1,3 +1,4 @@
+const { captureLogs } = require('../src/logger')
 // The central error handler (src/middleware/errors.js): unknown routes, a malformed JSON body, and unexpected
 // server errors, which must answer with a safe message and never leak the details to the client.
 const pool = require('../src/db')
@@ -19,17 +20,18 @@ describe('error responses', () => {
   test('an unexpected error is a 500 with a safe message; the details are only logged on the server', async () => {
     const secret = 'connect ECONNREFUSED 10.0.0.5:3306 (internal detail)'
     const query = jest.spyOn(pool, 'query').mockRejectedValueOnce(new Error(secret))
-    const logged = jest.spyOn(console, 'error').mockImplementation(() => {})
+    const logs = captureLogs()
     try {
       const res = await api.post('/api/auth/login').send({ email: 'someone@test.local', password: 'password123' })
 
       expect(res.status).toBe(500)
-      expect(res.body).toEqual({ message: 'Something went wrong on the server' })
+      const id = res.headers['x-request-id']
+      expect(res.body).toEqual({ message: `Something went wrong (reference: ${id})`, request_id: id })
       expect(JSON.stringify(res.body)).not.toContain('ECONNREFUSED')
-      expect(logged.mock.calls.flat().map(String).join('\n')).toContain(secret)
+      expect(logs.text()).toContain(secret)
     } finally {
       query.mockRestore()
-      logged.mockRestore()
+      logs.restore()
     }
   })
 })

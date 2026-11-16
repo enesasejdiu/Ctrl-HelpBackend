@@ -2,6 +2,7 @@
 // must_change_password, sessions, and that generated temporary passwords always pass the rule.
 const bcrypt = require('bcryptjs')
 const pool = require('../src/db')
+const { captureLogs } = require('../src/logger')
 const { newPassword } = require('../src/schemas/common')
 const { makeTemporaryPassword } = require('../src/temporaryPassword')
 const { api, resetData, createUser, loginAs, auth, dbUser, dbSnapshot, expectError, sessionOf } = require('./helpers')
@@ -118,13 +119,15 @@ describe('POST /api/auth/change-password', () => {
     const spies = ['log', 'info', 'warn', 'error', 'debug'].map((level) =>
       jest.spyOn(console, level).mockImplementation(() => {}),
     )
+    const captured = captureLogs() // the logger's lines (src/logger.js)
     try {
       await change(token, { currentPassword: 'wrong-password1', newPassword: NEW_PASSWORD }) // the failing path too
       await change(token, { currentPassword: user.password, newPassword: NEW_PASSWORD })
-      const written = spies.flatMap((spy) => spy.mock.calls.flat().map(String)).join('\n')
+      const written = [...spies.flatMap((spy) => spy.mock.calls.flat().map(String)), captured.text()].join('\n')
       for (const secret of [user.password, NEW_PASSWORD, 'wrong-password1']) expect(written).not.toContain(secret)
     } finally {
       spies.forEach((spy) => spy.mockRestore())
+      captured.restore()
     }
   })
 })

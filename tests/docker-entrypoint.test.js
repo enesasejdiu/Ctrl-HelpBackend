@@ -9,7 +9,7 @@ const root = path.join(__dirname, '..')
 function start(args, env = {}) {
   const child = spawn('sh', ['scripts/docker-entrypoint.sh', ...args], {
     cwd: root,
-    env: { ...process.env, DOTENV_CONFIG_QUIET: 'true', ...env },
+    env: { ...process.env, DOTENV_CONFIG_QUIET: 'true', LOG_LEVEL: 'info', ...env },
   })
   const result = { stdout: '', stderr: '' }
   child.stdout.on('data', (chunk) => (result.stdout += chunk))

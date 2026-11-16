@@ -1,6 +1,7 @@
 // Self-service "Forgot password": POST /api/auth/forgot-password, its 1-hour 'forgot' links, completing them with
 // POST /api/auth/set-password, and GET /api/auth/config. The answer must never tell whether an account exists.
 const pool = require('../src/db')
+const { captureLogs } = require('../src/logger')
 const { getMailer } = require('../src/mail/mailer')
 const { FORGOT_TOKEN_MINUTES } = require('../src/passwordTokens')
 const { FORGOT_PASSWORD_EMAIL_LIMIT, FORGOT_PASSWORD_LIMIT } = require('../src/middleware/rateLimit')
@@ -32,9 +33,10 @@ const tokenRows = async (userId) =>
   (await pool.query('SELECT * FROM password_tokens WHERE user_id = ? ORDER BY id', [userId]))[0]
 const travel = (ms) => jest.spyOn(Date, 'now').mockImplementation(() => realNow.call(Date) + ms)
 
-// What a client can see of a response: status, body and headers (without Date, which is just the clock)
+// What a client can see of a response: status, body and headers (without Date, which is just the clock, and
+// X-Request-Id, which is new for every request; src/logger.js)
 function visible(res) {
-  const { date, ...headers } = res.headers
+  const { date, 'x-request-id': requestId, ...headers } = res.headers
   return { status: res.status, body: res.body, headers }
 }
 
@@ -300,13 +302,18 @@ describe('completing the reset', () => {
 describe('email not set up', () => {
   test('the same 200, nothing sent or issued, and a warning in the log', async () => {
     useEmail(false)
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    const logs = captureLogs()
     const user = await createUser({ email: 'nomail@test.local' })
     const res = await forgot(user.email)
     expect([res.status, res.body]).toEqual([200, { message: MESSAGE }])
     expect(await sentMail()).toEqual([])
     expect(await tokenRows(user.id)).toEqual([])
-    expect(warn.mock.calls.flat().join('\n')).toMatch(/email is not set up/)
+    expect(
+      logs.lines
+        .filter((line) => line.level === 'warn')
+        .map((line) => line.msg)
+        .join('\n'),
+    ).toMatch(/email is not set up/)
   })
 
   test('GET /api/auth/config says whether email is set up (public)', async () => {
@@ -336,6 +343,7 @@ describe('validation and logs', () => {
     const spies = ['log', 'info', 'warn', 'error', 'debug'].map((level) =>
       jest.spyOn(console, level).mockImplementation(() => {}),
     )
+    const captured = captureLogs() // the logger's lines (src/logger.js)
     const user = await createUser({ email: 'logged@test.local' })
     await forgot(user.email).expect(200)
     await forgot('ghost@test.local').expect(200)
@@ -343,7 +351,7 @@ describe('validation and logs', () => {
     await setPassword(token, 'logged-pass-12').expect(200)
     await sentMail()
 
-    const written = spies.flatMap((spy) => spy.mock.calls.flat().map(String)).join('\n')
+    const written = [...spies.flatMap((spy) => spy.mock.calls.flat().map(String)), captured.text()].join('\n')
     expect(written).not.toContain(token)
     expect(written).not.toContain('set-password?token=')
     expect(written).not.toContain('logged@test.local')

@@ -4,6 +4,7 @@
 // and POST /api/users/:id/resend-link (admin and HR, HR only for employees).
 const crypto = require('crypto')
 const pool = require('../src/db')
+const { captureLogs } = require('../src/logger')
 const { getMailer } = require('../src/mail/mailer')
 const { issueToken, TOKEN_HOURS } = require('../src/passwordTokens')
 const {
@@ -119,7 +120,7 @@ describe('POST /api/users: how the password is delivered', () => {
     })
 
     test('a failing SMTP server does not fail the request; the account is saved', async () => {
-      const errors = jest.spyOn(console, 'error').mockImplementation(() => {})
+      const logs = captureLogs()
       getMailer().setTransport({
         sendMail: async () => {
           throw new Error('connect ECONNREFUSED')
@@ -129,7 +130,7 @@ describe('POST /api/users: how the password is delivered', () => {
       expect(res.status).toBe(201)
       expect(await dbUser(res.body.user.id)).toBeDefined()
       await sentMail()
-      expect(errors.mock.calls.flat().join('\n')).toContain(`Could not send "accountSetup" to ${res.body.user.email}`)
+      expect(logs.text()).toContain(`Could not send \\"accountSetup\\" to ${res.body.user.email}`)
     })
   })
 })
@@ -181,7 +182,6 @@ describe('POST /api/users/:id/reset-password: how the password is delivered', ()
     })
 
     test('a failing SMTP server does not fail the reset', async () => {
-      jest.spyOn(console, 'error').mockImplementation(() => {})
       getMailer().setTransport({
         sendMail: async () => {
           throw new Error('connect ECONNREFUSED')
@@ -440,6 +440,7 @@ describe('logs and audit', () => {
     const spies = ['log', 'info', 'warn', 'error', 'debug'].map((level) =>
       jest.spyOn(console, level).mockImplementation(() => {}),
     )
+    const captured = captureLogs() // the logger's lines (src/logger.js)
     const { user, token: first } = await invite()
     await resend(user.id).expect(200)
     const second = await inviteTokenFor(user.email)
@@ -449,7 +450,7 @@ describe('logs and audit', () => {
     await reset(target.id).expect(200)
     const third = await inviteTokenFor(target.email)
 
-    const written = spies.flatMap((spy) => spy.mock.calls.flat().map(String)).join('\n')
+    const written = [...spies.flatMap((spy) => spy.mock.calls.flat().map(String)), captured.text()].join('\n')
     for (const token of [first, second, third]) expect(written).not.toContain(token)
     expect(written).not.toContain('set-password?token=')
   })
