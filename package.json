@@ -18,6 +18,7 @@
     "db:password-tokens:cleanup": "node scripts/cleanup-password-tokens.js",
     "db:department-report": "node scripts/department-report.js",
     "db:verify-departments": "node scripts/verify-department-migration.js",
+    "create-admin": "node scripts/create-admin.js",
     "test": "jest && npm run test:real-size",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage && npm run test:real-size",

@@ -132,4 +132,6 @@ requireAuth checks the current role and active status in the database on every r
 - [x] Daily auto-close of tickets resolved for auto_close_days (default 7); npm run job:auto-close [--dry-run]
 - [x] "Forgot password" v2: 1-hour forgot links, identical answers, per-IP and per-account limits, "password changed" notice
 - [x] API Dockerfile (production install, non-root, health check)
+- [x] docker-compose.yml: MySQL, API and frontend, with data volumes
+- [x] Migrations run automatically when the API starts
 - [x] Satisfaction ratings: the requester rates a closed ticket once (1–5 stars, optional comment); averages in GET /api/stats
