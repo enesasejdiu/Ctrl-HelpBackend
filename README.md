@@ -691,8 +691,9 @@ Two limits protect `POST /api/auth/login` against password guessing:
   (a whole number from 1 to 1440) may change it, so end-to-end tests can watch a lock run out. Every message,
   `retryAfterMinutes` and `Retry-After` follows it (`src/lockout.js`). Anywhere else the server refuses to start with a
   value other than 15.
-- **Rate limit, per IP address.** At most **20 login requests per 15 minutes** from one address, right or wrong; then
-  **429** until the window has passed, with `Retry-After` and `RateLimit` headers:
+- **Rate limit, per IP address.** At most **20 failed login attempts per 15 minutes** from one address; then
+  **429** until the window has passed, with `Retry-After` and `RateLimit` headers. Successful logins don't count, so an
+  office whose people all sign in from one address (NAT) is never limited by its own sign-ins:
 
   ```json
   { "message": "Too many login attempts. Wait a few minutes and try again.", "code": "RATE_LIMITED" }

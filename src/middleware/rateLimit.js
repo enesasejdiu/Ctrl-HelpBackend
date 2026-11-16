@@ -1,9 +1,11 @@
 // Rate limits for the routes anyone can call without logging in, per IP address (and, for "Forgot password", the
 // per-account email limit too: every limit lives here). The counts live in memory, so a
 // restart clears them.
-//   loginRateLimit        POST /api/auth/login: at most LOGIN_LIMIT requests in LOGIN_WINDOW_MS, then 429. Every
-//                         attempt counts, right or wrong. It slows down password guessing across many accounts from
-//                         one address; the per-account lockout in routes/auth.js covers guessing one account's password.
+//   loginRateLimit        POST /api/auth/login: at most LOGIN_LIMIT failed attempts in LOGIN_WINDOW_MS, then 429.
+//                         Only failures count (wrong password, unknown or locked account, invalid body): a successful
+//                         login is not guessing, and counting it would lock out an office whose people all sign in
+//                         from one address (NAT). It slows down password guessing across many accounts from one
+//                         address; the per-account lockout in routes/auth.js covers guessing one account's password.
 //   forgotPasswordRateLimit  POST /api/auth/forgot-password: at most FORGOT_PASSWORD_LIMIT requests in the same
 //                         window, then 429 with Retry-After (that says nothing about whether an account exists). Each
 //                         account also gets at most FORGOT_PASSWORD_EMAIL_LIMIT emails per FORGOT_PASSWORD_EMAIL_WINDOW_MINUTES;
@@ -23,10 +25,12 @@ const FORGOT_PASSWORD_LIMIT = 5
 const FORGOT_PASSWORD_EMAIL_LIMIT = 3
 const FORGOT_PASSWORD_EMAIL_WINDOW_MINUTES = 60
 
-function limiter(limit, message) {
+function limiter(limit, message, { skipSuccessfulRequests = false } = {}) {
   return rateLimit({
     windowMs: LOGIN_WINDOW_MS,
     limit,
+    // A response under 400 is taken off the count again
+    skipSuccessfulRequests,
     standardHeaders: 'draft-8', // RateLimit-Policy / RateLimit headers, and Retry-After on a 429
     legacyHeaders: false,
     skip: () => process.env.NODE_ENV === 'test' && process.env.RATE_LIMIT_IN_TESTS !== '1',
@@ -36,7 +40,9 @@ function limiter(limit, message) {
   })
 }
 
-const loginRateLimit = limiter(LOGIN_LIMIT, 'Too many login attempts. Wait a few minutes and try again.')
+const loginRateLimit = limiter(LOGIN_LIMIT, 'Too many login attempts. Wait a few minutes and try again.', {
+  skipSuccessfulRequests: true,
+})
 const setPasswordRateLimit = limiter(SET_PASSWORD_LIMIT, 'Too many attempts. Wait a few minutes and try again.')
 const forgotPasswordRateLimit = limiter(FORGOT_PASSWORD_LIMIT, 'Too many requests. Wait a few minutes and try again.')
 
