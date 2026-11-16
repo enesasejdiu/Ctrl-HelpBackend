@@ -121,8 +121,47 @@ describe('in production (NODE_ENV=production)', () => {
     expect(res.headers['strict-transport-security']).toBe('max-age=15552000; includeSubDomains')
   })
 
-  test('trusts exactly one proxy hop, so req.ip is the real client behind nginx', () => {
+  test('trusts exactly one proxy hop by default, so req.ip is the real client behind nginx', () => {
     expect(prodApp.get('trust proxy')).toBe(1)
+  })
+
+  // A copy of the app in production with TRUST_PROXY_HOPS set; req.ip as the app sees it, through a test route
+  function appWithHops(hops) {
+    const before = { NODE_ENV: process.env.NODE_ENV, TRUST_PROXY_HOPS: process.env.TRUST_PROXY_HOPS }
+    process.env.NODE_ENV = 'production'
+    process.env.TRUST_PROXY_HOPS = hops
+    let app
+    let pool
+    try {
+      jest.isolateModules(() => {
+        app = require('express')().set('trust proxy', require('../src/app').get('trust proxy'))
+        pool = require('../src/db')
+      })
+    } finally {
+      for (const [key, value] of Object.entries(before)) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
+    app.get('/ip', (req, res) => res.json({ ip: req.ip }))
+    return { app, pool }
+  }
+
+  test.each([
+    // Caddy → nginx → API: Caddy writes the client, nginx appends Caddy; the socket is nginx
+    ['2', '203.0.113.7, 172.18.0.7', '203.0.113.7'],
+    // Only nginx: it appends the client; whatever the client sent before that is not believed
+    ['1', '6.6.6.6, 203.0.113.7', '203.0.113.7'],
+    // Not set: 1
+    ['', '6.6.6.6, 203.0.113.7', '203.0.113.7'],
+  ])('TRUST_PROXY_HOPS=%p with X-Forwarded-For "%s": req.ip is %s', async (hops, forwardedFor, expected) => {
+    const { app, pool } = appWithHops(hops)
+    try {
+      const res = await request(app).get('/ip').set('X-Forwarded-For', forwardedFor)
+      expect(res.body.ip).toBe(expected)
+    } finally {
+      await pool.end()
+    }
   })
 
   test('still no X-Powered-By, and the same strict CSP', async () => {

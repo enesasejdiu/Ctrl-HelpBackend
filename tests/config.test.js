@@ -360,6 +360,20 @@ describe('SENTRY_*', () => {
   })
 })
 
+describe('TRUST_PROXY_HOPS', () => {
+  test('not set or blank is 1; 2 is accepted', () => {
+    expect(loadConfig(prod()).config.TRUST_PROXY_HOPS).toBe(1)
+    expect(loadConfig(prod({ TRUST_PROXY_HOPS: ' ' })).config.TRUST_PROXY_HOPS).toBe(1)
+    expect(loadConfig(prod({ TRUST_PROXY_HOPS: '2' })).config.TRUST_PROXY_HOPS).toBe(2)
+  })
+
+  test.each(['0', '6', '1.5', 'two'])('%s is refused', (hops) => {
+    const { exited, log } = run(prod({ TRUST_PROXY_HOPS: hops }))
+    expect(exited).toBe(true)
+    expect(log.error.mock.calls[0][0]).toMatch(/TRUST_PROXY_HOPS must be/)
+  })
+})
+
 describe('LOG_LEVEL', () => {
   test('not set (or blank) is info', () => {
     expect(loadConfig(prod()).config.LOG_LEVEL).toBe('info')
