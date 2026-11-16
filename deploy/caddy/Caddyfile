@@ -19,10 +19,12 @@
 	encode zstd gzip
 
 	# The web container already sends the page's security headers (CSP, nosniff, X-Frame-Options, Referrer-Policy,
-	# Permissions-Policy) and the API sends its own; Caddy adds HSTS for everything and hides its name.
+	# Permissions-Policy) and the API sends its own; Caddy adds HSTS for everything. It also leaves its name out of the
+	# app's answers (Server, and the Via it adds when proxying); only its own HTTP → HTTPS redirect still says "Caddy".
 	header {
 		Strict-Transport-Security "max-age={$HSTS_MAX_AGE:300}"
 		-Server
+		-Via
 	}
 
 	# Attachments are 10 MB; the web container refuses bodies over 11 MB anyway

@@ -87,6 +87,7 @@ The Caddyfile is short:
 	header {
 		Strict-Transport-Security "max-age={$HSTS_MAX_AGE:300}"
 		-Server
+		-Via
 	}
 	request_body {
 		max_size 11MB
@@ -104,7 +105,8 @@ What Caddy does here:
   expires, and redirects every `http://` request to `https://` (308).
 - **Headers.** `reverse_proxy` passes `Host`, `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host` on by
   itself. The security headers of the page and the API come from the containers behind it. Caddy adds HSTS and drops
-  the API's own HSTS (see "HSTS" below).
+  the API's own HSTS (see "HSTS" below). It also removes `Server` and `Via` from the app's answers. Only its own HTTP →
+  HTTPS redirect still says `Server: Caddy`.
 - **Persistent volumes.** The certificates and the ACME account live in the `caddy-data` volume (`/data`). Without
   that volume, every `docker compose up` that recreates the container would request new certificates, and Let's
   Encrypt allows only 5 certificates for the same names per week. Don't delete the volume (`docker compose down -v`
@@ -231,17 +233,17 @@ run with the normal `deploy/docker-compose.yml` only.
 
    Then run `docker compose up -d --build` in `deploy/` (without `COMPOSE_FILE`).
 
-2. Install, and put the site in place:
+2. Install, and put the site in place. With your domain already in `https.conf` (the `sed` above), point it at the
+   web container's port on this host instead of the `web` service name, and remove Debian's default site, which
+   would answer port 80 instead:
 
    ```bash
-   sudo apt update && sudo apt install nginx certbot
+   sudo apt update && sudo apt install -y nginx certbot
    sudo mkdir -p /var/www/certbot
    sudo cp deploy/nginx/https.conf /etc/nginx/conf.d/ticketflow.conf
+   sudo sed -i 's|http://web:8080;|http://127.0.0.1:8080;|' /etc/nginx/conf.d/ticketflow.conf
+   sudo rm -f /etc/nginx/sites-enabled/default
    ```
-
-   In `/etc/nginx/conf.d/ticketflow.conf`, use the line marked "apt" (`set $ticketflow_web http://127.0.0.1:8080;`)
-   instead of the `web:8080` one. Also remove Debian's default site, which would answer port 80 instead:
-   `sudo rm /etc/nginx/sites-enabled/default`.
 
 3. The first certificate, the same way as with Docker (a temporary one, then staging, then the real one).
    `--deploy-hook` is saved with the certificate, so every later renewal reloads nginx:
@@ -325,14 +327,19 @@ check it by hand:
 | Grade                     | [SSL Labs](https://www.ssllabs.com/ssltest/), enter the domain                                                                              | **A**. A+ needs the long HSTS                                            |
 | Renewal                   | `docker compose run --rm certbot renew --dry-run`, or `sudo certbot renew --dry-run` (Caddy renews on its own: `docker compose logs caddy`) | "Congratulations, all simulated renewals succeeded"                      |
 
-**What CI checks.** CI tests both examples on every pull request (the "HTTPS examples" jobs in
+**What CI checks.** CI tests all three setups on every pull request (the "HTTPS example" jobs in
 `.github/workflows/ci.yml`), with local certificates in place of Let's Encrypt:
 
-- `caddy validate` and `caddy fmt`, or `nginx -t`;
-- the whole stack built and started with the HTTPS Compose file: Caddy with `DOMAIN=localhost` (its local CA), nginx
-  with the temporary self-signed certificate from step 1 above;
-- `check-https.sh` with a login, uploads, and the audit-log IP compared with the containers' addresses;
-- that `web` is no longer reachable on port 8080.
+- **Caddy:** `caddy validate` and `caddy fmt`, then the whole stack with `DOMAIN=localhost` (Caddy's local CA).
+- **nginx (Docker):** the first-certificate step 1 (the temporary certificate), `nginx -t`, then the whole stack with
+  that certificate, and the `certbot-renew` container running.
+- **nginx + certbot from apt:** the apt variant's commands as written on the Ubuntu runner:
+  - the domain `sed`, the install, the site and its `sed`;
+  - the temporary certificate, `nginx -t` and the reload;
+  - the certbot timer;
+  - `web` published on `127.0.0.1:8080` only.
+- **All three:** `check-https.sh` with a login and uploads, with the audit-log IP compared with the containers'
+  addresses. With Docker, `web` is no longer reachable on port 8080.
 
 **What needs a real domain and server:** the Let's Encrypt challenge and certificate, renewal against Let's Encrypt,
 the SSL Labs grade, and a browser trusting the certificate. Check those on the server with the table above.
