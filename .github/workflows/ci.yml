@@ -22,7 +22,7 @@ jobs:
     name: ${{ matrix.db.name }} · Node ${{ matrix.node }}
     # Pinned, so a new Ubuntu image (ubuntu-latest moving on) never changes the build without a commit
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     strategy:
       # Let every combination finish, so one failure doesn't hide whether the others pass
@@ -95,6 +95,13 @@ jobs:
 
       # The whole Jest suite, with a coverage report (no minimum is enforced yet)
       - run: npm run test:coverage
+
+      # The email (fake SMTP server in the test process), upload and pagination suites again, 3 runs in a row, each with
+      # its own throwaway database, UPLOAD_DIR and SMTP port: they must pass every time, not just once. On one Node
+      # version per database, to keep the matrix fast.
+      - name: Repeat the email, upload and pagination suites (3 runs)
+        if: matrix.node == 24
+        run: npm run test:repeat
 
       # The coverage report, also when tests failed, so a failure can be looked into; kept 7 days
       - name: Upload coverage report

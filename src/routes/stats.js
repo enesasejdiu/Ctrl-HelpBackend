@@ -67,6 +67,20 @@ router.get('/', async (req, res) => {
      ORDER BY assigned DESC, u.name`,
   )
 
+  // Satisfaction: the average of all requesters' 1–5 star ratings (1 decimal, null when there are none), and per
+  // active agent/admin (the same people as byAgent) the average of the ratings on tickets they held when rated.
+  // LEFT JOIN keeps staff without ratings (count 0, average null).
+  const [[ratingTotals]] = await pool.query(
+    'SELECT ROUND(AVG(stars), 1) AS average, COUNT(*) AS count FROM ticket_ratings',
+  )
+  const [ratingsByAgent] = await pool.query(
+    `SELECT u.name, ROUND(AVG(r.stars), 1) AS average, COUNT(r.id) AS count
+     FROM users u LEFT JOIN ticket_ratings r ON r.agent_id = u.id
+     WHERE u.is_active = TRUE AND u.role IN ('agent', 'admin')
+     GROUP BY u.id
+     ORDER BY count DESC, u.name`,
+  )
+
   // Tickets created vs. resolved per ISO week for the last 8 weeks (including the current one), oldest first.
   // The recursive CTE lists the Monday of each week, so weeks with no activity still appear with 0.
   const [trend] = await pool.query(
@@ -104,6 +118,11 @@ router.get('/', async (req, res) => {
       avg_hours: toNumber(r.avg_hours),
     })),
     trend: trend.map((r) => ({ week: r.week, created: Number(r.created), resolved: Number(r.resolved) })),
+    ratings: {
+      average: toNumber(ratingTotals.average),
+      count: Number(ratingTotals.count),
+      byAgent: ratingsByAgent.map((r) => ({ name: r.name, average: toNumber(r.average), count: Number(r.count) })),
+    },
   })
 })
 

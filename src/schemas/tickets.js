@@ -57,4 +57,15 @@ const assignTicket = {
   }),
 }
 
-module.exports = { listTickets, createTicket, getTicket, updateStatus, updatePriority, assignTicket }
+// The requester's satisfaction rating: 1–5 whole stars (a JSON number, not "4"), and an optional comment.
+// An empty or blank comment counts as none.
+const STARS_MESSAGE = 'Choose from 1 to 5 stars'
+const rateTicket = {
+  params: ticketParams,
+  body: z.strictObject({
+    stars: z.number({ error: STARS_MESSAGE }).int(STARS_MESSAGE).min(1, STARS_MESSAGE).max(5, STARS_MESSAGE),
+    comment: optionalText('Comment', 500).transform((text) => text || null),
+  }),
+}
+
+module.exports = { listTickets, createTicket, getTicket, updateStatus, updatePriority, assignTicket, rateTicket }
