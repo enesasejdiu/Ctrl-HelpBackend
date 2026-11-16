@@ -10,6 +10,9 @@ process.env.CLIENT_URL = 'http://localhost:5173'
 // Never listened on (supertest uses its own port); set so scripts that run the server's config check
 // (scripts/create-admin.js) pass it without a .env, as in CI. Tests that start a real server pass their own PORT.
 process.env.PORT = '5050'
+// The logger is silent in tests (src/logger.js); blank, so a LOG_LEVEL in the developer's .env doesn't change that.
+// Tests that start the real server as a child process set it, to read its startup and shutdown lines.
+process.env.LOG_LEVEL = ''
 // Email: NODE_ENV=test always uses nodemailer's jsonTransport (nothing is sent). Links come from APP_URL; the shared IT
 // address and the outbox folder are off unless a test sets them. A blank value counts as not set, and dotenv never
 // overwrites it, so the developer's .env can't change what the tests see.

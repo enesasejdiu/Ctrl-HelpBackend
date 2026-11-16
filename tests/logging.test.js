@@ -1,7 +1,8 @@
 // Structured logs (src/logger.js): the request id on every line and in the X-Request-Id header, one access line per
 // request, how failures are logged (src/middleware/errors.js), and that no secret ever reaches the log.
 const pool = require('../src/db')
-const { captureLogs, logger, safePath, levelFromEnv } = require('../src/logger')
+const { captureLogs, logger, asConsole, safePath, levelFromEnv, prettyStream } = require('../src/logger')
+const { errorHandler, HttpError } = require('../src/middleware/errors')
 const {
   api,
   auth,
@@ -149,7 +150,7 @@ describe('failures', () => {
     expect(errorLine.err.stack).toContain('Error: connect ECONNREFUSED')
     expect(errorLine.err.stack).toMatch(/\n\s+at /)
     // The access line keeps its usual shape: no second (made-up) error
-    const [access] = accessLines()
+    const access = accessLines().find((line) => line.request_id === id)
     expect(access).toMatchObject({ request_id: id, res: { status: 500 }, user_id: user.id })
     expect(access).not.toHaveProperty('err')
     expect(access.msg).toMatch(/^GET \/api\/tickets 500 \d+ms$/)
@@ -282,11 +283,86 @@ describe('helpers', () => {
     expect(safePath('/api/x?')).toBe('/api/x')
   })
 
-  test('LOG_LEVEL: default info, any valid level, silent in tests', () => {
+  test('LOG_LEVEL: default info, any valid level; tests are silent unless it is set', () => {
     expect(levelFromEnv({ NODE_ENV: 'production' })).toBe('info')
     expect(levelFromEnv({ NODE_ENV: 'production', LOG_LEVEL: 'debug' })).toBe('debug')
     expect(levelFromEnv({ NODE_ENV: 'production', LOG_LEVEL: ' WARN ' })).toBe('warn')
     expect(levelFromEnv({ NODE_ENV: 'production', LOG_LEVEL: 'loud' })).toBe('info')
-    expect(levelFromEnv({ NODE_ENV: 'test', LOG_LEVEL: 'debug' })).toBe('silent')
+    expect(levelFromEnv({ NODE_ENV: 'test' })).toBe('silent')
+    expect(levelFromEnv({ NODE_ENV: 'test', LOG_LEVEL: '' })).toBe('silent')
+    expect(levelFromEnv({ NODE_ENV: 'test', LOG_LEVEL: 'info' })).toBe('info')
+  })
+
+  test('pretty output only in development (pino-pretty is a dev dependency)', () => {
+    expect(prettyStream({ NODE_ENV: 'production' })).toBeNull()
+    expect(prettyStream({ NODE_ENV: 'test' })).toBeNull()
+    const stream = prettyStream({ NODE_ENV: 'development' })
+    expect(typeof stream.write).toBe('function')
+    stream.destroy()
+  })
+
+  test('asConsole: log/info at info, warn, error and debug; an Error as second argument is logged with its stack', () => {
+    const log = asConsole()
+    log.log('one')
+    log.info('two')
+    log.warn('three')
+    log.debug('four')
+    log.error('five', new Error('boom'))
+    log.error('six')
+    expect(logs.lines.map((line) => [line.level, line.msg])).toEqual([
+      ['info', 'one'],
+      ['info', 'two'],
+      ['warn', 'three'],
+      ['debug', 'four'],
+      ['error', 'five'],
+      ['error', 'six'],
+    ])
+    expect(logs.lines[4].err.stack).toContain('Error: boom')
+    expect(logs.lines[5]).not.toHaveProperty('err')
+  })
+})
+
+describe('error handler outside a request logger', () => {
+  // A request that never went through the request logger (no req.log, no id): the shared logger is used
+  const call = (err) => {
+    const res = { statusCode: 0, body: null, headers: {} }
+    res.status = (code) => ((res.statusCode = code), res)
+    res.json = (body) => ((res.body = body), res)
+    res.getHeader = (name) => res.headers[name]
+    errorHandler(err, { method: 'GET', originalUrl: '/x?secret=1' }, res, () => {})
+    return res
+  }
+
+  test('a non-HttpError 4xx answers with its message only, and is logged at warn without its code', () => {
+    const err = Object.assign(new Error('Bad thing'), { status: 409, code: 'ER_DUP_ENTRY' })
+    const res = call(err)
+    expect([res.statusCode, res.body]).toEqual([409, { message: 'Bad thing' }])
+    expect(logs.lines).toEqual([
+      expect.objectContaining({
+        level: 'warn',
+        status: 409,
+        path: '/x?secret',
+        msg: 'Bad thing',
+        code: 'ER_DUP_ENTRY',
+      }),
+    ])
+  })
+
+  test('an HttpError 4xx with a code and details', () => {
+    const res = call(new HttpError(422, 'Nope', 'NOPE', { field: 'x' }))
+    expect([res.statusCode, res.body]).toEqual([422, { message: 'Nope', code: 'NOPE', field: 'x' }])
+    expect(logs.lines[0]).toMatchObject({ level: 'warn', code: 'NOPE' })
+  })
+
+  test('an error without a message is logged as "Unexpected error"', () => {
+    const res = call(new Error(''))
+    expect(res.statusCode).toBe(500)
+    expect(logs.lines[0]).toMatchObject({ level: 'error', msg: 'Unexpected error' })
+  })
+
+  test('a body that is too large is a 413, logged at warn', () => {
+    const res = call(Object.assign(new Error('request entity too large'), { type: 'entity.too.large', status: 413 }))
+    expect(res.body.code).toBe('PAYLOAD_TOO_LARGE')
+    expect(logs.lines[0]).toMatchObject({ level: 'warn', status: 413 })
   })
 })

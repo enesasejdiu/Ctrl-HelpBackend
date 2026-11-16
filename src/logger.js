@@ -2,7 +2,7 @@
 //
 // - Production: one JSON line per entry on stdout (docker compose logs api).
 // - Development: the same entries, made readable by pino-pretty (a dev dependency; JSON if it isn't installed).
-// - Tests: silent. A test that checks the output uses captureLogs() below.
+// - Tests: silent (unless LOG_LEVEL is set). A test that checks the output uses captureLogs() below.
 // LOG_LEVEL (src/config.js) sets the lowest level written: fatal, error, warn, info (the default), debug, trace, silent.
 //
 // Every request gets an id (requestId below): it is on each line logged for that request (request_id) and goes back to
@@ -58,9 +58,10 @@ const REDACT_PATHS = [
 ]
 
 // LOG_LEVEL from the environment; anything invalid falls back to the default (the config check reports it)
+// Tests are silent unless LOG_LEVEL is set (tests/setupEnv.js blanks it; tests that start the real server set it).
 function levelFromEnv(env = process.env) {
-  if (env.NODE_ENV === 'test') return 'silent'
   const level = env.LOG_LEVEL?.trim().toLowerCase()
+  if (env.NODE_ENV === 'test') return LOG_LEVELS.includes(level) ? level : 'silent'
   return LOG_LEVELS.includes(level) ? level : DEFAULT_LOG_LEVEL
 }
 
@@ -185,6 +186,7 @@ module.exports = {
   captureLogs,
   stopLogCapture,
   levelFromEnv,
+  prettyStream,
   LOG_LEVELS,
   DEFAULT_LOG_LEVEL,
   REDACTED,
