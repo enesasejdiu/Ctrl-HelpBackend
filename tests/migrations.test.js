@@ -154,8 +154,8 @@ describe('schema', () => {
 })
 
 describe('up → down → up', () => {
-  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 017 down to 003
-  test('rolling back 017, 016, 015, 014, 013, 012, 011, 010, 009, 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
+  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 018 down to 003
+  test('rolling back 018, 017, 016, 015, 014, 013, 012, 011, 010, 009, 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
     const { db, dbName } = await newDatabase()
     const schema = async () => {
       const tables = {}
@@ -171,7 +171,7 @@ describe('up → down → up', () => {
       (await db.query('SELECT filename FROM schema_migrations ORDER BY filename'))[0].map((r) => r.filename)
 
     const before = await schema()
-    for (let i = 0; i < 15; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
+    for (let i = 0; i < 16; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
     expect(await applied()).toEqual(['001_initial.sql', '002_hr_role_and_password_change.sql'])
     const [departments] = await db.query("SHOW TABLES LIKE 'departments'")
     expect(departments).toHaveLength(0)
@@ -182,7 +182,26 @@ describe('up → down → up', () => {
 
     await quietly(() => migrate({ dbName, backupFirst: false }))
     expect(await schema()).toEqual(before)
-    expect((await applied()).at(-1)).toBe('017_ticket_ratings.sql')
+    expect((await applied()).at(-1)).toBe('018_attachment_hash_and_comment.sql')
+  })
+
+  test('018 adds sha256 and comment_id to attachments, and rolling it back removes only them', async () => {
+    const { db, dbName } = await newDatabase()
+    const columns = async () => (await db.query('SHOW COLUMNS FROM attachments'))[0].map((column) => column.Field)
+    expect(await columns()).toEqual(expect.arrayContaining(['sha256', 'comment_id']))
+    await quietly(() => rollback({ dbName, backupFirst: false }))
+    expect((await columns()).sort()).toEqual(
+      [
+        'id',
+        'ticket_id',
+        'uploaded_by',
+        'original_name',
+        'stored_name',
+        'mime_type',
+        'size_bytes',
+        'created_at',
+      ].sort(),
+    )
   })
 
   test('011 keeps the links issued under 010 as setup links; rolling it back drops only reset links', async () => {

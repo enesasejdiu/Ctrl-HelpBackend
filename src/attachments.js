@@ -4,7 +4,8 @@
 // Files are kept in UPLOAD_DIR (default ./uploads next to package.json), under a random id with no extension. The name
 // the user gave a file is only stored in the database and sent back as the download name, never used as a path. The
 // API serves nothing statically, and downloads always go through GET /api/attachments/:id/download, which checks who
-// is asking and never shows a file inline.
+// is asking. It sends every file as a download, except an image or PDF asked for with ?inline=1 (a preview), always
+// sandboxed by its Content-Security-Policy.
 //
 // The type is decided by the file's CONTENT, not its name or what the browser says: images and PDFs by their first
 // bytes ("magic bytes"); .txt, .log and .csv, which have no signature, by being valid UTF-8 text without NUL bytes.
@@ -121,6 +122,9 @@ function ensureUploadDir() {
   return dir
 }
 
+// The SHA-256 of a file's content, as 64 hex characters (stored with the attachment, migration 018)
+const sha256 = (buffer) => crypto.createHash('sha256').update(buffer).digest('hex')
+
 // Writes the file under a new random name and returns that name. 'wx': fail rather than overwrite (a UUID never
 // repeats, but this makes it certain).
 async function storeFile(buffer) {
@@ -145,33 +149,48 @@ function canSeeTicket(user, requesterId) {
   return isStaff(user) || requesterId === user.id
 }
 
+// Who may see one attachment: whoever may see its ticket, except that a file added with an internal note is staff-only
+// like the note itself (GET /api/tickets/:id hides internal notes from everyone else)
+function canSeeAttachment(user, attachment, requesterId) {
+  return canSeeTicket(user, requesterId) && (isStaff(user) || !attachment.comment_internal)
+}
+
 // Who may delete an attachment: whoever uploaded it, or an admin
 function canDeleteAttachment(user, attachment) {
   return user.role === 'admin' || attachment.uploaded_by_id === user.id
 }
 
-// The columns every attachment response is built from (uploaded_by as { id, name })
+// The columns every attachment response is built from (uploaded_by as { id, name }; comment_internal: whether the
+// comment it was added with is an internal note)
 const ATTACHMENT_SELECT = `
-  SELECT a.id, a.ticket_id, a.original_name, a.stored_name, a.mime_type, a.size_bytes, a.created_at,
-         a.uploaded_by AS uploaded_by_id, u.name AS uploaded_by_name
+  SELECT a.id, a.ticket_id, a.comment_id, a.original_name, a.stored_name, a.mime_type, a.size_bytes, a.sha256,
+         a.created_at, a.uploaded_by AS uploaded_by_id, u.name AS uploaded_by_name,
+         COALESCE(c.is_internal, FALSE) AS comment_internal
   FROM attachments a
-  JOIN users u ON u.id = a.uploaded_by`
+  JOIN users u ON u.id = a.uploaded_by
+  LEFT JOIN comments c ON c.id = a.comment_id`
 
 // The shape sent to clients; stored_name stays on the server
 function publicAttachment(row) {
   return {
     id: row.id,
     ticket_id: row.ticket_id,
+    comment_id: row.comment_id ?? null,
     original_name: row.original_name,
     mime_type: row.mime_type,
     size_bytes: row.size_bytes,
+    sha256: row.sha256 ?? null,
     uploaded_by: { id: row.uploaded_by_id, name: row.uploaded_by_name },
     created_at: row.created_at,
   }
 }
 
-async function listAttachments(db, ticketId) {
-  const [rows] = await db.query(`${ATTACHMENT_SELECT} WHERE a.ticket_id = ? ORDER BY a.created_at, a.id`, [ticketId])
+// A ticket's attachments for this user, oldest first: files added with an internal note are left out for non-staff
+async function listAttachments(db, ticketId, user) {
+  const internal = isStaff(user) ? '' : 'AND COALESCE(c.is_internal, FALSE) = FALSE'
+  const [rows] = await db.query(`${ATTACHMENT_SELECT} WHERE a.ticket_id = ? ${internal} ORDER BY a.created_at, a.id`, [
+    ticketId,
+  ])
   return rows.map(publicAttachment)
 }
 
@@ -191,9 +210,11 @@ module.exports = {
   uploadDir,
   ensureUploadDir,
   storedPath,
+  sha256,
   storeFile,
   removeFile,
   canSeeTicket,
+  canSeeAttachment,
   canDeleteAttachment,
   ATTACHMENT_SELECT,
   publicAttachment,
