@@ -46,6 +46,13 @@ const required = (name) =>
     .trim()
     .min(1, `${name} is missing`)
 
+// A blank value (SENTRY_DSN=) counts as not set
+const blankIsUnset = (schema) =>
+  z.preprocess(
+    (value) => (typeof value === 'string' && value.trim() === '' ? undefined : (value?.trim?.() ?? value)),
+    schema,
+  )
+
 // What the database scripts need
 const databaseSchema = z.object({
   DB_HOST: required('DB_HOST'),
@@ -70,6 +77,29 @@ const serverSchema = databaseSchema.extend({
     .trim()
     .min(1, 'UPLOAD_DIR is empty: remove it to use the default ./uploads, or set a folder')
     .optional(),
+  // Error tracking (src/sentry.js). All optional; a blank value counts as not set, and without SENTRY_DSN it is off.
+  SENTRY_DSN: blankIsUnset(
+    z
+      .url({
+        protocol: /^https?$/,
+        error: 'SENTRY_DSN must be the DSN from Sentry (https://<key>@<org>.ingest.sentry.io/<project>), or empty',
+      })
+      .optional(),
+  ),
+  SENTRY_ENVIRONMENT: blankIsUnset(
+    z
+      .string()
+      .max(64, 'SENTRY_ENVIRONMENT must be at most 64 characters')
+      .regex(/^[^\s/]+$/, 'SENTRY_ENVIRONMENT must be one word, e.g. production or staging (no spaces or slashes)')
+      .optional(),
+  ),
+  SENTRY_RELEASE: blankIsUnset(
+    z
+      .string()
+      .max(200, 'SENTRY_RELEASE must be at most 200 characters')
+      .regex(/^[^\s]+$/, 'SENTRY_RELEASE must have no spaces')
+      .optional(),
+  ),
   // The lowest level written to the log (src/logger.js). Optional: default info. A blank value counts as not set.
   LOG_LEVEL: z.preprocess(
     (value) => (typeof value === 'string' ? value.trim().toLowerCase() || undefined : value),

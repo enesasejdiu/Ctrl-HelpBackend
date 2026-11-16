@@ -422,6 +422,62 @@ docker compose logs api | grep 9b2f6c1e-3d4a-4f8e-b1c2-7a5d0e9f4c21
 The scripts (`npm run db:migrate`, `create-admin`, `job:auto-close`, ...) keep printing plain text: they are run by
 a person, not read by a log system.
 
+## Error tracking
+
+Optional: the API can report server errors to [Sentry](https://sentry.io) (`src/sentry.js`). **It is off unless
+`SENTRY_DSN` is set**: without it the Sentry SDK isn't even loaded, nothing is sent and no connection is made. The logs
+(see "Logs") work the same either way.
+
+### Set it up
+
+1. Make a free account at https://sentry.io (the Developer plan is free for one person). Create **two projects**:
+   _Node.js_ for this API and _React_ for the web app, so their errors don't mix.
+2. Copy each project's **DSN** (Project Settings → Client Keys (DSN); it looks like
+   `https://<key>@o<org>.ingest.sentry.io/<project>`).
+3. Put them in the settings:
+   - Docker Compose: `deploy/.env`, `SENTRY_DSN=` (the API) and `WEB_SENTRY_DSN=` (the web app), then
+     `docker compose up -d --build` (the web app's DSN is built into the page).
+   - Without Docker: `SENTRY_DSN` in this `.env`, and `VITE_SENTRY_DSN` in the frontend's `.env`.
+4. Restart the API. It logs `Error tracking: Sentry is on (5xx errors and crashes, no personal data)`.
+
+**Environment and release, the same on both sides.** `SENTRY_ENVIRONMENT` names the deployment (`production`,
+`staging`, ...; default `NODE_ENV`). With Docker Compose the one `SENTRY_ENVIRONMENT` in `deploy/.env` is used by both
+the API and the web app (its `VITE_SENTRY_ENVIRONMENT`), so a deployment's errors show up under one name in both
+projects. Releases name the code: `ticketflow-backend@<commit>` and `ticketflow-frontend@<commit>`:
+
+```bash
+# deploy/.env, after git pull (from deploy/):
+SENTRY_RELEASE=ticketflow-backend@$(git -C .. rev-parse --short HEAD)
+WEB_SENTRY_RELEASE=ticketflow-frontend@$(git -C ../../Ctrl-HelpFrontend rev-parse --short HEAD)
+```
+
+(put the resulting values in the file). Without `SENTRY_RELEASE` the API reports `ticketflow-backend@<package.json
+version>`.
+
+### What is sent, and what never is
+
+Sent, and nothing else:
+
+- **Server errors (5xx)** from the error handler, and **crashes** (an uncaught exception or an unhandled promise
+  rejection; the API logs it, reports it and exits 1, and Docker restarts it). **Never 4xx** (validation errors, wrong
+  passwords, 404s, ...).
+- The error's type, message and stack trace, with emails, IP addresses, `password=`/`token=`-style values, bearer
+  tokens and query strings masked (`[email]`, `[ip]`, `[redacted]`).
+- Tags: `request_id` (the same id as in the logs, the `X-Request-Id` header and the "reference" the user sees in
+  "Something went wrong (reference: …)"), `method`, `route` (`/api/tickets/:id`: ids replaced, no query string),
+  `status`, `kind` (`server-error`, `uncaughtException`, `unhandledRejection`).
+- The user's **id** only, the environment, the release, and `ticketflow-api` as the server name.
+
+**Find a user's error**: their reference is the request id. Search Sentry for `request_id:<reference>`; a generated
+id is also the Sentry event id (without its dashes). The same id finds the log lines:
+`docker compose logs api | grep <reference>`.
+
+Never sent: cookies, headers (`Authorization`, `Cookie`), request bodies, query-string values, emails, names, IP
+addresses, passwords, tokens, set-password and reset links, temporary passwords. `sendDefaultPii` is off, none of
+Sentry's default integrations run (no breadcrumbs, no request data, no tracing or profiling), and `scrubEvent()` strips
+everything else from an event before it leaves (`tests/sentry.test.js` sends all of these through a fake transport and
+checks that none arrive).
+
 ## Running tests
 
 ```bash
@@ -1538,6 +1594,8 @@ src/
   app.js                  Express app: middleware, routes, error handling
   db.js                   MySQL connection pool
   logger.js               Structured logs (pino): request ids, the access log, redaction of secrets
+  sentry.js               Optional error tracking (Sentry): 5xx and crashes only, no personal data
+  crash.js                Uncaught exceptions / unhandled rejections: log, report, exit 1
   overdue.js              The shared "is this ticket overdue?" SQL rule
   pagination.js           Paging and sorting for GET /api/tickets and /api/users: the sort allow-lists, page + count
   temporaryPassword.js    Random temporary passwords for password resets
