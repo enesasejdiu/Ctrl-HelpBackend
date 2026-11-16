@@ -22,7 +22,7 @@ services:
       MYSQL_USER: ${DB_USER:-ticketflow}
       MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in deploy/.env}
     volumes:
-      - db-data:/var/lib/mysql
+      - db:/var/lib/mysql
     # Healthy once the real server accepts connections. While the image is still setting up a new data volume it runs
     # a temporary server without networking, so this keeps failing until that is done.
     healthcheck:
@@ -82,6 +82,6 @@ services:
       - '${WEB_PORT:-8080}:8080'
 
 volumes:
-  db-data: # MySQL's data files
+  db: # MySQL's data files
   uploads: # attachment files (the database only has their names)
   backups: # db:migrate's backups

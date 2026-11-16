@@ -256,7 +256,7 @@ Three named volumes, which `docker compose down` keeps (`docker volume ls`):
 
 | Volume               | Holds                                                       |
 | -------------------- | ----------------------------------------------------------- |
-| `ticketflow_db-data` | MySQL's data files: every table                             |
+| `ticketflow_db`      | MySQL's data files: every table                             |
 | `ticketflow_uploads` | Attachment files (the database only has their names)        |
 | `ticketflow_backups` | The backups `db:migrate` takes before changing the database |
 
