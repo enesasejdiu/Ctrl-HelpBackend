@@ -653,8 +653,10 @@ won't let other sites read the responses. It's never `*`; without `CLIENT_URL`, 
 frame-ancestors 'none'` (nothing to load, no framing), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
   `Referrer-Policy: no-referrer`, same-origin resource and opener policies, and no `X-Powered-By`.
 - **Production only** (`NODE_ENV=production`): HSTS (`max-age=15552000; includeSubDomains`, 180 days), and
-  `trust proxy` set to 1, so behind nginx `req.ip` (and with it the login rate limit) is the client's real address
-  from `X-Forwarded-For`. In development neither is set: HSTS would lock `http://localhost` out of the browser, and
+  `trust proxy` set to `TRUST_PROXY_HOPS` (default 1: nginx; 2 with Caddy in front of nginx), so `req.ip` (and with it
+  the login rate limit and the audit log's addresses) is the client's real address from `X-Forwarded-For`. It must
+  match the number of proxies: too few and every user looks like the proxy, too many and a client can pick its own
+  address. In development neither is set: HSTS would lock `http://localhost` out of the browser, and
   trusting the header without a proxy would let any client pick its own IP.
 
 **Cookie only, no Bearer.** The session is only ever read from the `tf_session` cookie. No response body contains

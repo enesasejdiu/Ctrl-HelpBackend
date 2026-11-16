@@ -24,10 +24,13 @@ app.use(requestLogger)
 // Don't tell clients which framework this is (helmet removes the header too; this makes it explicit)
 app.disable('x-powered-by')
 
-// Behind nginx (production), the client's real IP is in X-Forwarded-For. Trust exactly one proxy hop, so req.ip (and
-// with it the login rate limit) sees the real address. Not in development: there is no proxy, and trusting the header
-// would let any client pick its own IP.
-if (isProduction) app.set('trust proxy', 1)
+// Behind proxies (production), the client's real IP is in X-Forwarded-For. Trust exactly TRUST_PROXY_HOPS of them (the
+// proxies in front of the API: 1 = nginx, the default; 2 = Caddy → nginx, the HTTPS setup in deploy/), so req.ip (and
+// with it the login rate limit and the audit log) is the real client, not a proxy. Trusting more hops than there are
+// proxies would let a client pick its own IP, and fewer makes every user look like the proxy. Not in development: there
+// is no proxy.
+const trustProxyHops = Number(process.env.TRUST_PROXY_HOPS) || 1
+if (isProduction) app.set('trust proxy', trustProxyHops)
 
 // Security headers for a JSON API. Nothing it sends is a page, so the content security policy allows nothing at all,
 // and no site may frame it. HSTS (HTTPS only, for 180 days) only in production: on http://localhost it would make
