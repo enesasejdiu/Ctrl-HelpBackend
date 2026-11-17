@@ -18,6 +18,7 @@ const { statusSets } = require('../ticketStatus')
 const settings = require('../settings')
 const { listAttachments } = require('../attachments')
 const { canSeeTicket, visibleTicketsSql } = require('../ticketVisibility')
+const { likeContains, LIKE_ESCAPE } = require('../sqlLike')
 const { receiveFiles, uploadAttachments, listTicketAttachments } = require('./attachments')
 
 const router = express.Router()
@@ -104,8 +105,8 @@ router.get('/', validate(schemas.listTickets), async (req, res) => {
     where.push('t.assigned_to IS NULL')
   }
   if (q) {
-    where.push('(t.title LIKE ? OR t.description LIKE ?)')
-    params.push(`%${q}%`, `%${q}%`)
+    where.push(`(t.title LIKE ? ${LIKE_ESCAPE} OR t.description LIKE ? ${LIKE_ESCAPE})`)
+    params.push(likeContains(q), likeContains(q))
   }
   if (overdue) {
     where.push(OVERDUE_SQL)

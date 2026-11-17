@@ -412,6 +412,9 @@ describe('GET /api/audit/actions', () => {
       'kb.category_created',
       'kb.category_updated',
       'kb.category_deleted',
+      'canned.shared_created',
+      'canned.shared_updated',
+      'canned.shared_deleted',
     ])
     expect(res.body).toEqual(AUDIT_ACTIONS)
   })
