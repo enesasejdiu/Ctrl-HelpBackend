@@ -42,6 +42,14 @@ const USER_SORTS = {
   last_login_at: { order: 'desc', sql: (dir) => `u.last_login_at IS NULL, u.last_login_at ${dir}` },
 }
 
+// Knowledge-base articles (a = kb_articles; routes/kb.js). With ?q= and no ?sort= the list is by relevance instead.
+const KB_ARTICLE_SORTS = {
+  // Drafts (never published) come last in both directions
+  published_at: { order: 'desc', sql: (dir) => `a.published_at IS NULL, a.published_at ${dir}` },
+  title: { order: 'asc', sql: (dir) => `a.title ${dir}` },
+  updated_at: { order: 'desc', sql: (dir) => `a.updated_at ${dir}` },
+}
+
 // The sort a paged request (?page=) gets when it sends no ?sort=. A request without ?page= keeps the list's old order
 // instead, so the plain array stays exactly as it was.
 const TICKET_PAGED_DEFAULT = 'created_at'
@@ -106,6 +114,7 @@ async function listRows(db, { selectSql, fromSql, whereSql, params, orderSql, qu
 module.exports = {
   TICKET_SORTS,
   USER_SORTS,
+  KB_ARTICLE_SORTS,
   TICKET_PAGED_DEFAULT,
   USER_PAGED_DEFAULT,
   pagingSchema,

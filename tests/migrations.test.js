@@ -154,8 +154,8 @@ describe('schema', () => {
 })
 
 describe('up → down → up', () => {
-  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 019 down to 003
-  test('rolling back 019, 018, 017, 016, 015, 014, 013, 012, 011, 010, 009, 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
+  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 020 down to 003
+  test('rolling back 020, 019, 018, 017, 016, 015, 014, 013, 012, 011, 010, 009, 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
     const { db, dbName } = await newDatabase()
     const schema = async () => {
       const tables = {}
@@ -171,7 +171,7 @@ describe('up → down → up', () => {
       (await db.query('SELECT filename FROM schema_migrations ORDER BY filename'))[0].map((r) => r.filename)
 
     const before = await schema()
-    for (let i = 0; i < 17; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
+    for (let i = 0; i < 18; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
     expect(await applied()).toEqual(['001_initial.sql', '002_hr_role_and_password_change.sql'])
     const [departments] = await db.query("SHOW TABLES LIKE 'departments'")
     expect(departments).toHaveLength(0)
@@ -182,6 +182,8 @@ describe('up → down → up', () => {
       'settings',
       'ticket_ratings',
       'ticket_escalations',
+      'kb_articles',
+      'kb_categories',
     ]) {
       const [tokens] = await db.query(`SHOW TABLES LIKE '${table}'`)
       expect(tokens).toHaveLength(0)
@@ -189,7 +191,38 @@ describe('up → down → up', () => {
 
     await quietly(() => migrate({ dbName, backupFirst: false }))
     expect(await schema()).toEqual(before)
-    expect((await applied()).at(-1)).toBe('019_ticket_escalations.sql')
+    expect((await applied()).at(-1)).toBe('020_knowledge_base.sql')
+  })
+
+  test('020 adds the knowledge-base tables with their FULLTEXT index and keys; rolling it back removes only them', async () => {
+    const { db, dbName } = await newDatabase('020')
+    const [indexes] = await db.query('SHOW INDEX FROM kb_articles')
+    const byName = (name) => indexes.filter((index) => index.Key_name === name).map((index) => index.Column_name)
+    expect(byName('ft_kb_articles')).toEqual(['title', 'summary', 'body'])
+    expect(indexes.find((index) => index.Key_name === 'ft_kb_articles').Index_type).toBe('FULLTEXT')
+    expect(byName('idx_kb_articles_list')).toEqual(['status', 'category_id', 'published_at'])
+    expect(byName('uq_kb_articles_slug')).toEqual(['slug'])
+    // A category with an article can't be deleted (ON DELETE RESTRICT)
+    const [{ insertId: categoryId }] = await db.query(
+      "INSERT INTO kb_categories (name, slug) VALUES ('Email', 'email')",
+    )
+    await db.query(
+      "INSERT INTO kb_articles (title, slug, body, category_id) VALUES ('Hello there', 'hello-there', 'x', ?)",
+      [categoryId],
+    )
+    await expect(db.query('DELETE FROM kb_categories WHERE id = ?', [categoryId])).rejects.toMatchObject({
+      code: 'ER_ROW_IS_REFERENCED_2',
+    })
+    // Names are unique whatever their case
+    await expect(db.query("INSERT INTO kb_categories (name, slug) VALUES ('EMAIL', 'email-2')")).rejects.toMatchObject({
+      code: 'ER_DUP_ENTRY',
+    })
+
+    await quietly(() => rollback({ dbName, backupFirst: false }))
+    for (const table of ['kb_articles', 'kb_categories']) {
+      expect((await db.query(`SHOW TABLES LIKE '${table}'`))[0]).toHaveLength(0)
+    }
+    expect((await db.query("SHOW TABLES LIKE 'ticket_escalations'"))[0]).toHaveLength(1)
   })
 
   test('018 adds sha256 and comment_id to attachments, and rolling it back removes only them', async () => {

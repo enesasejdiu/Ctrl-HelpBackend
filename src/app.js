@@ -14,6 +14,9 @@ const isProduction = process.env.NODE_ENV === 'production'
 // Largest JSON body accepted; bigger ones get 413 PAYLOAD_TOO_LARGE (see middleware/errors.js). The biggest real body
 // (a ticket description) is well under 10 KB.
 const BODY_LIMIT = '100kb'
+// Knowledge-base articles are up to 100,000 characters of Markdown: in UTF-8 and JSON (escaped line breaks and
+// quotes) that can be several hundred KB, so /api/kb alone gets more room
+const KB_BODY_LIMIT = '1mb'
 
 const app = express()
 
@@ -59,6 +62,8 @@ app.use(
     maxAge: 600, // browsers may cache a preflight answer for 10 minutes
   }),
 )
+// The first parser that reads a body marks it read, so /api/kb's larger limit applies there and BODY_LIMIT everywhere else
+app.use('/api/kb', express.json({ limit: KB_BODY_LIMIT }))
 app.use(express.json({ limit: BODY_LIMIT })) // parse JSON request bodies
 app.use(cookieParser()) // req.cookies, for the session and CSRF cookies
 

@@ -404,6 +404,14 @@ describe('GET /api/audit/actions', () => {
       'attachment_deleted',
       'ticket_auto_closed',
       'ticket_escalated',
+      'kb.article_created',
+      'kb.article_updated',
+      'kb.article_published',
+      'kb.article_unpublished',
+      'kb.article_deleted',
+      'kb.category_created',
+      'kb.category_updated',
+      'kb.category_deleted',
     ])
     expect(res.body).toEqual(AUDIT_ACTIONS)
   })

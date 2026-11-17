@@ -11,10 +11,85 @@ require('dotenv').config()
 const bcrypt = require('bcryptjs')
 const pool = require('../src/db')
 const { categories, priorities, defaultPriority } = require('./reference-data')
+const { slugify, ARTICLE_SLUG_MAX, CATEGORY_SLUG_MAX } = require('../src/kb')
 
 const PASSWORD = 'password123'
 const HOUR = 60 * 60 * 1000
+const DAY = 24 * HOUR
 const now = Date.now()
+
+// Knowledge base: categories in list order, and articles (Markdown) by an agent; ago = days since it was written
+const KB_CATEGORIES = ['Getting started', 'Email', 'Network & VPN', 'Accounts & passwords']
+const KB_ARTICLES = [
+  {
+    title: 'How to report a problem to IT',
+    category: 'Getting started',
+    by: 'agent1',
+    status: 'published',
+    ago: 30,
+    summary: 'What to write in a ticket so IT can help you quickly.',
+    body: [
+      '## Before you start',
+      '',
+      'Check the **knowledge base** first: many common problems have a fix you can do yourself.',
+      '',
+      '## What to write',
+      '',
+      '1. What you were trying to do',
+      '2. What happened instead (the exact error message helps)',
+      '3. When it started, and whether it happens every time',
+      '',
+      '## Attach a screenshot',
+      '',
+      'A picture of the error saves a lot of back and forth. You can add up to 5 files to a ticket.',
+    ].join('\n'),
+  },
+  {
+    title: 'Set up your work email on a phone',
+    category: 'Email',
+    by: 'agent2',
+    status: 'published',
+    ago: 12,
+    body: [
+      'Your work email works on Android and iPhone with the built-in mail app.',
+      '',
+      '## Steps',
+      '',
+      '- Open **Settings → Mail → Accounts**',
+      '- Choose **Add account → Exchange**',
+      '- Sign in with your work email and password',
+      '',
+      '> If it asks for a server, use `mail.example.com`.',
+    ].join('\n'),
+  },
+  {
+    title: 'VPN says "Authentication failed"',
+    category: 'Network & VPN',
+    by: 'agent1',
+    status: 'published',
+    ago: 5,
+    summary: 'The VPN only picks up a new password after you sign out of Windows once.',
+    body: [
+      'This usually happens right after you changed your password.',
+      '',
+      '## Fix',
+      '',
+      '1. Save your work and **sign out** of Windows (not just lock the screen)',
+      '2. Sign in again with your new password',
+      '3. Connect to the VPN',
+      '',
+      'Still failing? [Report a problem](/tickets/new) and mention the time you tried.',
+    ].join('\n'),
+  },
+  {
+    title: 'Choosing a strong password',
+    category: 'Accounts & passwords',
+    by: 'agent2',
+    status: 'draft',
+    ago: 1,
+    body: 'Use at least 10 characters, with letters and numbers. A short sentence is easy to remember and hard to guess.',
+  },
+]
 
 // Operations has nobody in it, so "delete an empty department" can be tried on the demo data
 const departments = ['IT', 'Finance', 'Sales', 'Human Resources', 'Operations']
@@ -284,14 +359,19 @@ async function seed({ force = process.argv.includes('--force') } = {}) {
     for (const table of [
       'audit_log',
       'sessions',
+      // Set-password and reset links: a link left over from before would point at whichever new user gets that id
+      'password_tokens',
       // Attachment rows point at tickets; their files in UPLOAD_DIR are left on disk (only the rows are wiped)
       'attachments',
       'ticket_ratings',
+      'ticket_escalations',
       'ticket_history',
       'comments',
       'tickets',
       'priorities',
       'categories',
+      'kb_articles',
+      'kb_categories',
       'users',
       'departments',
     ]) {
@@ -374,6 +454,39 @@ async function seed({ force = process.argv.includes('--force') } = {}) {
     }
   }
 
+  // 7b. Knowledge base: a few categories and articles (one of them a draft), written by the agents
+  const kbCategoryIds = {}
+  for (const [index, name] of KB_CATEGORIES.entries()) {
+    const [r] = await pool.query('INSERT INTO kb_categories (name, slug, sort_order) VALUES (?, ?, ?)', [
+      name,
+      slugify(name, CATEGORY_SLUG_MAX),
+      index * 10,
+    ])
+    kbCategoryIds[name] = r.insertId
+  }
+  for (const article of KB_ARTICLES) {
+    const published = article.status === 'published'
+    const at = new Date(now - article.ago * DAY)
+    await pool.query(
+      `INSERT INTO kb_articles (title, slug, summary, body, category_id, status, author_id, updated_by, published_at,
+         created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        article.title,
+        slugify(article.title, ARTICLE_SLUG_MAX),
+        article.summary ?? null,
+        article.body,
+        kbCategoryIds[article.category],
+        article.status,
+        userIds[article.by],
+        userIds[article.by],
+        published ? at : null,
+        at,
+        at,
+      ],
+    )
+  }
+
   // 8. Summary
   const count = async (table) => (await pool.query(`SELECT COUNT(*) AS n FROM ${table}`))[0][0].n
   console.log('Seed complete:')
@@ -384,6 +497,7 @@ async function seed({ force = process.argv.includes('--force') } = {}) {
   console.log(`  tickets:        ${await count('tickets')}`)
   console.log(`  comments:       ${await count('comments')}`)
   console.log(`  history rows:   ${await count('ticket_history')}`)
+  console.log(`  kb articles:    ${await count('kb_articles')}`)
   console.log('')
   Object.values(users).forEach(([name, email, role]) => console.log(`  ${role.padEnd(9)} ${email.padEnd(27)} ${name}`))
   console.log(`\nAll demo users have password: ${PASSWORD}`)
