@@ -31,6 +31,7 @@ async function resetData() {
       'sessions',
       'password_tokens',
       'ticket_ratings',
+      'ticket_escalations',
       'ticket_history',
       'comments',
       'tickets',
@@ -60,6 +61,7 @@ async function restoreReferenceData() {
     for (const table of [
       'attachments',
       'ticket_ratings',
+      'ticket_escalations',
       'ticket_history',
       'comments',
       'tickets',
@@ -89,6 +91,8 @@ async function restoreReferenceData() {
   }
   await pool.query("UPDATE settings SET setting_value = 'TicketFlow' WHERE setting_key = 'company_name'")
   await pool.query("UPDATE settings SET setting_value = '7' WHERE setting_key = 'auto_close_days'")
+  await pool.query("UPDATE settings SET setting_value = 'true' WHERE setting_key = 'escalation_enabled'")
+  await pool.query("UPDATE settings SET setting_value = '120' WHERE setting_key = 'escalation_unassigned_minutes'")
   settings.clearCache()
 }
 
@@ -216,6 +220,7 @@ async function dbSnapshot() {
     'ticket_history',
     'password_tokens',
     'ticket_ratings',
+    'ticket_escalations',
   ]) {
     const [rows] = await pool.query(`SELECT * FROM ${table} ORDER BY id`)
     snapshot[table] = rows

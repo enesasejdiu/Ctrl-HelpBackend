@@ -304,16 +304,23 @@ company.get('/public', async (req, res) => {
 
 company.use(requireAuth)
 
-// GET /api/settings (admin) → { company_name, auto_close_days }
+// GET /api/settings (admin) → { company_name, auto_close_days, escalation_enabled, escalation_unassigned_minutes }
 company.get('/', adminOnly, async (req, res) => {
   res.json(await settings.adminSettings())
 })
 
-// PATCH /api/settings { company_name?, auto_close_days? } (admin, at least one) → the settings.
+// PATCH /api/settings { company_name?, auto_close_days?, escalation_enabled?, escalation_unassigned_minutes? } (admin,
+// at least one) → the settings.
 // company_name: trimmed, 1–100 characters. auto_close_days: a whole number of days, 0–365; 0 switches the daily
-// auto-close job off (src/jobs/autoClose.js).
+// auto-close job off (src/jobs/autoClose.js). escalation_enabled: true/false, the escalation emails
+// (src/jobs/escalation.js). escalation_unassigned_minutes: 15–1440, how long an urgent ticket may stay unassigned.
 company.patch('/', adminOnly, validate(schemas.updateSettings), async (req, res) => {
-  const { company_name: companyName, auto_close_days: autoCloseDays } = req.valid.body
+  const {
+    company_name: companyName,
+    auto_close_days: autoCloseDays,
+    escalation_enabled: escalationEnabled,
+    escalation_unassigned_minutes: unassignedMinutes,
+  } = req.valid.body
   const upsert = (key, value) =>
     pool.query(
       `INSERT INTO settings (setting_key, setting_value) VALUES (?, ?)
@@ -322,6 +329,8 @@ company.patch('/', adminOnly, validate(schemas.updateSettings), async (req, res)
     )
   if (companyName !== undefined) await upsert('company_name', companyName)
   if (autoCloseDays !== undefined) await upsert('auto_close_days', autoCloseDays)
+  if (escalationEnabled !== undefined) await upsert('escalation_enabled', escalationEnabled ? 'true' : 'false')
+  if (unassignedMinutes !== undefined) await upsert('escalation_unassigned_minutes', unassignedMinutes)
   settings.clearCache()
   res.json(await settings.adminSettings())
 })

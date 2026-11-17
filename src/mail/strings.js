@@ -60,6 +60,19 @@ module.exports = {
     reasonAssignee: 'this ticket is assigned to you',
     reasonIt: "you're on the IT team and this ticket has no one assigned yet",
   },
+  // The escalation job's summary to the admins (src/jobs/escalation.js); {list} is the counts, e.g.
+  // "2 urgent tickets unassigned, 3 tickets overdue"
+  escalation: {
+    subject: '[{company}] Needs attention: {list}',
+    intro: 'These tickets need attention: {list}.',
+    unassignedHeading: 'Urgent and still unassigned (more than {minutes} minutes):',
+    overdueHeading: 'Overdue (older than their priority allows):',
+    item: '#{id} {title} · {priority} · {age} old · requested by {requester}',
+    unassigned: { one: '1 urgent ticket unassigned', other: '{count} urgent tickets unassigned' },
+    overdue: { one: '1 ticket overdue', other: '{count} tickets overdue' },
+    once: 'Each ticket is only reported once for each reason. Turn these emails off in Settings.',
+    reason: "you're an administrator of {company}",
+  },
   ticketResolved: {
     subject: '[{company} #{id}] Resolved: {title}',
     summary: '{actor} resolved your ticket #{id}: {title}',

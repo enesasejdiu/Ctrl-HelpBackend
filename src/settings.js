@@ -11,6 +11,11 @@ const DEFAULT_COMPANY_NAME = 'TicketFlow'
 // Days a ticket stays resolved before the daily job closes it; 0 switches the job off
 const DEFAULT_AUTO_CLOSE_DAYS = 7
 const MAX_AUTO_CLOSE_DAYS = 365
+// Escalation emails (src/jobs/escalation.js, migration 019): on by default; an urgent ticket may stay unassigned this
+// many minutes before the admins are told
+const DEFAULT_ESCALATION_UNASSIGNED_MINUTES = 120
+const MIN_ESCALATION_UNASSIGNED_MINUTES = 15
+const MAX_ESCALATION_UNASSIGNED_MINUTES = 1440
 
 let cache = {}
 
@@ -91,9 +96,34 @@ async function autoCloseDays(db = pool) {
   return Number.isInteger(days) && days >= 0 && days <= MAX_AUTO_CLOSE_DAYS ? days : DEFAULT_AUTO_CLOSE_DAYS
 }
 
-// What GET /api/settings shows admins: the company name and auto_close_days
+// { enabled, unassignedMinutes } for the escalation job, read straight from the database like auto_close_days (the job
+// runs every few minutes, and another server's change must count). Missing or unreadable values mean the defaults.
+async function escalationSettings(db = pool) {
+  const [rows] = await db.query(
+    "SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('escalation_enabled', 'escalation_unassigned_minutes')",
+  )
+  const stored = Object.fromEntries(rows.map((row) => [row.setting_key, row.setting_value]))
+  const minutes = Number(stored.escalation_unassigned_minutes)
+  return {
+    enabled: stored.escalation_enabled !== 'false',
+    unassignedMinutes:
+      Number.isInteger(minutes) &&
+      minutes >= MIN_ESCALATION_UNASSIGNED_MINUTES &&
+      minutes <= MAX_ESCALATION_UNASSIGNED_MINUTES
+        ? minutes
+        : DEFAULT_ESCALATION_UNASSIGNED_MINUTES,
+  }
+}
+
+// What GET /api/settings shows admins: the company name, auto_close_days and the escalation settings
 async function adminSettings() {
-  return { ...(await companySettings()), auto_close_days: await autoCloseDays() }
+  const escalation = await escalationSettings()
+  return {
+    ...(await companySettings()),
+    auto_close_days: await autoCloseDays(),
+    escalation_enabled: escalation.enabled,
+    escalation_unassigned_minutes: escalation.unassignedMinutes,
+  }
 }
 
 async function companyName() {
@@ -125,6 +155,10 @@ module.exports = {
   companySettings,
   adminSettings,
   autoCloseDays,
+  escalationSettings,
+  DEFAULT_ESCALATION_UNASSIGNED_MINUTES,
+  MIN_ESCALATION_UNASSIGNED_MINUTES,
+  MAX_ESCALATION_UNASSIGNED_MINUTES,
   DEFAULT_AUTO_CLOSE_DAYS,
   MAX_AUTO_CLOSE_DAYS,
   companyName,

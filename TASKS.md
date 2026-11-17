@@ -138,3 +138,4 @@ requireAuth checks the current role and active status in the database on every r
 - [x] Structured logs (pino) with a request ID on every line
 - [x] Daily backup container (keeps the last 14) with a tested restore
 - [x] Error tracking with Sentry (optional, off without a DSN)
+- [x] Escalation emails for urgent unassigned and overdue tickets (backend)

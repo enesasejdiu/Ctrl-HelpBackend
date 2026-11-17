@@ -86,7 +86,9 @@ const reorderPriorities = {
   }),
 }
 
-// PATCH /api/settings: either or both; at least one
+// PATCH /api/settings: any of these; at least one
+const UNASSIGNED_MINUTES_MESSAGE = 'escalation_unassigned_minutes must be a whole number of minutes from 15 to 1440'
+const SETTINGS_KEYS = ['company_name', 'auto_close_days', 'escalation_enabled', 'escalation_unassigned_minutes']
 const updateSettings = {
   body: z
     .strictObject({
@@ -97,9 +99,16 @@ const updateSettings = {
         .min(0, 'auto_close_days must be a whole number from 0 to 365')
         .max(365, 'auto_close_days must be a whole number from 0 to 365')
         .optional(),
+      escalation_enabled: z.boolean({ error: 'escalation_enabled must be true or false' }).optional(),
+      escalation_unassigned_minutes: z
+        .number({ error: UNASSIGNED_MINUTES_MESSAGE })
+        .int(UNASSIGNED_MINUTES_MESSAGE)
+        .min(15, UNASSIGNED_MINUTES_MESSAGE)
+        .max(1440, UNASSIGNED_MINUTES_MESSAGE)
+        .optional(),
     })
-    .refine((body) => body.company_name !== undefined || body.auto_close_days !== undefined, {
-      error: 'Send company_name or auto_close_days',
+    .refine((body) => SETTINGS_KEYS.some((key) => body[key] !== undefined), {
+      error: `Send at least one of ${SETTINGS_KEYS.join(', ')}`,
     }),
 }
 

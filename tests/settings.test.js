@@ -352,8 +352,14 @@ describe('company settings', () => {
   test('PATCH (trimmed) → shown in GET /api/settings and in the public settings', async () => {
     const res = await admin.patch('/api/settings', { company_name: '  Acme Corp  ' })
     expect(res.status).toBe(200)
-    expect(res.body).toEqual({ company_name: 'Acme Corp', auto_close_days: 7 })
-    expect((await admin.get('/api/settings')).body).toEqual({ company_name: 'Acme Corp', auto_close_days: 7 })
+    const expected = {
+      company_name: 'Acme Corp',
+      auto_close_days: 7,
+      escalation_enabled: true,
+      escalation_unassigned_minutes: 120,
+    }
+    expect(res.body).toEqual(expected)
+    expect((await admin.get('/api/settings')).body).toEqual(expected)
     expect((await api.get('/api/settings/public')).body).toEqual({ company_name: 'Acme Corp', email_enabled: false })
   })
 

@@ -1088,6 +1088,70 @@ Because the time zone is explicit, 03:00 means 02:00 UTC in winter (CET) and 01:
 runs exactly once on the days the clocks change. An invalid setting is logged and the job isn't scheduled; the API keeps
 running. `auto_close_days` is changed with `PATCH /api/settings { auto_close_days }` (admin, a whole number 0–365).
 
+## Escalation
+
+Every **5 minutes** the API checks for tickets that need attention and emails a summary to **every active admin**
+(`src/jobs/escalation.js`):
+
+| Kind                   | Rule                                                                                                                                                                                                        |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Urgent, unassigned** | A ticket of one of the two most urgent priorities (**High** and **Critical** with the default priorities) that nobody is assigned to `escalation_unassigned_minutes` after it was created (default **120**) |
+| **Overdue**            | A ticket that is overdue by the app's one overdue rule: not resolved/closed and older than its priority's target time (Low 120 h, Medium 72 h, High 24 h, Critical 4 h)                                     |
+
+- **Once per ticket and kind.** The table `ticket_escalations` (migration 019) records it (`UNIQUE (ticket_id, kind)`),
+  so the next run, a restart or a second API instance never reports it again. A ticket can be reported once as
+  unassigned and once as overdue. **Resolved and closed tickets are never escalated.**
+- **One email per admin per run**, only when something is new, with everything new in it. Deactivated admins get
+  nothing. Each escalation is also in the audit log (`ticket_escalated`, `details.kind`).
+- **One run at a time**: a database lock (`GET_LOCK`, like auto-close), so several API containers never send twice.
+- **Without email set up** (no SMTP): no email; the API logs one warning line with the counts, and the escalations are
+  still recorded (so setting up email later doesn't report every old ticket at once):
+  `[escalation] Email is not set up, so nobody was emailed: 2 urgent tickets unassigned, 1 ticket overdue (recorded)`
+- Times are calendar time for now (nights and weekends count); business hours are a later step.
+
+What the email looks like (made-up data):
+
+```text
+Subject: [Example Corp] Needs attention: 2 urgent tickets unassigned, 1 ticket overdue
+
+Hello Ana Admin,
+
+These tickets need attention: 2 urgent tickets unassigned, 1 ticket overdue.
+
+Urgent and still unassigned (more than 120 minutes):
+
+- #41 VPN down for the whole sales team · Critical · 2 h 25 min old · requested by Liridon Gashi
+  https://helpdesk.example.com/tickets/41
+- #44 Laptop won't boot · High · 2 h 8 min old · requested by Vjosa Hoxha
+  https://helpdesk.example.com/tickets/44
+
+Overdue (older than their priority allows):
+
+- #12 New monitor for reception · Medium · 4 days 2 h old · requested by Teuta Morina
+  https://helpdesk.example.com/tickets/12
+
+Each ticket is only reported once for each reason. Turn these emails off in Settings.
+```
+
+The HTML version has the same content with each ticket as a link.
+
+**Settings** (admin; `GET`/`PATCH /api/settings`; the fields in the app come later):
+
+| Setting                         | Default |                                                                                  |
+| ------------------------------- | ------- | -------------------------------------------------------------------------------- |
+| `escalation_enabled`            | `true`  | `false` switches the emails off: the job then does nothing (and records nothing) |
+| `escalation_unassigned_minutes` | `120`   | How long an urgent ticket may stay unassigned: a whole number from 15 to 1440    |
+
+```bash
+# turn it off (as an admin; with the session cookie and CSRF header, as every change)
+curl -X PATCH https://helpdesk.example.com/api/settings -H 'Content-Type: application/json' \
+  -H "X-CSRF-Token: $CSRF" -b "tf_session=$SESSION; tf_csrf=$CSRF" -d '{"escalation_enabled": false}'
+```
+
+**Tests only**: `ESCALATION_ENABLED=false` (not scheduled at all) and `ESCALATION_INTERVAL_MINUTES` (1–60) work only
+with `NODE_ENV=test`, like `LOCKOUT_MINUTES`; anywhere else the API refuses to start with them set to anything but
+the defaults. The tests call the job directly with a fixed clock instead of waiting.
+
 ## Attachments
 
 People can add files to a ticket: screenshots, PDFs, logs. Who may do what follows the ticket: **the requester and
@@ -1475,11 +1539,11 @@ filters by them; a new-ticket form should offer only the active ones.
 
 ### Company name
 
-| Request                    | Who    | What it does                                                                                                                                      |
-| -------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/settings/public` | anyone | `{ company_name, email_enabled }` for the sign-in page and the app header (no login)                                                              |
-| `GET /api/settings`        | admin  | `{ company_name, auto_close_days }`                                                                                                               |
-| `PATCH /api/settings`      | admin  | `{ company_name?, auto_close_days? }` (at least one; company_name trimmed, 1–100 characters; auto_close_days a whole number 0–365) → the settings |
+| Request                    | Who    | What it does                                                                                                                                                                                                                                                                 |
+| -------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/settings/public` | anyone | `{ company_name, email_enabled }` for the sign-in page and the app header (no login)                                                                                                                                                                                         |
+| `GET /api/settings`        | admin  | `{ company_name, auto_close_days, escalation_enabled, escalation_unassigned_minutes }`                                                                                                                                                                                       |
+| `PATCH /api/settings`      | admin  | `{ company_name?, auto_close_days?, escalation_enabled?, escalation_unassigned_minutes? }` (at least one; company_name trimmed, 1–100 characters; auto_close_days a whole number 0–365; escalation_enabled true/false; escalation_unassigned_minutes 15–1440) → the settings |
 
 `company_name` starts as "TicketFlow". Emails use it in the subject (`[Acme #12] New ticket: ...`), the header and
 the texts. The sender address stays `MAIL_FROM` from `.env`.
@@ -1569,8 +1633,8 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | GET    | `/api/audit`                      | admin        | The audit log, newest first, filtered and paged → `{ entries, total, page, pageSize }`. See [Audit log](#audit-log)                                                                                                                                                                                                                                                                                                                                                                                                           |
 | GET    | `/api/audit/actions`              | admin        | Every audit action name (for the filter dropdown). See [Audit log](#audit-log)                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | GET    | `/api/settings/public`            | anyone       | `{ company_name, email_enabled }` for the sign-in page. See [Admin settings](#admin-settings)                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| GET    | `/api/settings`                   | admin        | `{ company_name, auto_close_days }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| PATCH  | `/api/settings`                   | admin        | `{ company_name?, auto_close_days? }` (at least one) → the settings. See [Auto-close](#auto-close)                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| GET    | `/api/settings`                   | admin        | `{ company_name, auto_close_days, escalation_enabled, escalation_unassigned_minutes }`                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| PATCH  | `/api/settings`                   | admin        | `{ company_name?, auto_close_days?, escalation_enabled?, escalation_unassigned_minutes? }` (at least one) → the settings. See [Auto-close](#auto-close), [Escalation](#escalation)                                                                                                                                                                                                                                                                                                                                            |
 | GET    | `/api/categories`                 | logged in    | Active categories (admins: `?include_inactive=1`, with `ticket_count`)                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | POST   | `/api/categories`                 | admin        | `{ name, description?, sort_order? }` → 201 (409 `NAME_TAKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | PATCH  | `/api/categories/:id`             | admin        | `{ name?, description?, sort_order?, is_active? }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -1624,6 +1688,7 @@ src/
   ticketStatus.js         What a status change does to resolved_at and closed_at (every route and job uses it)
   jobs/
     autoClose.js          Closes tickets resolved for auto_close_days (npm run job:auto-close)
+    escalation.js         Emails the admins about urgent unassigned and overdue tickets, every 5 minutes
     schedule.js           When the daily jobs run (croner, 03:00 Europe/Budapest)
   passwordTokens.js       One-time password links (setup and reset): tokens (hashed), 48-hour expiry, one use
   mail/
@@ -1675,19 +1740,20 @@ TASKS.md                  Development task list
 
 ## Database tables
 
-| Table               | Contents                                                                                                                                                                                                                                                                                                        |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `users`             | Accounts: name, email, password hash, role (employee/agent/hr/admin), department_id, job title, active flag, last login, wrong-password count and lock (`failed_login_count`, `locked_until`), `session_version` (raising it ends the user's sessions). `department` is the old free-text value, no longer used |
-| `departments`       | Departments people belong to; `users.department_id` links to them (see [Departments](#departments))                                                                                                                                                                                                             |
-| `categories`        | Ticket categories (as standard Hardware, Software, Network, Access, Email, Other): `name` (unique in any letter case), `description`, `sort_order`, `is_active` (migration 015). See [Admin settings](#admin-settings)                                                                                          |
-| `priorities`        | Priorities: `name`, `level` (the rank, unique; 1 = least urgent), `target_hours`, `is_default` (exactly one), `is_active` (migration 015)                                                                                                                                                                       |
-| `tickets`           | Tickets: requester, assignee, category, priority, status, resolution note, timestamps                                                                                                                                                                                                                           |
-| `comments`          | Comments on tickets; `is_internal` marks staff-only notes                                                                                                                                                                                                                                                       |
-| `ticket_history`    | Audit trail: who changed which field (status, priority, assignee) from what to what, and when; `changed_by` NULL = the system (the auto-close job, migration 016)                                                                                                                                               |
-| `sessions`          | One row per login (migration 008): `user_id`, `created_at`, `expires_at`, `revoked_at`, `last_seen_at`, `ip`, `user_agent`. The token's `sid` is the row id. Rows are deleted 7 days after they end                                                                                                             |
-| `audit_log`         | Security events (migration 009): `created_at`, `actor_id`, `action`, `target_user_id`, `details` (JSON), `ip`. Never a secret. See [Audit log](#audit-log); `ticket_id` (migration 016) for entries about a ticket, e.g. `ticket_auto_closed`                                                                   |
-| `attachments`       | Files on tickets (migration 012): `ticket_id` (deleted with the ticket), `uploaded_by`, `original_name`, `stored_name` (the random file name in `UPLOAD_DIR`), `mime_type` (from the content), `size_bytes`, `created_at`. See [Attachments](#attachments)                                                      |
-| `ticket_ratings`    | Satisfaction ratings (migration 017): `ticket_id` (one per ticket, deleted with it), `rated_by`, `agent_id` (the assignee when rated), `stars` (1–5), `comment`, `created_at`. See [Satisfaction ratings](#satisfaction-ratings)                                                                                |
-| `password_tokens`   | One-time password links (migrations 010, 011, 014): the SHA-256 hash of each token (never the token), `purpose` (`setup` / `reset` / `forgot`), `expires_at` (48 hours; `forgot` 1 hour), `used_at`. See [How passwords are delivered](#how-passwords-are-delivered)                                            |
-| `settings`          | Admin settings, one row per key: `company_name` (migration 015), `auto_close_days` (016)                                                                                                                                                                                                                        |
-| `schema_migrations` | Which migrations this database has run, and when                                                                                                                                                                                                                                                                |
+| Table                | Contents                                                                                                                                                                                                                                                                                                        |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `users`              | Accounts: name, email, password hash, role (employee/agent/hr/admin), department_id, job title, active flag, last login, wrong-password count and lock (`failed_login_count`, `locked_until`), `session_version` (raising it ends the user's sessions). `department` is the old free-text value, no longer used |
+| `departments`        | Departments people belong to; `users.department_id` links to them (see [Departments](#departments))                                                                                                                                                                                                             |
+| `categories`         | Ticket categories (as standard Hardware, Software, Network, Access, Email, Other): `name` (unique in any letter case), `description`, `sort_order`, `is_active` (migration 015). See [Admin settings](#admin-settings)                                                                                          |
+| `priorities`         | Priorities: `name`, `level` (the rank, unique; 1 = least urgent), `target_hours`, `is_default` (exactly one), `is_active` (migration 015)                                                                                                                                                                       |
+| `tickets`            | Tickets: requester, assignee, category, priority, status, resolution note, timestamps                                                                                                                                                                                                                           |
+| `comments`           | Comments on tickets; `is_internal` marks staff-only notes                                                                                                                                                                                                                                                       |
+| `ticket_history`     | Audit trail: who changed which field (status, priority, assignee) from what to what, and when; `changed_by` NULL = the system (the auto-close job, migration 016)                                                                                                                                               |
+| `sessions`           | One row per login (migration 008): `user_id`, `created_at`, `expires_at`, `revoked_at`, `last_seen_at`, `ip`, `user_agent`. The token's `sid` is the row id. Rows are deleted 7 days after they end                                                                                                             |
+| `audit_log`          | Security events (migration 009): `created_at`, `actor_id`, `action`, `target_user_id`, `details` (JSON), `ip`. Never a secret. See [Audit log](#audit-log); `ticket_id` (migration 016) for entries about a ticket, e.g. `ticket_auto_closed`                                                                   |
+| `attachments`        | Files on tickets (migration 012): `ticket_id` (deleted with the ticket), `uploaded_by`, `original_name`, `stored_name` (the random file name in `UPLOAD_DIR`), `mime_type` (from the content), `size_bytes`, `created_at`. See [Attachments](#attachments)                                                      |
+| `ticket_ratings`     | Satisfaction ratings (migration 017): `ticket_id` (one per ticket, deleted with it), `rated_by`, `agent_id` (the assignee when rated), `stars` (1–5), `comment`, `created_at`. See [Satisfaction ratings](#satisfaction-ratings)                                                                                |
+| `ticket_escalations` | Escalations sent (migration 019): `ticket_id` (deleted with the ticket), `kind` (`unassigned` or `overdue`), `sent_at`; `UNIQUE (ticket_id, kind)`, so each ticket is reported once per kind. See [Escalation](#escalation)                                                                                     |
+| `password_tokens`    | One-time password links (migrations 010, 011, 014): the SHA-256 hash of each token (never the token), `purpose` (`setup` / `reset` / `forgot`), `expires_at` (48 hours; `forgot` 1 hour), `used_at`. See [How passwords are delivered](#how-passwords-are-delivered)                                            |
+| `settings`           | Admin settings, one row per key: `company_name` (migration 015), `auto_close_days` (016), `escalation_enabled` and `escalation_unassigned_minutes` (019)                                                                                                                                                        |
+| `schema_migrations`  | Which migrations this database has run, and when                                                                                                                                                                                                                                                                |

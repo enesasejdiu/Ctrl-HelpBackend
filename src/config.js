@@ -297,6 +297,32 @@ function attachmentLimitProblems(env) {
     : []
 }
 
+// ESCALATION_ENABLED and ESCALATION_INTERVAL_MINUTES (src/jobs/schedule.js) are for the test environment only, like
+// LOCKOUT_MINUTES. Anywhere else they must be left out (or the defaults): admins switch escalation off in Settings.
+function escalationProblems(env) {
+  const problems = []
+  const enabled = env.ESCALATION_ENABLED
+  const interval = env.ESCALATION_INTERVAL_MINUTES
+  if (enabled !== undefined && enabled !== '' && !['true', 'false'].includes(enabled)) {
+    problems.push(`ESCALATION_ENABLED must be true or false (got ${enabled})`)
+  } else if (env.NODE_ENV !== 'test' && enabled === 'false') {
+    problems.push(
+      'ESCALATION_ENABLED can only be changed when NODE_ENV=test; switch escalation emails off in Settings instead. Remove it from .env',
+    )
+  }
+  if (interval !== undefined && interval !== '') {
+    const minutes = Number(interval)
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 60) {
+      problems.push(`ESCALATION_INTERVAL_MINUTES must be a whole number of minutes from 1 to 60 (got ${interval})`)
+    } else if (env.NODE_ENV !== 'test' && minutes !== 5) {
+      problems.push(
+        `ESCALATION_INTERVAL_MINUTES can only be changed when NODE_ENV=test; the job runs every 5 minutes here (got ${interval}). Remove it from .env`,
+      )
+    }
+  }
+  return problems
+}
+
 function loadConfig(env = process.env, { scope = 'server' } = {}) {
   const schema = scope === 'database' ? databaseSchema : serverSchema
   const result = schema.safeParse(env)
@@ -304,7 +330,12 @@ function loadConfig(env = process.env, { scope = 'server' } = {}) {
   let mail = null
   let notices = []
   if (scope === 'server') {
-    issues.push(...lockoutProblems(env), ...attachmentLimitProblems(env), ...uploadDirProblems(env))
+    issues.push(
+      ...lockoutProblems(env),
+      ...attachmentLimitProblems(env),
+      ...uploadDirProblems(env),
+      ...escalationProblems(env),
+    )
     // Collected together with the other problems, so one start lists everything that is wrong
     try {
       ;({ mail, notices } = loadMailConfig(env))
