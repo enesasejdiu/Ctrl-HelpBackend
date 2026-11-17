@@ -38,22 +38,27 @@ const TICKET_JOINS = `JOIN priorities p ON p.id = t.priority_id JOIN users reque
 const notEscalated = (kind) =>
   `NOT EXISTS (SELECT 1 FROM ticket_escalations e WHERE e.ticket_id = t.id AND e.kind = '${kind}')`
 
-// The rank from which a priority counts as urgent: the second-highest rank there is (High with the default four)
+// The rank from which a priority counts as urgent: the second-highest rank there is (High with the default four), the
+// only one if there is just one, null without any priorities (then nothing is urgent)
 async function urgentRank() {
   const ranks = [...new Set((await settings.allPriorities()).map((p) => p.rank))].sort((a, b) => b - a)
-  return ranks[1] ?? ranks[0] ?? Infinity
+  return ranks[1] ?? ranks[0] ?? null
 }
 
 // Tickets that should be escalated now and haven't been, per kind
 async function candidates({ at, unassignedMinutes }) {
   const cutoff = new Date(at.getTime() - unassignedMinutes * 60 * 1000)
-  const [unassigned] = await pool.query(
-    `SELECT ${TICKET_COLUMNS} FROM tickets t ${TICKET_JOINS}
+  const rank = await urgentRank()
+  const [unassigned] =
+    rank === null
+      ? [[]]
+      : await pool.query(
+          `SELECT ${TICKET_COLUMNS} FROM tickets t ${TICKET_JOINS}
      WHERE t.assigned_to IS NULL AND t.status NOT IN ('resolved', 'closed')
        AND p.level >= ? AND t.created_at <= ? AND ${notEscalated('unassigned')}
      ORDER BY t.created_at, t.id`,
-    [await urgentRank(), cutoff],
-  )
+          [rank, cutoff],
+        )
   const [overdue] = await pool.query(
     `SELECT ${TICKET_COLUMNS} FROM tickets t ${TICKET_JOINS}
      WHERE ${overdueSqlAt('?')} AND ${notEscalated('overdue')}

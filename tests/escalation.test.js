@@ -7,6 +7,8 @@ const { startEscalationSchedule, escalationIntervalMinutes } = require('../src/j
 const { loadConfig } = require('../src/config')
 const { api, resetData, createUser, loginAs, auth, dbSnapshot } = require('./helpers')
 const { startFakeSmtp } = require('./support/fakeSmtp')
+const settings = require('../src/settings')
+const templates = require('../src/mail/templates')
 
 const NOW = new Date(Math.floor(Date.now() / 1000) * 1000)
 const MINUTE = 60 * 1000
@@ -358,5 +360,67 @@ describe('when something goes wrong', () => {
     } finally {
       job.stop()
     }
+  })
+})
+
+describe('edge cases', () => {
+  test("a ticket another run recorded meanwhile is not this run's (no audit entry, no email)", async () => {
+    const id = await ticket({ priority: 'High', ago: 3 * HOUR })
+    const summary = await run({
+      hooks: {
+        beforeRecord: async () => {
+          await pool.query("INSERT INTO ticket_escalations (ticket_id, kind, sent_at) VALUES (?, 'unassigned', ?)", [
+            id,
+            NOW,
+          ])
+        },
+      },
+    })
+    expect(summary).toMatchObject({ unassigned: 0, emailed: 0 })
+    expect(await smtp.getMails()).toEqual([])
+  })
+
+  test('the urgent ranks: with one priority level it alone is urgent; with none nothing is', async () => {
+    const id = await ticket({ priority: 'Low', ago: 3 * HOUR })
+    const priorities = jest.spyOn(settings, 'allPriorities')
+    priorities.mockResolvedValueOnce([{ id: level.Low, rank: 1 }])
+    expect((await run()).ids.unassigned).toEqual([id])
+    await pool.query('DELETE FROM ticket_escalations')
+    priorities.mockResolvedValueOnce([])
+    expect((await run()).ids.unassigned).toEqual([])
+  })
+
+  test('with every default (real clock, console, no hooks)', async () => {
+    const lines = jest.spyOn(console, 'log').mockImplementation(() => {})
+    const summary = await runEscalation()
+    expect(summary.skipped).toBeNull()
+    expect(lines).toHaveBeenCalledWith(expect.stringMatching(/^\[escalation\] Done: /))
+  })
+
+  test('PATCH escalation_enabled: true switches it back on', async () => {
+    const session = await loginAs(admin)
+    await api.patch('/api/settings').set(auth(session)).send({ escalation_enabled: false })
+    const on = await api.patch('/api/settings').set(auth(session)).send({ escalation_enabled: true })
+    expect(on.body.escalation_enabled).toBe(true)
+  })
+
+  test('the schedule with the process environment: every 5 minutes', () => {
+    expect(escalationIntervalMinutes()).toBe(5)
+    const log = { log: jest.fn(), error: jest.fn() }
+    const job = startEscalationSchedule({ log })
+    try {
+      expect(log.log).toHaveBeenCalledWith(expect.stringMatching(/^\[escalation\] Every 5 minutes; next run: /))
+    } finally {
+      job.stop()
+    }
+  })
+
+  test('ages as people read them', () => {
+    expect(templates.age(-5000)).toBe('0 min')
+    expect(templates.age(45 * MINUTE)).toBe('45 min')
+    expect(templates.age(3 * HOUR)).toBe('3 h')
+    expect(templates.age(3 * HOUR + 5 * MINUTE)).toBe('3 h 5 min')
+    expect(templates.age(72 * HOUR)).toBe('3 days')
+    expect(templates.age(98 * HOUR)).toBe('4 days 2 h')
   })
 })
