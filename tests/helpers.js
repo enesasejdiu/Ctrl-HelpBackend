@@ -36,6 +36,7 @@ async function resetData() {
       'comments',
       'tickets',
       'kb_articles',
+      'canned_responses',
       'kb_categories',
       'users',
       'departments',

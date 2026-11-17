@@ -154,8 +154,8 @@ describe('schema', () => {
 })
 
 describe('up → down → up', () => {
-  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 021 down to 003
-  test('rolling back 021, 020, 019, 018, 017, 016, 015, 014, 013, 012, 011, 010, 009, 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
+  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 022 down to 003
+  test('rolling back 022, 021, 020, 019, 018, 017, 016, 015, 014, 013, 012, 011, 010, 009, 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
     const { db, dbName } = await newDatabase()
     const schema = async () => {
       const tables = {}
@@ -171,7 +171,7 @@ describe('up → down → up', () => {
       (await db.query('SELECT filename FROM schema_migrations ORDER BY filename'))[0].map((r) => r.filename)
 
     const before = await schema()
-    for (let i = 0; i < 19; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
+    for (let i = 0; i < 20; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
     expect(await applied()).toEqual(['001_initial.sql', '002_hr_role_and_password_change.sql'])
     const [departments] = await db.query("SHOW TABLES LIKE 'departments'")
     expect(departments).toHaveLength(0)
@@ -184,6 +184,7 @@ describe('up → down → up', () => {
       'ticket_escalations',
       'kb_articles',
       'kb_categories',
+      'canned_responses',
     ]) {
       const [tokens] = await db.query(`SHOW TABLES LIKE '${table}'`)
       expect(tokens).toHaveLength(0)
@@ -191,7 +192,31 @@ describe('up → down → up', () => {
 
     await quietly(() => migrate({ dbName, backupFirst: false }))
     expect(await schema()).toEqual(before)
-    expect((await applied()).at(-1)).toBe('021_ticket_search_index.sql')
+    expect((await applied()).at(-1)).toBe('022_canned_responses.sql')
+  })
+
+  test('022 adds canned_responses: unique titles per scope (shared, or per owner), ignoring case; rolling it back removes only it', async () => {
+    const { db, dbName } = await newDatabase('022')
+    const [indexes] = await db.query('SHOW INDEX FROM canned_responses')
+    const byName = (name) => indexes.filter((index) => index.Key_name === name).map((index) => index.Column_name)
+    expect(byName('uq_canned_responses_scope_title')).toEqual(['scope_key', 'title'])
+    expect(byName('idx_canned_responses_owner_title')).toEqual(['owner_id', 'title'])
+
+    const [{ insertId: owner }] = await db.query(
+      "INSERT INTO users (name, email, password_hash, role) VALUES ('Owner', 'owner@test.local', 'x', 'agent')",
+    )
+    const insert = (title, ownerId) =>
+      db.query("INSERT INTO canned_responses (title, body, owner_id) VALUES (?, 'x', ?)", [title, ownerId])
+    await insert('Greeting', null)
+    // A second shared "greeting" is refused (NULL owners alone would not be equal; scope_key makes them)
+    await expect(insert('GREETING', null)).rejects.toMatchObject({ code: 'ER_DUP_ENTRY' })
+    // A personal one with the same title is fine, but not twice for the same owner
+    await insert('Greeting', owner)
+    await expect(insert('greeting', owner)).rejects.toMatchObject({ code: 'ER_DUP_ENTRY' })
+
+    await quietly(() => rollback({ dbName, backupFirst: false }))
+    expect((await db.query("SHOW TABLES LIKE 'canned_responses'"))[0]).toHaveLength(0)
+    expect((await db.query("SHOW INDEX FROM tickets WHERE Key_name = 'ft_tickets_search'"))[0]).toHaveLength(2)
   })
 
   test('021 adds the FULLTEXT index over tickets (title, description); rolling it back removes only it', async () => {

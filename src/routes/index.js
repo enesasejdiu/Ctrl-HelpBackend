@@ -15,4 +15,5 @@ module.exports = [
   ['/api/settings', require('./settings').company],
   ['/api/kb', require('./kb')],
   ['/api/search', require('./search')],
+  ['/api/canned-responses', require('./cannedResponses')],
 ]

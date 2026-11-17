@@ -38,6 +38,11 @@ const AUDIT_ACTIONS = [
   'kb.category_created',
   'kb.category_updated',
   'kb.category_deleted',
+  // Shared canned responses (routes/cannedResponses.js), by admins; personal ones are not logged. details:
+  // { canned_response_id, title } (+ fields: [...] for an update: which fields changed, never the text)
+  'canned.shared_created',
+  'canned.shared_updated',
+  'canned.shared_deleted',
 ]
 
 // Keys that could carry a secret; never stored, whatever a caller passes
