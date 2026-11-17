@@ -10,6 +10,7 @@ const { requireAuth, requireRole, isStaff } = require('../middleware/auth')
 const validate = require('../middleware/validate')
 const schemas = require('../schemas/kb')
 const { recordAudit } = require('../audit')
+const { logger } = require('../logger')
 const { orderBySql, KB_ARTICLE_SORTS, DEFAULT_PAGE_SIZE } = require('../pagination')
 const {
   RESERVED_ARTICLE_SLUGS,
@@ -274,6 +275,22 @@ router.post('/articles', staffOnly, check(schemas.createArticle), async (req, re
 
 // The fields PATCH can change, and their columns
 const ARTICLE_FIELDS = ['title', 'slug', 'summary', 'body', 'category_id']
+// The ones in the FULLTEXT index (ft_kb_articles)
+const SEARCHED_FIELDS = ['title', 'summary', 'body']
+
+// InnoDB's full-text index keeps a deleted article's words in its statistics until the table is rebuilt, and an edit
+// to an indexed column counts as a delete plus an insert. So every save made the article's own words look more
+// common, and relevance drifted down (5 saves took a perfect match from 1.95 to 0.04): search results lost their
+// order, and suggestions (src/search.js, MIN_RELEVANCE) lost the article. OPTIMIZE TABLE rebuilds kb_articles and
+// clears them; for InnoDB it's an online rebuild (reads and writes go on), quick for a table of help articles, and
+// needs no server setting. A failure is logged and never fails the save.
+async function refreshSearchIndex() {
+  try {
+    await pool.query('OPTIMIZE TABLE kb_articles')
+  } catch (err) {
+    logger.warn({ err }, 'kb: rebuilding the search index failed; relevance may drift until the next rebuild')
+  }
+}
 
 // PATCH /api/kb/articles/:id { updated_at, title?, slug?, summary?, body?, category_id?, status? } (staff) → the
 // article. updated_at is the one the client loaded: a different one in the database means someone else saved in
@@ -348,6 +365,7 @@ router.patch('/articles/:id', staffOnly, check(schemas.updateArticle), async (re
     conn.release()
   }
 
+  if (changed.some((field) => SEARCHED_FIELDS.includes(field))) await refreshSearchIndex()
   const article = await findArticle('id', id)
   if (changed.length > 0) {
     await recordAudit('kb.article_updated', {
@@ -368,6 +386,7 @@ router.delete('/articles/:id', adminOnly, check(schemas.articleParams), async (r
   const article = await findArticle('id', req.valid.params.id)
   if (!article) throw new HttpError(404, 'Article not found')
   await pool.query('DELETE FROM kb_articles WHERE id = ?', [article.id])
+  await refreshSearchIndex()
   await recordAudit('kb.article_deleted', { actorId: req.user.id, details: articleDetails(article), req })
   res.status(204).end()
 })

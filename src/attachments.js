@@ -15,6 +15,7 @@ const fsSync = require('fs')
 const fs = require('fs/promises')
 const path = require('path')
 const { isStaff } = require('./middleware/auth')
+const { canSeeTicket } = require('./ticketVisibility')
 
 const { DEFAULT_MAX_FILE_BYTES, maxFileBytes, parseMaxFileBytes, formatBytes } = require('./attachmentLimit')
 
@@ -143,12 +144,6 @@ async function removeFile(storedName) {
   }
 }
 
-// Who may see a ticket (and so its attachments): staff (agents and admins) see every ticket, everyone else only the
-// ones they raised. The same rule as GET /api/tickets/:id.
-function canSeeTicket(user, requesterId) {
-  return isStaff(user) || requesterId === user.id
-}
-
 // Who may see one attachment: whoever may see its ticket, except that a file added with an internal note is staff-only
 // like the note itself (GET /api/tickets/:id hides internal notes from everyone else)
 function canSeeAttachment(user, attachment, requesterId) {
@@ -213,7 +208,6 @@ module.exports = {
   sha256,
   storeFile,
   removeFile,
-  canSeeTicket,
   canSeeAttachment,
   canDeleteAttachment,
   ATTACHMENT_SELECT,

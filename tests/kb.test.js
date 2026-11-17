@@ -681,3 +681,47 @@ test('an article body of 100,000 multi-byte characters (well over the API-wide 1
   })
   expectError(ticket, 413, 'PAYLOAD_TOO_LARGE', 'Request body is too large (at most 100 KB)')
 })
+
+describe('the search index stays accurate after edits and deletes', () => {
+  // InnoDB counts deleted (and edited) articles' words until kb_articles is rebuilt, which made relevance drift down
+  // with every save; routes/kb.js rebuilds it after a change to the searched text and after a delete
+  const relevance = async (id) =>
+    (
+      await pool.query(
+        "SELECT MATCH(title, summary, body) AGAINST ('printer not working' IN NATURAL LANGUAGE MODE) AS r FROM kb_articles WHERE id = ?",
+        [id],
+      )
+    )[0][0].r
+
+  test('five edits of the text, and deleted look-alikes, leave the score where it was', async () => {
+    const { as } = await setup()
+    const { id: categoryId } = await category(as)
+    for (const title of ['Reset your password', 'Set up email', 'Book a room', 'Use the shared drive']) {
+      await article(as, { title, category_id: categoryId, status: 'published' })
+    }
+    const printer = await article(as, {
+      title: 'Printer not printing',
+      summary: 'Check the print queue and restart the printer.',
+      body: 'Open the print queue, cancel stuck jobs, then turn the printer off and on.',
+      category_id: categoryId,
+      status: 'published',
+    })
+    const before = await relevance(printer.id)
+    expect(before).toBeGreaterThan(1)
+
+    let updatedAt = printer.updated_at
+    for (let i = 1; i <= 5; i += 1) {
+      const res = await as('agent').patch(`/api/kb/articles/${printer.id}`, {
+        updated_at: updatedAt,
+        body: `Open the print queue, cancel stuck jobs, then turn the printer off and on. (edit ${i})`,
+      })
+      expect(res.status).toBe(200)
+      updatedAt = res.body.updated_at
+    }
+    for (let i = 1; i <= 3; i += 1) {
+      const copy = await article(as, { title: `Printer copy ${i}`, body: 'Printer printer.', category_id: categoryId })
+      expect((await as('admin').delete(`/api/kb/articles/${copy.id}`)).status).toBe(204)
+    }
+    expect(await relevance(printer.id)).toBeCloseTo(before, 1)
+  })
+})
