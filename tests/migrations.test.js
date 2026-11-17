@@ -154,8 +154,8 @@ describe('schema', () => {
 })
 
 describe('up → down → up', () => {
-  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 018 down to 003
-  test('rolling back 018, 017, 016, 015, 014, 013, 012, 011, 010, 009, 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
+  // 001 and 002 have no rollback file (db:rollback refuses them), so the round trip covers 019 down to 003
+  test('rolling back 019, 018, 017, 016, 015, 014, 013, 012, 011, 010, 009, 008, 007, 006, 005, 004 and 003, then migrating again, gives back the same schema', async () => {
     const { db, dbName } = await newDatabase()
     const schema = async () => {
       const tables = {}
@@ -171,22 +171,29 @@ describe('up → down → up', () => {
       (await db.query('SELECT filename FROM schema_migrations ORDER BY filename'))[0].map((r) => r.filename)
 
     const before = await schema()
-    for (let i = 0; i < 16; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
+    for (let i = 0; i < 17; i += 1) await quietly(() => rollback({ dbName, backupFirst: false }))
     expect(await applied()).toEqual(['001_initial.sql', '002_hr_role_and_password_change.sql'])
     const [departments] = await db.query("SHOW TABLES LIKE 'departments'")
     expect(departments).toHaveLength(0)
-    for (const table of ['password_setup_tokens', 'password_tokens', 'attachments', 'settings', 'ticket_ratings']) {
+    for (const table of [
+      'password_setup_tokens',
+      'password_tokens',
+      'attachments',
+      'settings',
+      'ticket_ratings',
+      'ticket_escalations',
+    ]) {
       const [tokens] = await db.query(`SHOW TABLES LIKE '${table}'`)
       expect(tokens).toHaveLength(0)
     }
 
     await quietly(() => migrate({ dbName, backupFirst: false }))
     expect(await schema()).toEqual(before)
-    expect((await applied()).at(-1)).toBe('018_attachment_hash_and_comment.sql')
+    expect((await applied()).at(-1)).toBe('019_ticket_escalations.sql')
   })
 
   test('018 adds sha256 and comment_id to attachments, and rolling it back removes only them', async () => {
-    const { db, dbName } = await newDatabase()
+    const { db, dbName } = await newDatabase('018')
     const columns = async () => (await db.query('SHOW COLUMNS FROM attachments'))[0].map((column) => column.Field)
     expect(await columns()).toEqual(expect.arrayContaining(['sha256', 'comment_id']))
     await quietly(() => rollback({ dbName, backupFirst: false }))
@@ -202,6 +209,27 @@ describe('up → down → up', () => {
         'created_at',
       ].sort(),
     )
+  })
+
+  test('019 adds ticket_escalations and the two settings (keeping values already set); rolling it back removes them', async () => {
+    const { db, dbName } = await newDatabase('018')
+    await db.query("INSERT INTO settings (setting_key, setting_value) VALUES ('escalation_unassigned_minutes', '45')")
+    await quietly(() => migrate({ dbName, backupFirst: false, until: '019' }))
+    const setting = async (key) =>
+      (await db.query('SELECT setting_value FROM settings WHERE setting_key = ?', [key]))[0][0]?.setting_value
+    expect(await setting('escalation_enabled')).toBe('true')
+    expect(await setting('escalation_unassigned_minutes')).toBe('45')
+    const [columns] = await db.query('SHOW COLUMNS FROM ticket_escalations')
+    expect(columns.map((c) => c.Field)).toEqual(['id', 'ticket_id', 'kind', 'sent_at'])
+    const [[unique]] = await db.query(
+      "SHOW INDEX FROM ticket_escalations WHERE Key_name = 'uq_ticket_escalations_ticket_kind' AND Seq_in_index = 2",
+    )
+    expect([unique.Column_name, Number(unique.Non_unique)]).toEqual(['kind', 0])
+
+    await quietly(() => rollback({ dbName, backupFirst: false }))
+    expect((await db.query("SHOW TABLES LIKE 'ticket_escalations'"))[0]).toHaveLength(0)
+    expect(await setting('escalation_enabled')).toBeUndefined()
+    expect(await setting('escalation_unassigned_minutes')).toBeUndefined()
   })
 
   test('011 keeps the links issued under 010 as setup links; rolling it back drops only reset links', async () => {

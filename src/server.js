@@ -52,12 +52,14 @@ const server = app.listen(PORT, (err) => {
 const sessionCleanup = startSessionCleanup({ log })
 // Closes tickets resolved for auto_close_days, every day at 03:00 Europe/Budapest (src/jobs/schedule.js)
 const autoClose = require('./jobs/schedule').startAutoCloseSchedule({ log })
+// Escalation emails to the admins, every 5 minutes (src/jobs/escalation.js)
+const escalation = require('./jobs/schedule').startEscalationSchedule({ log })
 // The same for password links used or expired more than 7 days ago (see src/passwordTokens.js)
 const pool = require('./db')
 const tokenCleanup = require('./passwordTokens').startPasswordTokenCleanup(pool, { log })
 
 // SIGTERM (docker stop) or SIGINT (Ctrl+C): finish open requests, close the database pool, exit 0 (src/shutdown.js)
 require('./shutdown').handleShutdownSignals(
-  { server, pool, timers: [sessionCleanup, tokenCleanup], jobs: [autoClose] },
+  { server, pool, timers: [sessionCleanup, tokenCleanup], jobs: [autoClose, escalation] },
   { log },
 )

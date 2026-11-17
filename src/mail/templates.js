@@ -81,6 +81,20 @@ function render({ subject, greetingName, blocks, reason, company = DEFAULT_COMPA
         `<blockquote style="margin:0 0 16px;padding:8px 12px;border-left:3px solid #c7d2fe;color:#374151">` +
           `${escapeHtml(block.quote).replace(/\r?\n/g, '<br>')}</blockquote>`,
       )
+    } else if (block.items !== undefined) {
+      // A list of links: [{ label, link }]
+      textParts.push(block.items.map((item) => `- ${item.label}\n  ${item.link}`).join('\n'))
+      htmlParts.push(
+        `<ul style="margin:0 0 16px;padding-left:20px">` +
+          block.items
+            .map(
+              (item) =>
+                `<li style="margin:0 0 6px"><a href="${escapeHtml(item.link)}" style="color:#4f46e5">` +
+                `${escapeHtml(item.label)}</a></li>`,
+            )
+            .join('') +
+          `</ul>`,
+      )
     } else if (block.button !== undefined) {
       textParts.push(`${block.button}: ${block.link}`)
       htmlParts.push(
@@ -210,7 +224,62 @@ function ticketResolved({ recipientName, ticket, actor, link, company }) {
   })
 }
 
+// How long ago, for people: "45 min", "3 h 5 min", "2 days 4 h"
+function age(ms) {
+  const minutes = Math.max(0, Math.floor(ms / 60000))
+  if (minutes < 60) return `${minutes} min`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 48) return minutes % 60 ? `${hours} h ${minutes % 60} min` : `${hours} h`
+  const days = Math.floor(hours / 24)
+  return hours % 24 ? `${days} days ${hours % 24} h` : `${days} days`
+}
+
+// "2 urgent tickets unassigned, 3 tickets overdue" (only the kinds that have tickets)
+function escalationCounts({ unassigned, overdue }) {
+  const s = strings.escalation
+  const count = (forms, n) => fill(n === 1 ? forms.one : forms.other, { count: n })
+  return [
+    ...(unassigned.length ? [count(s.unassigned, unassigned.length)] : []),
+    ...(overdue.length ? [count(s.overdue, overdue.length)] : []),
+  ].join(', ')
+}
+
+// The escalation summary to one admin. unassigned / overdue: tickets { id, title, priority_name, requester_name,
+// created_at }; now: the job's clock; links built from APP_URL by the caller (ticketLink(id)).
+function escalationSummary({ recipientName, unassigned, overdue, unassignedMinutes, now, ticketLink, company }) {
+  const s = strings.escalation
+  const list = escalationCounts({ unassigned, overdue })
+  const items = (tickets) =>
+    tickets.map((ticket) => ({
+      label: fill(s.item, {
+        id: ticket.id,
+        title: oneLine(ticket.title, SUBJECT_TITLE_LENGTH),
+        priority: ticket.priority_name,
+        age: age(now.getTime() - new Date(ticket.created_at).getTime()),
+        requester: ticket.requester_name,
+      }),
+      link: ticketLink(ticket.id),
+    }))
+  return render({
+    subject: fill(s.subject, { list }),
+    greetingName: recipientName,
+    blocks: [
+      { text: fill(s.intro, { list }) },
+      ...(unassigned.length
+        ? [{ text: fill(s.unassignedHeading, { minutes: unassignedMinutes }) }, { items: items(unassigned) }]
+        : []),
+      ...(overdue.length ? [{ text: s.overdueHeading }, { items: items(overdue) }] : []),
+      { text: s.once },
+    ],
+    reason: s.reason,
+    company,
+  })
+}
+
 module.exports = {
+  escalationSummary,
+  escalationCounts,
+  age,
   passwordLink,
   passwordChanged,
   ticketCreated,

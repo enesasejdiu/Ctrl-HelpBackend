@@ -403,6 +403,7 @@ describe('GET /api/audit/actions', () => {
       'attachment_uploaded',
       'attachment_deleted',
       'ticket_auto_closed',
+      'ticket_escalated',
     ])
     expect(res.body).toEqual(AUDIT_ACTIONS)
   })

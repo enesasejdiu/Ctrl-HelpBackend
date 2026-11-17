@@ -25,6 +25,9 @@ const AUDIT_ACTIONS = [
   'attachment_deleted', // details: { ticket_id, file_name, size_bytes } (never the file's content)
   // The daily job closed a ticket resolved for auto_close_days. actor null (the system); ticket_id set; details: { days }
   'ticket_auto_closed',
+  // The escalation job told the admins about a ticket (src/jobs/escalation.js). actor null; ticket_id set;
+  // details: { kind: unassigned | overdue }
+  'ticket_escalated',
 ]
 
 // Keys that could carry a secret; never stored, whatever a caller passes
