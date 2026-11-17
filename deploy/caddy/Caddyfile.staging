@@ -1,0 +1,9 @@
+# The local staging stack's Caddyfile (docker-compose.staging.yml): the normal one (Caddyfile, mounted as
+# Caddyfile.base) plus one thing. Caddy listens on 8443 inside and out, but http:// arrives on port 80 inside (8880
+# outside), and Caddy's own redirect would send it to https://<host>/ without the :8443. This explicit http:// site
+# sends it to CLIENT_URL (https://ticketflow.localhost:8443) instead, keeping the path and query.
+import Caddyfile.base
+
+http:// {
+	redir {$CLIENT_URL}{uri} permanent
+}

@@ -1,0 +1,33 @@
+# The local staging stack (docs/staging-check.md): the whole app in production mode, as on a server, on one computer.
+# On top of docker-compose.yml and docker-compose.https.caddy.yml (Aulona's HTTPS setup, docs/https.md), only what
+# differs for a local stack:
+#   - Caddy on ports 8880/8443 instead of 80/443 (a web server already running on the machine, e.g. XAMPP, keeps those),
+#     with DOMAIN=ticketflow.localhost:8443: a *.localhost name, so Caddy uses its own local CA, never Let's Encrypt;
+#   - caddy/Caddyfile.staging: the same Caddyfile, plus an http:// redirect that keeps the :8443 port;
+#   - Mailpit, a test inbox: the API's emails (SMTP_HOST=mailpit) are caught there instead of reaching anyone.
+#
+#   cd deploy && ./make-env.sh staging.env --staging
+#   docker compose -p ticketflow-staging --env-file staging.env \
+#     -f docker-compose.yml -f docker-compose.https.caddy.yml -f docker-compose.staging.yml up --build -d --wait
+#   ./staging-check.sh
+# Never on a server: there use docker-compose.https.caddy.yml alone (docs/DEPLOY.md).
+services:
+  caddy:
+    ports: !override
+      - '8880:80' # http → https://…:8443
+      - '8443:8443'
+      - '8443:8443/udp'
+    environment:
+      CLIENT_URL: ${CLIENT_URL:?Set CLIENT_URL in staging.env} # where http:// redirects to, with its port
+    volumes: !override
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile.base:ro
+      - ./caddy/Caddyfile.staging:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+  # Mailpit catches every email (any domain); read them at http://127.0.0.1:8025 or through its API
+  mailpit:
+    image: axllent/mailpit:v1.27.11
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:${MAILPIT_PORT:-8025}:8025'

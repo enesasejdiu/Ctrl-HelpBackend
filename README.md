@@ -194,6 +194,10 @@ CI builds the image on every push and pull request (the "Docker image" job), wit
 
 ## Run with Docker Compose
 
+For a real server (a domain, HTTPS with Let's Encrypt, firewall, off-server backups) follow
+[docs/DEPLOY.md](docs/DEPLOY.md); HTTPS itself is [docs/https.md](docs/https.md). The local production-mode staging
+stack (`deploy/staging-up.sh`) and its end-to-end check are in [docs/staging-check.md](docs/staging-check.md).
+
 [`deploy/docker-compose.yml`](deploy/docker-compose.yml) runs the whole app on one machine: **db** (MySQL 8.4),
 **api** (this repository's [Dockerfile](#docker)) and **web** (the frontend repository's Dockerfile: nginx serving the
 app and passing `/api` on to the API). Only **web** is reachable from outside, on port 8080; the database and the API
