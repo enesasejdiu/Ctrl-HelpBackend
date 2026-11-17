@@ -140,3 +140,4 @@ requireAuth checks the current role and active status in the database on every r
 - [x] Error tracking with Sentry (optional, off without a DSN)
 - [x] Escalation emails for urgent unassigned and overdue tickets (backend)
 - [x] Knowledge base API: categories and Markdown articles, drafts and publishing, FULLTEXT search, edit-conflict check (backend)
+- [x] Search suggestions while a ticket title is typed: GET /api/search/suggestions (open tickets the user may see, published articles, minimum relevance, 30/min per user), FULLTEXT index on tickets (migration 021)

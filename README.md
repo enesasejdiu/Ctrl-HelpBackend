@@ -1417,6 +1417,74 @@ fields that changed), `kb.article_published`, `kb.article_unpublished`, `kb.arti
 
 The demo data (`db:seed`) has four categories and four articles, one of them a draft.
 
+## Similar tickets and articles
+
+While someone types a new ticket's title, the New ticket form asks for open tickets and help articles that look like
+it, so an existing answer can be found before submitting (migration 021, `src/search.js`, `src/routes/search.js`).
+
+### `GET /api/search/suggestions?q=`
+
+Logged in, any role. A read: nothing goes to the audit log.
+
+- **`q`** is trimmed. Under 3 characters → `200 { "tickets": [], "articles": [] }` (nothing is searched); over 200
+  characters, or given twice → 422.
+- **`tickets`**: at most 5, **open only** (`open`, `assigned`, `in_progress`, `waiting_for_user`, `reopened`; never
+  `resolved` or `closed`), and **only tickets the user may see**: employees and HR their own, staff (agents and
+  admins) all. The rule is part of the SQL (`src/ticketVisibility.js`, the same one the ticket list and ticket page
+  use), so nothing else is ever read. Fields: `id`, `number` (the id: tickets are shown as `#42`), `title`, `status`,
+  `updated_at`. No description, requester or comments.
+- **`articles`**: at most 5, **published only** (drafts never, not even for staff). Fields: `slug`, `title`,
+  `summary` (the article's own, or the first 200 characters of its text as plain text).
+- **Rate limit:** 30 requests a minute per user (not per address), then `429 { "code": "RATE_LIMITED" }` with
+  `Retry-After`. The form asks once per pause in typing, far below this.
+
+```http
+GET /api/search/suggestions?q=printer%20not%20working
+```
+
+```json
+{
+  "tickets": [
+    {
+      "id": 42,
+      "number": 42,
+      "title": "Printer on floor 2 not printing",
+      "status": "in_progress",
+      "updated_at": "2026-11-15T09:12:40.000Z"
+    }
+  ],
+  "articles": [
+    {
+      "slug": "printer-not-printing",
+      "title": "Printer not printing",
+      "summary": "Check the print queue, then restart the printer."
+    }
+  ]
+}
+```
+
+```json
+422 { "message": "Search for at most 200 characters", "errors": [{ "field": "q", "message": "Search for at most 200 characters" }] }
+429 { "message": "Too many searches. Wait a minute and try again.", "code": "RATE_LIMITED" }
+```
+
+### How matching works
+
+- MySQL/MariaDB full-text search, `MATCH … AGAINST (? IN NATURAL LANGUAGE MODE)`: over tickets' `title` and
+  `description` (index `ft_tickets_search`, migration 021) and articles' `title`, `summary` and `body` (index
+  `ft_kb_articles`, migration 020). Best match first; ties by the most recently updated (tickets) or published
+  (articles).
+- **Minimum relevance: `0.2`** (`MIN_RELEVANCE` in `src/search.js`), so unrelated items don't show up. InnoDB scores
+  a row as the sum, over the search words it contains, of _(times the word is in the row) × IDF²_, with
+  _IDF = log10(rows in the table ÷ rows containing the word)_: rare words count for a lot, common ones for almost
+  nothing. With 0.2, a word that is in more than about a third of the rows can't make a match on its own (once), so
+  words that nearly every ticket has ("not", "working", "computer") don't pull in unrelated tickets. Tuned with the
+  data in `tests/suggestions.test.js` (14 everyday tickets, 9 articles); because the score depends on how many rows
+  there are, a very small table (a handful of articles) gives lower scores, and a word in half of them won't match.
+- **Server settings are left as they are**, so: words shorter than `innodb_ft_min_token_size` (3 by default) and
+  InnoDB's stopwords ("the", "is", "for", "with", …) are never matched; a title made only of those finds nothing.
+  Changing those settings needs a server restart and an index rebuild, so this app doesn't.
+
 ## Audit log
 
 Security events are recorded in the `audit_log` table (migration 009) and shown to **admins** by two endpoints.
@@ -1788,6 +1856,7 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | POST   | `/api/kb/articles`                | agent, admin | `{ title, summary?, body, category_id, status? }` → 201                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | PATCH  | `/api/kb/articles/:id`            | agent, admin | `{ updated_at, … }` → the article (409 `ARTICLE_CHANGED` / `SLUG_FIXED` / `SLUG_TAKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | DELETE | `/api/kb/articles/:id`            | admin        | → 204                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| GET    | `/api/search/suggestions`         | logged in    | `?q=` (3–200 characters) → `{ tickets, articles }`: up to 5 open tickets the user may see and 5 published articles like `q`; 30 a minute per user. See [Similar tickets and articles](#similar-tickets-and-articles)                                                                                                                                                                                                                                                                                                          |
 
 A Postman collection with every request is in [`docs/TicketFlow.postman_collection.json`](docs/TicketFlow.postman_collection.json).
 Import it, run one of the **Login** requests (Postman keeps the session cookies, and the collection sends `tf_csrf` as
@@ -1829,6 +1898,8 @@ src/
   overdue.js              The shared "is this ticket overdue?" SQL rule
   pagination.js           Paging and sorting for the lists (tickets, users, knowledge-base articles): sort allow-lists, page + count
   kb.js                   Knowledge base: slugs (transliterated, deduplicated), excerpts, the shared article queries
+  search.js               Similar open tickets and help articles for a title (full-text, minimum relevance)
+  ticketVisibility.js     Which tickets a user may see: one rule, as a check and as SQL
   temporaryPassword.js    Random temporary passwords for password resets
   ticketStatus.js         What a status change does to resolved_at and closed_at (every route and job uses it)
   jobs/
@@ -1857,6 +1928,7 @@ src/
     stats.js              /api/stats: dashboard statistics
     departments.js        /api/departments: list, create, rename, delete
     kb.js                 /api/kb: knowledge-base categories and articles (read, search, write, publish)
+    search.js             /api/search/suggestions: similar tickets and articles while a ticket title is typed
 tests/
   globalSetup.js          Creates the throwaway test database before all tests
   globalTeardown.js       Drops it after all tests
