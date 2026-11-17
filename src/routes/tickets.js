@@ -16,7 +16,8 @@ const { addComment } = require('../schemas/comments')
 const notify = require('../mail/notifications')
 const { statusSets } = require('../ticketStatus')
 const settings = require('../settings')
-const { canSeeTicket, listAttachments } = require('../attachments')
+const { listAttachments } = require('../attachments')
+const { canSeeTicket, visibleTicketsSql } = require('../ticketVisibility')
 const { receiveFiles, uploadAttachments, listTicketAttachments } = require('./attachments')
 
 const router = express.Router()
@@ -79,9 +80,10 @@ router.get('/', validate(schemas.listTickets), async (req, res) => {
   const where = []
   const params = []
 
-  if (!isStaff(req.user)) {
-    where.push('t.requester_id = ?')
-    params.push(req.user.id)
+  const visible = visibleTicketsSql(req.user)
+  if (visible.sql) {
+    where.push(visible.sql)
+    params.push(...visible.params)
   }
   if (status) {
     where.push('t.status = ?')
