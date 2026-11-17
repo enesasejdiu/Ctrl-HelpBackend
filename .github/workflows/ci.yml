@@ -131,11 +131,17 @@ jobs:
         run: |
           sed -E 's/^(MYSQL_ROOT_PASSWORD|DB_PASSWORD|JWT_SECRET|BACKUP_PASSWORD)=$/\1=ci-placeholder/' deploy/.env.example > "$RUNNER_TEMP/compose.env"
           docker compose -f deploy/docker-compose.yml --env-file "$RUNNER_TEMP/compose.env" config --quiet
+          # The local staging stack (docs/staging-check.md): the same files plus docker-compose.staging.yml
+          printf 'DOMAIN=ticketflow.localhost:8443\nACME_EMAIL=admin@example.com\n' >> "$RUNNER_TEMP/compose.env"
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.https.caddy.yml \
+            -f deploy/docker-compose.staging.yml --env-file "$RUNNER_TEMP/compose.env" config --quiet
 
       # The backup service's scripts (deploy/backup/backup.sh, deploy/mysql/backup-user.sh) and the HTTPS check
       # (deploy/check-https.sh); shellcheck is on the runner
       - name: Check the shell scripts
-        run: shellcheck deploy/backup/backup.sh deploy/mysql/backup-user.sh deploy/check-https.sh
+        run: |
+          shellcheck deploy/backup/backup.sh deploy/mysql/backup-user.sh deploy/check-https.sh \
+            deploy/make-env.sh deploy/staging-up.sh deploy/staging-check.sh
 
       # The size, so a sudden jump shows up in the log
       - name: Show the image size
