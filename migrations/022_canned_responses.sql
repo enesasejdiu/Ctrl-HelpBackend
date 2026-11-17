@@ -7,8 +7,9 @@
 --                (ids start at 1). Generated STORED column + UNIQUE: runs on MySQL 8/9 and MariaDB (as in 015).
 --   body         1-5,000 characters of plain text; {{placeholders}} are filled in by the frontend
 --   usage_count / last_used_at   counted when a response is inserted (POST /:id/used), for "most used first"
--- A personal response goes with its owner (ON DELETE CASCADE; accounts are deactivated, not deleted, in practice);
--- created_by / updated_by become NULL if that account is ever deleted.
+-- owner_id is a plain foreign key (no ON DELETE action, like tickets.requester_id): MySQL refuses CASCADE / SET NULL
+-- on a column a STORED generated column (scope_key) is built from. Accounts are deactivated, never deleted, so it
+-- never matters in practice. created_by / updated_by become NULL if that account is ever deleted.
 -- Undone by migrations/down/022_canned_responses.sql.
 CREATE TABLE IF NOT EXISTS canned_responses (
   id INT AUTO_INCREMENT PRIMARY KEY,
@@ -24,7 +25,7 @@ CREATE TABLE IF NOT EXISTS canned_responses (
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE INDEX uq_canned_responses_scope_title (scope_key, title),
   INDEX idx_canned_responses_owner_title (owner_id, title),
-  CONSTRAINT fk_canned_responses_owner FOREIGN KEY (owner_id) REFERENCES users (id) ON DELETE CASCADE,
+  CONSTRAINT fk_canned_responses_owner FOREIGN KEY (owner_id) REFERENCES users (id),
   CONSTRAINT fk_canned_responses_created_by FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE SET NULL,
   CONSTRAINT fk_canned_responses_updated_by FOREIGN KEY (updated_by) REFERENCES users (id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
