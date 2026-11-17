@@ -13,4 +13,5 @@ module.exports = [
   ['/api/categories', require('./settings').categories],
   ['/api/priorities', require('./settings').priorities],
   ['/api/settings', require('./settings').company],
+  ['/api/kb', require('./kb')],
 ]

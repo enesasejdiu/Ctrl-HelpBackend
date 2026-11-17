@@ -28,6 +28,16 @@ const AUDIT_ACTIONS = [
   // The escalation job told the admins about a ticket (src/jobs/escalation.js). actor null; ticket_id set;
   // details: { kind: unassigned | overdue }
   'ticket_escalated',
+  // Knowledge base (routes/kb.js), by staff. details: { article_id, slug, title } (+ fields: [...] for an update, which
+  // fields changed, not their values); for categories { category_id, name }
+  'kb.article_created',
+  'kb.article_updated',
+  'kb.article_published',
+  'kb.article_unpublished',
+  'kb.article_deleted',
+  'kb.category_created',
+  'kb.category_updated',
+  'kb.category_deleted',
 ]
 
 // Keys that could carry a secret; never stored, whatever a caller passes

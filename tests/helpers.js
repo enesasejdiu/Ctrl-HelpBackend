@@ -35,6 +35,8 @@ async function resetData() {
       'ticket_history',
       'comments',
       'tickets',
+      'kb_articles',
+      'kb_categories',
       'users',
       'departments',
     ]) {

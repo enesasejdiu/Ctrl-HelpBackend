@@ -51,10 +51,12 @@ function errorHandler(err, req, res, next) {
     logFailure(req, 400, err)
     return res.status(400).json({ message: 'Request body is not valid JSON' })
   }
-  // Bigger than the limit in app.js (express.json); the body is not read any further
+  // Bigger than the limit in app.js (express.json: 100 KB, 1 MB for /api/kb); the body is not read any further.
+  // err.limit is that parser's limit in bytes.
   if (err.type === 'entity.too.large') {
     logFailure(req, 413, err)
-    return res.status(413).json({ message: 'Request body is too large (at most 100 KB)', code: 'PAYLOAD_TOO_LARGE' })
+    const limit = err.limit >= 1024 * 1024 ? `${err.limit / (1024 * 1024)} MB` : `${Math.round(err.limit / 1024)} KB`
+    return res.status(413).json({ message: `Request body is too large (at most ${limit})`, code: 'PAYLOAD_TOO_LARGE' })
   }
 
   const status = err.status || 500

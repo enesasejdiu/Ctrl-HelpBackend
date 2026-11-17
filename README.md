@@ -1290,6 +1290,133 @@ is rated once, by its requester only (migration 017, table `ticket_ratings`).
 | 404    |                     | No such ticket                                                                                 |
 | 409    | `ALREADY_RATED`     | The ticket has a rating already, also after being reopened, or two requests raced              |
 
+## Knowledge base
+
+Help articles in categories (migration 020, `src/routes/kb.js`, `src/kb.js`). **Everyone signed in reads published
+articles. Staff (agents and admins) write them, publish and unpublish.** Only admins delete articles and categories;
+staff unpublish instead. HR is an employee here: a reader.
+
+- **Markdown, stored as written.** The API never turns it into HTML. The frontend renders it and sanitizes the result
+  (no raw HTML, scripts, iframes, images, or `javascript:` links).
+- **Slugs** are made from the title: lowercase `a-z`, `0-9` and dashes, letters with accents written plainly (`ë` → `e`,
+  `ç` → `c`), at most 220 characters, cut after a whole word. A slug already in use gets `-2`, `-3`, … An article's
+  slug can be changed while it's a draft that was **never published**; after the first publish it's fixed (409
+  `SLUG_FIXED`), so links keep working. The slugs `new`, `manage` and `search` are reserved for the frontend's own
+  pages: a title that would make one gets `-2`, and PATCH refuses them (422). Category slugs are made from the name
+  the same way, and follow a rename.
+- **Publishing** sets `published_at` the first time. Unpublishing keeps it, and publishing again keeps the first date.
+- **Two editors at once:** `PATCH` must send the `updated_at` it loaded. If someone saved in between, the answer is 409
+  `ARTICLE_CHANGED` with the current `updated_at`, and nothing is saved. `updated_at` is stored to the millisecond and
+  always moves forward on a save.
+- **Search** (`?q=`, 2–200 characters) uses MySQL/MariaDB FULLTEXT in natural-language mode over title, summary and
+  body, most relevant first. The text is a bound parameter: quotes and operators are just words. Like any FULLTEXT
+  search, words shorter than 3 characters and very common English words (stopwords) aren't indexed.
+- **Bodies are up to 100,000 characters**, so `/api/kb` accepts JSON bodies up to 1 MB (everything else: 100 KB).
+- Checks fail with **422** (not the usual 400), in the usual `{ message, errors: [{ field, message }] }` form; unknown
+  fields are refused by name. A draft or unknown slug is the same 404 for non-staff.
+
+| Method | Path                     | Who       | What it does                                                                                                                           |
+| ------ | ------------------------ | --------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/kb/categories`     | logged in | All categories by `sort_order`, then name, each with `published_count`                                                                 |
+| POST   | `/api/kb/categories`     | staff     | `{ name, sort_order? }` → 201 (name 1–60 characters, unique ignoring case: 409 `CATEGORY_EXISTS`)                                      |
+| PATCH  | `/api/kb/categories/:id` | staff     | `{ name?, sort_order? }` → the category (a new name gets a new slug)                                                                   |
+| DELETE | `/api/kb/categories/:id` | admin     | → 204, or 409 `CATEGORY_IN_USE` while any article (draft or published) is in it                                                        |
+| GET    | `/api/kb/articles`       | logged in | `?category=<slug>&q=&status=&page=&pageSize=&sort=&order=` → `{ items, total, page, pageSize }` (no `body`). Non-staff: published only |
+| GET    | `/api/kb/articles/:slug` | logged in | The article with `body`, `category`, `author`, `updated_by`; a draft is 404 for non-staff                                              |
+| POST   | `/api/kb/articles`       | staff     | `{ title, summary?, body, category_id, status? }` → 201 (draft unless `status: "published"`)                                           |
+| PATCH  | `/api/kb/articles/:id`   | staff     | `{ updated_at, title?, slug?, summary?, body?, category_id?, status? }` → the article. `status` publishes or unpublishes               |
+| DELETE | `/api/kb/articles/:id`   | admin     | → 204                                                                                                                                  |
+
+**Fields and limits:** `title` 5–200 characters; `summary` optional, at most 300 (empty means none); `body` Markdown,
+1–100,000 characters; `category_id` an existing category; `status` `draft` or `published`; `slug` (PATCH only)
+`a-z0-9` and single dashes, at most 220.
+
+**The list** (`GET /api/kb/articles`):
+
+- `status` (staff only): `draft`, `published`, or `all` (the default). For everyone else it's ignored: always
+  `published`, whatever was sent.
+- `category`: a category slug.
+- Sorts: `published_at` (newest first, drafts last; the default), `title`, `updated_at`. With `q` and no `sort`, by
+  relevance.
+- `pageSize` up to 100, default 25.
+- `summary` in a list item is the article's summary, or the first 200 characters of its text without Markdown.
+
+```http
+GET /api/kb/articles?q=vpn+password&pageSize=10
+```
+
+```json
+{
+  "items": [
+    {
+      "id": 3,
+      "slug": "vpn-says-authentication-failed",
+      "title": "VPN says \"Authentication failed\"",
+      "summary": "The VPN only picks up a new password after you sign out of Windows once.",
+      "category": { "id": 3, "name": "Network & VPN", "slug": "network-vpn" },
+      "status": "published",
+      "updated_at": "2026-11-12T09:14:05.123Z",
+      "published_at": "2026-11-12T09:14:05.000Z"
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 10
+}
+```
+
+**One article** (`GET /api/kb/articles/vpn-says-authentication-failed`):
+
+```json
+{
+  "id": 3,
+  "slug": "vpn-says-authentication-failed",
+  "title": "VPN says \"Authentication failed\"",
+  "summary": "The VPN only picks up a new password after you sign out of Windows once.",
+  "body": "This usually happens right after you changed your password.\n\n## Fix\n\n1. Save your work and **sign out** …",
+  "category": { "id": 3, "name": "Network & VPN", "slug": "network-vpn" },
+  "status": "published",
+  "published_at": "2026-11-12T09:14:05.000Z",
+  "created_at": "2026-11-12T09:14:05.000Z",
+  "updated_at": "2026-11-12T09:14:05.123Z",
+  "author": { "id": 2, "name": "Arben Krasniqi" },
+  "updated_by": { "id": 2, "name": "Arben Krasniqi" }
+}
+```
+
+**Saving** (`PATCH /api/kb/articles/3`), with the `updated_at` the editor loaded:
+
+```json
+{ "updated_at": "2026-11-12T09:14:05.123Z", "body": "…", "status": "published" }
+```
+
+If someone else saved first, the answer is 409, and nothing is saved:
+
+```json
+{
+  "message": "Someone else changed this article after you opened it",
+  "code": "ARTICLE_CHANGED",
+  "updated_at": "2026-11-12T10:02:41.507Z"
+}
+```
+
+| Status | `code`            | When                                                                          |
+| ------ | ----------------- | ----------------------------------------------------------------------------- |
+| 422    |                   | A field breaks a rule, an unknown field, a bad `q`, or (staff) a bad `status` |
+| 403    |                   | Not staff (writing), not admin (deleting)                                     |
+| 404    |                   | An unknown article or category; a draft, for non-staff                        |
+| 409    | `ARTICLE_CHANGED` | `updated_at` is not the one in the database                                   |
+| 409    | `SLUG_FIXED`      | A new slug for an article that has been published                             |
+| 409    | `SLUG_TAKEN`      | The slug belongs to another article                                           |
+| 409    | `CATEGORY_EXISTS` | A category name in use (ignoring case)                                        |
+| 409    | `CATEGORY_IN_USE` | Deleting a category that still has articles                                   |
+
+Every change is in the [audit log](#audit-log): `kb.article_created`, `kb.article_updated` (with the names of the
+fields that changed), `kb.article_published`, `kb.article_unpublished`, `kb.article_deleted`, and
+`kb.category_created`, `kb.category_updated`, `kb.category_deleted`. The body is never logged.
+
+The demo data (`db:seed`) has four categories and four articles, one of them a draft.
+
 ## Audit log
 
 Security events are recorded in the `audit_log` table (migration 009) and shown to **admins** by two endpoints.
@@ -1401,6 +1528,14 @@ Returns every action name as a JSON array of strings, in a sensible order for th
 | `user_deactivated`         | The account was deactivated                                                            | admin / HR       | the user                      | `null`                                                                                      |
 | `attachment_uploaded`      | A file was added to a ticket (one entry per file)                                      | the uploader     | `null`                        | `{ ticket_id, file_name, mime_type, size_bytes }` (never the content)                       |
 | `attachment_deleted`       | A file was deleted                                                                     | uploader / admin | `null`                        | `{ ticket_id, file_name, size_bytes }`                                                      |
+| `kb.article_created`       | A knowledge-base article was written (a draft, or published straight away)             | staff            | `null`                        | `{ article_id, slug, title }`                                                               |
+| `kb.article_updated`       | An article's title, slug, summary, body or category changed                            | staff            | `null`                        | `{ article_id, slug, title, fields }` (the names of the fields, never the body)             |
+| `kb.article_published`     | An article was published                                                               | staff            | `null`                        | `{ article_id, slug, title }`                                                               |
+| `kb.article_unpublished`   | An article went back to draft                                                          | staff            | `null`                        | `{ article_id, slug, title }`                                                               |
+| `kb.article_deleted`       | An article was deleted                                                                 | admin            | `null`                        | `{ article_id, slug, title }`                                                               |
+| `kb.category_created`      | A knowledge-base category was added                                                    | staff            | `null`                        | `{ category_id, name }`                                                                     |
+| `kb.category_updated`      | A category was renamed or moved                                                        | staff            | `null`                        | `{ category_id, name, fields }`                                                             |
+| `kb.category_deleted`      | A category was deleted                                                                 | admin            | `null`                        | `{ category_id, name }`                                                                     |
 
 A role or active-status change is logged as its own event, not as `user_updated`. Saving the role or status a user
 already has logs nothing, and neither does a refused request. Account changes are logged in the same transaction
@@ -1644,6 +1779,15 @@ aren't listed for an endpoint are refused. An empty filter (`?status=`) means no
 | PATCH  | `/api/priorities/:id`             | admin        | Any of `{ name, rank, target_hours, is_default, is_active }` (409 `PRIORITY_IS_DEFAULT`)                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | PUT    | `/api/priorities/order`           | admin        | `{ ids }` → ranks 1..n in that order (422 `INVALID_ORDER`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | DELETE | `/api/priorities/:id`             | admin        | → 204, or 409 `PRIORITY_IN_USE` / `PRIORITY_IS_DEFAULT`                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| GET    | `/api/kb/categories`              | logged in    | Knowledge-base categories with `published_count`. See [Knowledge base](#knowledge-base)                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| POST   | `/api/kb/categories`              | agent, admin | `{ name, sort_order? }` → 201 (409 `CATEGORY_EXISTS`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| PATCH  | `/api/kb/categories/:id`          | agent, admin | `{ name?, sort_order? }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| DELETE | `/api/kb/categories/:id`          | admin        | → 204, or 409 `CATEGORY_IN_USE`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| GET    | `/api/kb/articles`                | logged in    | `?category=&q=&status=&page=&pageSize=&sort=&order=` → `{ items, total, page, pageSize }` (non-staff: published only). See [Knowledge base](#knowledge-base)                                                                                                                                                                                                                                                                                                                                                                  |
+| GET    | `/api/kb/articles/:slug`          | logged in    | One article with its body (a draft: 404 for non-staff)                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| POST   | `/api/kb/articles`                | agent, admin | `{ title, summary?, body, category_id, status? }` → 201                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| PATCH  | `/api/kb/articles/:id`            | agent, admin | `{ updated_at, … }` → the article (409 `ARTICLE_CHANGED` / `SLUG_FIXED` / `SLUG_TAKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| DELETE | `/api/kb/articles/:id`            | admin        | → 204                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 
 A Postman collection with every request is in [`docs/TicketFlow.postman_collection.json`](docs/TicketFlow.postman_collection.json).
 Import it, run one of the **Login** requests (Postman keeps the session cookies, and the collection sends `tf_csrf` as
@@ -1683,7 +1827,8 @@ src/
   sentry.js               Optional error tracking (Sentry): 5xx and crashes only, no personal data
   crash.js                Uncaught exceptions / unhandled rejections: log, report, exit 1
   overdue.js              The shared "is this ticket overdue?" SQL rule
-  pagination.js           Paging and sorting for GET /api/tickets and /api/users: the sort allow-lists, page + count
+  pagination.js           Paging and sorting for the lists (tickets, users, knowledge-base articles): sort allow-lists, page + count
+  kb.js                   Knowledge base: slugs (transliterated, deduplicated), excerpts, the shared article queries
   temporaryPassword.js    Random temporary passwords for password resets
   ticketStatus.js         What a status change does to resolved_at and closed_at (every route and job uses it)
   jobs/
@@ -1711,6 +1856,7 @@ src/
     users.js              /api/users: agent list, creating accounts, user management
     stats.js              /api/stats: dashboard statistics
     departments.js        /api/departments: list, create, rename, delete
+    kb.js                 /api/kb: knowledge-base categories and articles (read, search, write, publish)
 tests/
   globalSetup.js          Creates the throwaway test database before all tests
   globalTeardown.js       Drops it after all tests
@@ -1733,6 +1879,7 @@ tests/
   mailer.test.js          Log mode, the startup SMTP check, the outbox folder, redaction
   migrations.test.js      Schema, up/down/up, and migration 005 on messy data
   seed.test.js            The demo seed, run twice
+  kb.test.js              Knowledge base: permissions, drafts, slugs, search, the edit conflict, every field limit
 jest.config.js            Jest settings
 .env.example              Example configuration (copy to .env)
 TASKS.md                  Development task list
@@ -1755,5 +1902,7 @@ TASKS.md                  Development task list
 | `ticket_ratings`     | Satisfaction ratings (migration 017): `ticket_id` (one per ticket, deleted with it), `rated_by`, `agent_id` (the assignee when rated), `stars` (1–5), `comment`, `created_at`. See [Satisfaction ratings](#satisfaction-ratings)                                                                                |
 | `ticket_escalations` | Escalations sent (migration 019): `ticket_id` (deleted with the ticket), `kind` (`unassigned` or `overdue`), `sent_at`; `UNIQUE (ticket_id, kind)`, so each ticket is reported once per kind. See [Escalation](#escalation)                                                                                     |
 | `password_tokens`    | One-time password links (migrations 010, 011, 014): the SHA-256 hash of each token (never the token), `purpose` (`setup` / `reset` / `forgot`), `expires_at` (48 hours; `forgot` 1 hour), `used_at`. See [How passwords are delivered](#how-passwords-are-delivered)                                            |
+| `kb_categories`      | Knowledge-base categories (migration 020): `name` (1–60, unique in any letter case), `slug`, `sort_order`. See [Knowledge base](#knowledge-base)                                                                                                                                                                |
+| `kb_articles`        | Knowledge-base articles (migration 020): `title`, `slug` (unique), `summary`, `body` (Markdown), `category_id` (a category with articles can't be deleted), `status` (`draft` / `published`), `author_id`, `updated_by`, `published_at`, `updated_at` (to the millisecond); FULLTEXT on title, summary and body |
 | `settings`           | Admin settings, one row per key: `company_name` (migration 015), `auto_close_days` (016), `escalation_enabled` and `escalation_unassigned_minutes` (019)                                                                                                                                                        |
 | `schema_migrations`  | Which migrations this database has run, and when                                                                                                                                                                                                                                                                |
