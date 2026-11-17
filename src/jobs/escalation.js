@@ -64,11 +64,12 @@ async function candidates({ at, unassignedMinutes }) {
 }
 
 // Records the escalations in one transaction; returns the tickets this run escalated (per kind)
-async function record(found, at) {
+async function record(found, at, hooks) {
   const recorded = { unassigned: [], overdue: [] }
   const conn = await pool.getConnection()
   try {
     await conn.beginTransaction()
+    if (hooks.beforeRecord) await hooks.beforeRecord() // tests: the transaction fails halfway
     for (const kind of KINDS) {
       for (const ticket of found[kind]) {
         const [result] = await conn.query(
@@ -131,7 +132,7 @@ async function runEscalation({ now = () => new Date(Date.now()), log = console, 
       }
       // DATETIME keeps whole seconds
       const at = new Date(Math.floor(now().getTime() / 1000) * 1000)
-      const recorded = await record(await candidates({ at, unassignedMinutes }), at)
+      const recorded = await record(await candidates({ at, unassignedMinutes }), at, hooks)
       summary.unassigned = recorded.unassigned.length
       summary.overdue = recorded.overdue.length
       summary.ids = { unassigned: recorded.unassigned.map((t) => t.id), overdue: recorded.overdue.map((t) => t.id) }

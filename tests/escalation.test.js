@@ -289,3 +289,74 @@ describe('schedule and config', () => {
     ).not.toThrow()
   })
 })
+
+describe('when something goes wrong', () => {
+  test('recording fails halfway → nothing is recorded or sent, the error reaches the caller, the lock is free again', async () => {
+    const id = await ticket({ priority: 'Critical', ago: 5 * HOUR })
+    await expect(
+      run({
+        hooks: {
+          beforeRecord: async () => {
+            throw new Error('database went away')
+          },
+        },
+      }),
+    ).rejects.toThrow('database went away')
+    expect(await escalations()).toEqual([])
+    expect(await smtp.getMails()).toEqual([])
+    // The next run takes the lock and reports the ticket
+    expect((await run()).ids).toEqual({ unassigned: [id], overdue: [id] })
+  })
+
+  test('the SMTP server refuses the email → the escalation stays recorded (not retried by the next run)', async () => {
+    smtp.setMode('5xx')
+    const errors = { log: () => {}, warn: jest.fn(), error: jest.fn() }
+    try {
+      await ticket({ priority: 'Critical', ago: 5 * HOUR })
+      const summary = await runEscalation({ now: () => NOW, log: errors })
+      expect(summary).toMatchObject({ unassigned: 1, overdue: 1, emailed: 0 })
+      expect((await escalations()).length).toBe(2)
+    } finally {
+      smtp.setMode('accept')
+    }
+  })
+
+  test('no active admin → a warning with the counts; the escalations are recorded', async () => {
+    await pool.query("UPDATE users SET is_active = FALSE WHERE role = 'admin'")
+    await ticket({ priority: 'High', ago: 3 * HOUR })
+    expect(await run()).toMatchObject({ unassigned: 1, emailed: 0 })
+    expect(quiet.warn).toHaveBeenCalledWith(
+      '[escalation] No active admin to email: 1 urgent ticket unassigned (recorded)',
+    )
+  })
+
+  test('unreadable stored settings fall back to the defaults (on, 120 minutes)', async () => {
+    await pool.query("UPDATE settings SET setting_value = 'yes' WHERE setting_key = 'escalation_enabled'")
+    await pool.query("UPDATE settings SET setting_value = 'soon' WHERE setting_key = 'escalation_unassigned_minutes'")
+    const id = await ticket({ ago: 121 * MINUTE })
+    await ticket({ ago: 119 * MINUTE })
+    expect((await run()).ids.unassigned).toEqual([id])
+  })
+
+  test('without an injected clock it uses the real time', async () => {
+    const id = await ticket({ priority: 'High', ago: Date.now() - NOW.getTime() + 3 * HOUR })
+    expect((await runEscalation({ log: quiet })).ids.unassigned).toEqual([id])
+  })
+
+  test('the scheduled job runs the job, and logs (never throws) when it fails', async () => {
+    const log = { log: jest.fn(), warn: jest.fn(), error: jest.fn() }
+    const job = startEscalationSchedule({ log, env: { NODE_ENV: 'test', ESCALATION_INTERVAL_MINUTES: '1' } })
+    try {
+      await ticket({ priority: 'Critical', ago: 5 * HOUR })
+      await job.trigger()
+      expect(await escalations()).toHaveLength(2)
+
+      const failing = jest.spyOn(pool, 'getConnection').mockRejectedValueOnce(new Error('pool closed'))
+      await job.trigger()
+      failing.mockRestore()
+      expect(log.error).toHaveBeenCalledWith('[escalation] The job failed: pool closed', expect.any(Error))
+    } finally {
+      job.stop()
+    }
+  })
+})
