@@ -194,8 +194,9 @@ CI builds the image on every push and pull request (the "Docker image" job), wit
 
 ## Run with Docker Compose
 
-For a real server (a domain, HTTPS with Let's Encrypt, firewall, off-server backups) follow
-[docs/DEPLOY.md](docs/DEPLOY.md); HTTPS itself is [docs/https.md](docs/https.md). The local production-mode staging
+**Running TicketFlow for a company**: [docs/OPERATIONS.md](docs/OPERATIONS.md) (requirements, install, update, backup
+and restore, monitoring, users, security checklist, troubleshooting). For a real server (a domain, HTTPS with Let's
+Encrypt, firewall, off-server backups) follow [docs/DEPLOY.md](docs/DEPLOY.md); HTTPS itself is [docs/https.md](docs/https.md). The local production-mode staging
 stack (`deploy/staging-up.sh`) and its end-to-end check are in [docs/staging-check.md](docs/staging-check.md).
 
 [`deploy/docker-compose.yml`](deploy/docker-compose.yml) runs the whole app on one machine: **db** (MySQL 8.4),

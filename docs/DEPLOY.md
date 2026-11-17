@@ -2,7 +2,8 @@
 
 How to run TicketFlow for real on one server: a VPS with **Ubuntu 24.04**, Docker Compose, and **Caddy** in front with a
 free **Let's Encrypt** certificate. HTTPS itself is described in [docs/https.md](https.md) (Option A: Caddy, or Option
-B: nginx + certbot); this guide is the whole server around it and links there instead of repeating it. The same setup
+B: nginx + certbot); this guide is the whole server around it and links there instead of repeating it. Running it
+afterwards (updates, backups, monitoring, users, troubleshooting) is [docs/OPERATIONS.md](OPERATIONS.md). The same setup
 runs locally as the staging stack ([docs/staging-check.md](staging-check.md)).
 
 ```text
