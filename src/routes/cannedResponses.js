@@ -76,6 +76,86 @@ const audit = (action, row, req, extra = {}) =>
 
 // GET /api/canned-responses?q=&scope=all|shared|mine → at most 50, most used first, then by title. all (default):
 // the shared ones and the user's own. Never anyone else's personal ones. q: in the title or the text.
+/**
+ * @openapi
+ * components:
+ *   parameters:
+ *     CannedResponseId:
+ *       name: id
+ *       in: path
+ *       required: true
+ *       schema: { type: integer, minimum: 1, example: 5 }
+ *   responses:
+ *     CannedResponseNotFound:
+ *       description: No such response, or someone else's personal one
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/Error' }
+ *           example: { message: Canned response not found }
+ *
+ * /api/canned-responses:
+ *   get:
+ *     tags: [Canned Responses]
+ *     summary: List canned responses
+ *     description: |
+ *       **Roles:** `agent`, `admin`. The shared responses and your own personal ones (never anyone else's), at most
+ *       50, most used first, then by title.
+ *     parameters:
+ *       - name: q
+ *         in: query
+ *         description: Text in the title or body
+ *         schema: { type: string, maxLength: 100, example: restart }
+ *       - name: scope
+ *         in: query
+ *         description: '`all` (default) = shared + mine'
+ *         schema: { type: string, enum: [all, shared, mine], default: all }
+ *     responses:
+ *       '200':
+ *         description: The responses
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items: { $ref: '#/components/schemas/CannedResponse' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '422': { $ref: '#/components/responses/UnprocessableEntity' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ *   post:
+ *     tags: [Canned Responses]
+ *     summary: Create a canned response
+ *     description: '**Roles:** `agent`, `admin`. Personal by default; `shared: true` is admins only.'
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/CreateCannedResponseRequest' }
+ *     responses:
+ *       '201':
+ *         description: The new response
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/CannedResponse' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403':
+ *         description: Not staff, or a non-admin creating a shared response
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Only admins can create shared responses }
+ *       '409':
+ *         description: The title is taken in that scope
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/ValidationError' }
+ *             example:
+ *               message: You already have a response with this title
+ *               code: TITLE_TAKEN
+ *               errors: [{ field: title, message: You already have a response with this title }]
+ *       '422': { $ref: '#/components/responses/UnprocessableEntity' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.get('/', check(schemas.list), async (req, res) => {
   const { q, scope = 'all' } = req.valid.query
   const where = []
@@ -121,6 +201,64 @@ router.post('/', check(schemas.create), async (req, res) => {
 
 // PATCH /api/canned-responses/:id { title?, body? } → the response. Personal: the owner only; shared: admins only
 // (403). Someone else's personal one → 404.
+/**
+ * @openapi
+ * /api/canned-responses/{id}:
+ *   patch:
+ *     tags: [Canned Responses]
+ *     summary: Edit a canned response
+ *     description: |
+ *       **Roles:** a personal response by its owner; a shared one by an `admin` (403 for agents). Someone else's
+ *       personal response answers 404. Whether it is shared can't change.
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     parameters:
+ *       - $ref: '#/components/parameters/CannedResponseId'
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/UpdateCannedResponseRequest' }
+ *     responses:
+ *       '200':
+ *         description: The response
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/CannedResponse' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403':
+ *         description: Not staff, or an agent changing a shared response
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Only admins can change shared responses }
+ *       '404': { $ref: '#/components/responses/CannedResponseNotFound' }
+ *       '409':
+ *         description: The title is taken in that scope (`TITLE_TAKEN`)
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/ValidationError' }
+ *       '422': { $ref: '#/components/responses/UnprocessableEntity' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ *   delete:
+ *     tags: [Canned Responses]
+ *     summary: Delete a canned response
+ *     description: '**Roles:** same as editing: the owner for a personal one, an `admin` for a shared one.'
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     parameters:
+ *       - $ref: '#/components/parameters/CannedResponseId'
+ *     responses:
+ *       '204': { description: Deleted }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403':
+ *         description: Not staff, or an agent deleting a shared response
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Only admins can change shared responses }
+ *       '404': { $ref: '#/components/responses/CannedResponseNotFound' }
+ *       '422': { $ref: '#/components/responses/UnprocessableEntity' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.patch('/:id', check(schemas.update), async (req, res) => {
   const current = await findEditable(req.valid.params.id, req.user)
   const changes = req.valid.body
@@ -151,6 +289,26 @@ router.delete('/:id', check(schemas.params), async (req, res) => {
 
 // POST /api/canned-responses/:id/used → 204: counts one use (the frontend calls it after inserting the text, without
 // waiting). Any response the user may see. updated_at stays: using a response doesn't change it.
+/**
+ * @openapi
+ * /api/canned-responses/{id}/used:
+ *   post:
+ *     tags: [Canned Responses]
+ *     summary: Count one use of a canned response
+ *     description: |
+ *       **Roles:** `agent`, `admin`, for any response they can see. The frontend calls this after inserting the text
+ *       into a comment. Raises usage_count and sets last_used_at.
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     parameters:
+ *       - $ref: '#/components/parameters/CannedResponseId'
+ *     responses:
+ *       '204': { description: Counted }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '404': { $ref: '#/components/responses/CannedResponseNotFound' }
+ *       '422': { $ref: '#/components/responses/UnprocessableEntity' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.post('/:id/used', check(schemas.params), async (req, res) => {
   const row = await findVisible(req.valid.params.id, req.user)
   await pool.query(

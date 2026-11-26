@@ -34,6 +34,8 @@ const PUBLIC = [
   'GET /api/settings/public',
   // What the sign-in page may offer (email_enabled)
   'GET /api/auth/config',
+  // The OpenAPI spec behind the /api-docs page (src/docs/swagger.js): describes the API, holds no data
+  'GET /api-docs.json',
 ]
 // What a user with a temporary password may still do. Pinned here so widening the list is a deliberate change.
 const ALLOWED = ['GET /api/auth/me', 'POST /api/auth/change-password']
@@ -301,10 +303,10 @@ describe('blocking until a temporary password is changed', () => {
 })
 
 describe('the route list', () => {
-  test('covers every router the app mounts, and the only app-level route is the health check', () => {
+  test('covers every router the app mounts, and the only app-level routes are the API docs spec and the health check', () => {
     const mountedRouters = app.router.stack.filter((layer) => layer.handle && layer.handle.stack)
     expect(mountedRouters).toHaveLength(apiRoutes.length)
-    expect(routesOf('', app.router)).toEqual(['GET /api/health'])
+    expect(routesOf('', app.router)).toEqual(['GET /api-docs.json', 'GET /api/health'])
   })
 
   test('finds all the routes, including the user-management ones', () => {

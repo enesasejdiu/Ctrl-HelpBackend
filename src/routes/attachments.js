@@ -214,6 +214,52 @@ async function loadAttachment(req, res, next) {
 
 // GET /api/attachments/:id/download → the file with its original name, as a download. With ?inline=1 an image or PDF
 // is sent for showing in the browser instead (a preview); text files are always downloads.
+/**
+ * @openapi
+ * /api/attachments/{id}/download:
+ *   get:
+ *     tags: [Attachments]
+ *     summary: Download an attachment
+ *     description: |
+ *       **Roles:** anyone who can see the ticket (staff: any; `employee`/`hr`: their own), except files added with
+ *       an internal note, which only staff can get. Sent with its original file name as a download; with `inline=1`
+ *       an image or PDF is sent for preview instead (text files are always downloads). An attachment you can't see
+ *       answers 404, like a missing one.
+ *     parameters:
+ *       - name: id
+ *         in: path
+ *         required: true
+ *         schema: { type: integer, minimum: 1, example: 15 }
+ *       - name: inline
+ *         in: query
+ *         description: '`1` = preview in the browser (images and PDFs only); anything else is a download'
+ *         schema: { type: string, enum: ['1'] }
+ *     responses:
+ *       '200':
+ *         description: The file
+ *         headers:
+ *           Content-Disposition:
+ *             schema: { type: string }
+ *             example: attachment; filename="wifi-error.png"
+ *         content:
+ *           image/png: { schema: { type: string, format: binary } }
+ *           image/jpeg: { schema: { type: string, format: binary } }
+ *           image/gif: { schema: { type: string, format: binary } }
+ *           image/webp: { schema: { type: string, format: binary } }
+ *           application/pdf: { schema: { type: string, format: binary } }
+ *           text/plain: { schema: { type: string, format: binary } }
+ *           text/csv: { schema: { type: string, format: binary } }
+ *       '400': { $ref: '#/components/responses/BadRequest' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '404':
+ *         description: No such attachment, not yours to see, or its file is missing on the server (`FILE_MISSING`)
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Attachment not found }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.get('/:id/download', validate(schemas.attachmentDownload), loadAttachment, async (req, res) => {
   const attachment = req.attachment
   const file = storedPath(attachment.stored_name)
@@ -244,6 +290,37 @@ router.get('/:id/download', validate(schemas.attachmentDownload), loadAttachment
 })
 
 // DELETE /api/attachments/:id → 204. The uploader or an admin; the file is removed from disk too.
+/**
+ * @openapi
+ * /api/attachments/{id}:
+ *   delete:
+ *     tags: [Attachments]
+ *     summary: Delete an attachment
+ *     description: '**Roles:** the person who uploaded it, or an `admin`. The file is removed from disk too.'
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     parameters:
+ *       - name: id
+ *         in: path
+ *         required: true
+ *         schema: { type: integer, minimum: 1, example: 15 }
+ *     responses:
+ *       '204': { description: Deleted }
+ *       '400': { $ref: '#/components/responses/BadRequest' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403':
+ *         description: Not the uploader or an admin
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: 'Only the person who uploaded a file, or an admin, can delete it' }
+ *       '404':
+ *         description: No such attachment, or not yours to see
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Attachment not found }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.delete('/:id', validate(schemas.attachmentParams), loadAttachment, async (req, res) => {
   const attachment = req.attachment
   if (!canDeleteAttachment(req.user, attachment)) {

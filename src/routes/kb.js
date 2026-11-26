@@ -63,7 +63,82 @@ async function checkCategoryName(name, exceptId = 0) {
 const categorySlugTaken = (exceptId) => async (slug) =>
   (await pool.query('SELECT 1 FROM kb_categories WHERE slug = ? AND id <> ?', [slug, exceptId]))[0].length > 0
 
+/**
+ * @openapi
+ * components:
+ *   parameters:
+ *     KbCategoryId:
+ *       name: id
+ *       in: path
+ *       required: true
+ *       schema: { type: integer, minimum: 1, example: 1 }
+ *     KbArticleId:
+ *       name: id
+ *       in: path
+ *       required: true
+ *       schema: { type: integer, minimum: 1, example: 8 }
+ *   responses:
+ *     KbCategoryNotFound:
+ *       description: No such category
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/Error' }
+ *           example: { message: Category not found }
+ *     KbArticleNotFound:
+ *       description: No such article
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/Error' }
+ *           example: { message: Article not found }
+ *     KbCategoryExists:
+ *       description: A category with this name exists (any letter case)
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/Error' }
+ *           example: { message: There is already a category called "Printers", code: CATEGORY_EXISTS }
+ */
+
 // GET /api/kb/categories → [{ id, name, slug, sort_order, published_count }], by sort_order, then name
+/**
+ * @openapi
+ * /api/kb/categories:
+ *   get:
+ *     tags: [Knowledge Base]
+ *     summary: List knowledge-base categories
+ *     description: '**Roles:** any logged-in user. By sort_order, then name, with the number of published articles.'
+ *     responses:
+ *       '200':
+ *         description: The categories
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items: { $ref: '#/components/schemas/KbCategory' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ *   post:
+ *     tags: [Knowledge Base]
+ *     summary: Create a knowledge-base category
+ *     description: '**Roles:** `agent`, `admin`. The slug is made from the name.'
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/CreateKbCategoryRequest' }
+ *     responses:
+ *       '201':
+ *         description: The new category
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/KbCategory' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '409': { $ref: '#/components/responses/KbCategoryExists' }
+ *       '422': { $ref: '#/components/responses/UnprocessableEntity' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.get('/categories', async (req, res) => {
   const [rows] = await pool.query(`${CATEGORY_SELECT} ${CATEGORY_GROUP} ORDER BY c.sort_order, c.name, c.id`)
   res.json(rows.map(category))
@@ -96,6 +171,54 @@ router.post('/categories', staffOnly, check(schemas.createCategory), async (req,
 })
 
 // PATCH /api/kb/categories/:id { name?, sort_order? } (staff) → the category. A new name gets a new slug.
+/**
+ * @openapi
+ * /api/kb/categories/{id}:
+ *   patch:
+ *     tags: [Knowledge Base]
+ *     summary: Rename or reorder a knowledge-base category
+ *     description: '**Roles:** `agent`, `admin`. A new name gets a new slug.'
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     parameters:
+ *       - $ref: '#/components/parameters/KbCategoryId'
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/UpdateKbCategoryRequest' }
+ *     responses:
+ *       '200':
+ *         description: The category
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/KbCategory' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '404': { $ref: '#/components/responses/KbCategoryNotFound' }
+ *       '409': { $ref: '#/components/responses/KbCategoryExists' }
+ *       '422': { $ref: '#/components/responses/UnprocessableEntity' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ *   delete:
+ *     tags: [Knowledge Base]
+ *     summary: Delete an empty knowledge-base category
+ *     description: '**Roles:** `admin`. Only when no article (draft or published) is in it.'
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     parameters:
+ *       - $ref: '#/components/parameters/KbCategoryId'
+ *     responses:
+ *       '204': { description: Deleted }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '404': { $ref: '#/components/responses/KbCategoryNotFound' }
+ *       '409':
+ *         description: Articles are still in it
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Move or delete the articles in this category first, code: CATEGORY_IN_USE, category_id: 1 }
+ *       '422': { $ref: '#/components/responses/UnprocessableEntity' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.patch('/categories/:id', staffOnly, check(schemas.updateCategory), loadCategory, async (req, res) => {
   const { name, sort_order: sortOrder } = req.valid.body
   const current = req.category
@@ -168,6 +291,74 @@ const SEARCH = 'MATCH(a.title, a.summary, a.body) AGAINST (? IN NATURAL LANGUAGE
 //   → { items, total, page, pageSize }; items without body (summary, or the start of the body, as the excerpt).
 // Non-staff: published only, whatever status says. Staff: status=draft|published, or all when left out.
 // q: FULLTEXT natural-language search over title, summary and body, by relevance unless a sort is asked for.
+/**
+ * @openapi
+ * /api/kb/articles:
+ *   get:
+ *     tags: [Knowledge Base]
+ *     summary: List or search articles
+ *     description: |
+ *       **Roles:** any logged-in user. `employee` and `hr` only ever get published articles (`status` is ignored);
+ *       staff (`agent`, `admin`) get drafts too, filtered by `status`. Always paged. Items have no body: `summary` is
+ *       the article's summary or the start of its text. With `q` and no `sort`, results are by relevance.
+ *     parameters:
+ *       - name: category
+ *         in: query
+ *         description: A category slug
+ *         schema: { type: string, maxLength: 80, pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$', example: network-wi-fi }
+ *       - name: q
+ *         in: query
+ *         description: Full-text search in title, summary and body
+ *         schema: { type: string, minLength: 2, maxLength: 200, example: vpn }
+ *       - name: status
+ *         in: query
+ *         description: Staff only; left out = all
+ *         schema: { type: string, enum: [all, draft, published] }
+ *       - $ref: '#/components/parameters/Page'
+ *       - $ref: '#/components/parameters/PageSize'
+ *       - name: sort
+ *         in: query
+ *         description: Default published_at (newest first; drafts last)
+ *         schema: { type: string, enum: [published_at, title, updated_at] }
+ *       - $ref: '#/components/parameters/Order'
+ *     responses:
+ *       '200':
+ *         description: One page of articles
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/KbArticlePage' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '422': { $ref: '#/components/responses/UnprocessableEntity' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ *   post:
+ *     tags: [Knowledge Base]
+ *     summary: Create an article
+ *     description: |
+ *       **Roles:** `agent`, `admin`. A draft unless `status` is `published`. The slug is made from the title
+ *       (a taken one gets -2, -3, …).
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/CreateKbArticleRequest' }
+ *     responses:
+ *       '201':
+ *         description: The new article
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/KbArticle' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '422':
+ *         description: Validation failed, or no such category
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/ValidationError' }
+ *             example: { message: Choose a category from the list, errors: [{ field: category_id, message: Choose a category from the list }] }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.get('/articles', check(schemas.listArticles), async (req, res) => {
   const query = req.valid.query
   let status = 'published'
@@ -222,6 +413,32 @@ async function findArticle(column, value) {
 
 // GET /api/kb/articles/:slug → the article with its body, category, author and last editor. 404 for an unknown slug,
 // and (the same answer) for a draft when the reader isn't staff.
+/**
+ * @openapi
+ * /api/kb/articles/{slug}:
+ *   get:
+ *     tags: [Knowledge Base]
+ *     summary: Read an article
+ *     description: |
+ *       **Roles:** any logged-in user for a published article; drafts only for staff (`agent`, `admin`). A draft
+ *       answers 404 to everyone else, like an unknown slug.
+ *     parameters:
+ *       - name: slug
+ *         in: path
+ *         required: true
+ *         schema: { type: string, maxLength: 220, example: connect-to-office-wi-fi }
+ *     responses:
+ *       '200':
+ *         description: The article with its Markdown body
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/KbArticle' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '404': { $ref: '#/components/responses/KbArticleNotFound' }
+ *       '422': { $ref: '#/components/responses/UnprocessableEntity' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.get('/articles/:slug', check(schemas.articleSlugParams), async (req, res) => {
   const article = await findArticle('slug', req.valid.params.slug)
   if (!article || (article.status !== 'published' && !isStaff(req.user))) {
@@ -297,6 +514,58 @@ async function refreshSearchIndex() {
 // between → 409 ARTICLE_CHANGED (nothing is saved). status: published publishes (published_at is set the first time
 // and kept), draft unpublishes. The slug can only change before the first publish → 409 SLUG_FIXED; a slug in use →
 // 409 SLUG_TAKEN.
+/**
+ * @openapi
+ * /api/kb/articles/{id}:
+ *   patch:
+ *     tags: [Knowledge Base]
+ *     summary: Edit, publish or unpublish an article
+ *     description: |
+ *       **Roles:** `agent`, `admin`. Send `updated_at` as loaded plus at least one field. If someone else saved in
+ *       between, nothing is saved (409 `ARTICLE_CHANGED`, with the current `updated_at`). `status: published`
+ *       publishes (the first publish date is kept), `draft` unpublishes. The slug can only change before the first
+ *       publish.
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     parameters:
+ *       - $ref: '#/components/parameters/KbArticleId'
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/UpdateKbArticleRequest' }
+ *           example: { updated_at: '2026-11-20T10:00:00.123Z', status: published }
+ *     responses:
+ *       '200':
+ *         description: The article
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/KbArticle' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '404': { $ref: '#/components/responses/KbArticleNotFound' }
+ *       '409':
+ *         description: Changed by someone else (`ARTICLE_CHANGED`), slug fixed after publishing (`SLUG_FIXED`), or slug in use (`SLUG_TAKEN`)
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Someone else changed this article after you opened it, code: ARTICLE_CHANGED, updated_at: '2026-11-21T08:30:00.456Z' }
+ *       '422': { $ref: '#/components/responses/UnprocessableEntity' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ *   delete:
+ *     tags: [Knowledge Base]
+ *     summary: Delete an article
+ *     description: '**Roles:** `admin` (agents unpublish instead).'
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     parameters:
+ *       - $ref: '#/components/parameters/KbArticleId'
+ *     responses:
+ *       '204': { description: Deleted }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '404': { $ref: '#/components/responses/KbArticleNotFound' }
+ *       '422': { $ref: '#/components/responses/UnprocessableEntity' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.patch('/articles/:id', staffOnly, check(schemas.updateArticle), async (req, res) => {
   const { updated_at: loadedAt, status, ...changes } = req.valid.body
   const id = req.valid.params.id

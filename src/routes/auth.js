@@ -119,6 +119,67 @@ function publicUser(user) {
 // Limits: at most 20 requests per IP address per 15 minutes (429 RATE_LIMITED, middleware/rateLimit.js), and 5 wrong
 // passwords in a row lock the account for 15 minutes (lockoutMinutes(); 423 ACCOUNT_LOCKED, even with the right password). The lock
 // ends by itself, after a successful login, or when an admin or HR resets the password.
+/**
+ * @openapi
+ * /api/auth/login:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Log in
+ *     description: |
+ *       Public. Checks the email and password and starts a session: the response sets the `tf_session` cookie
+ *       (httpOnly, the session token, 8 hours) and the `tf_csrf` cookie (copy it into `X-CSRF-Token` on changes).
+ *       The token is never in the response body.
+ *
+ *       A user with a temporary password logs in normally and gets `must_change_password: true`; every endpoint except
+ *       `GET /api/auth/me` and `POST /api/auth/change-password` then answers 403 until they change it.
+ *
+ *       Limits: 20 failed attempts per IP address per 15 minutes (429), and 5 wrong passwords in a row lock the
+ *       account for 15 minutes (423, even with the right password).
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/LoginRequest' }
+ *     responses:
+ *       '200':
+ *         description: Logged in. The session cookies are set.
+ *         headers:
+ *           Set-Cookie:
+ *             description: '`tf_session=<JWT>; HttpOnly; SameSite=Lax; Path=/` and `tf_csrf=<random>; SameSite=Lax; Path=/`'
+ *             schema: { type: string }
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/LoginResponse' }
+ *       '400': { $ref: '#/components/responses/BadRequest' }
+ *       '401':
+ *         description: Wrong email or password (the same answer for an unknown email)
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Wrong email or password }
+ *       '403':
+ *         description: The account is deactivated
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: This account is deactivated }
+ *       '423':
+ *         description: Too many wrong passwords; the account is locked for a while
+ *         headers:
+ *           Retry-After: { schema: { type: integer }, description: Seconds until the lock ends }
+ *         content:
+ *           application/json:
+ *             schema:
+ *               allOf:
+ *                 - $ref: '#/components/schemas/Error'
+ *                 - type: object
+ *                   properties:
+ *                     retryAfterMinutes: { type: integer, example: 15 }
+ *             example: { message: Too many wrong passwords. Try again in 15 minutes., code: ACCOUNT_LOCKED, retryAfterMinutes: 15 }
+ *       '429': { $ref: '#/components/responses/TooManyRequests' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.post('/login', loginRateLimit, validate(schemas.login), async (req, res) => {
   const { email, password } = req.valid.body
 
@@ -193,6 +254,21 @@ function tokenFromCookie(req) {
 // only clears the cookies, and still answers 204. The user's other sessions keep working (see /logout-all).
 // No CSRF check: the worst another site could do is log you out, and sameSite "lax" already keeps the cookies off
 // cross-site POSTs.
+/**
+ * @openapi
+ * /api/auth/logout:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Log out (this browser)
+ *     description: |
+ *       Ends this browser's session on the server and clears both cookies. Needs no valid session and no CSRF
+ *       header: with an expired or missing session it only clears the cookies, and still answers 204. The user's other
+ *       sessions keep working (see `POST /api/auth/logout-all`).
+ *     security: []
+ *     responses:
+ *       '204': { description: Logged out; the cookies are cleared }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.post('/logout', async (req, res) => {
   const token = tokenFromCookie(req)
   // Logged only when it really ended a session (not for a second logout, or without one)
@@ -205,6 +281,22 @@ router.post('/logout', async (req, res) => {
 
 // POST /api/auth/logout-all → 204 (logged in). "Log out everywhere": ends every session of this user, in every browser
 // and device, this one included, and clears this browser's cookies.
+/**
+ * @openapi
+ * /api/auth/logout-all:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Log out everywhere
+ *     description: |
+ *       **Roles:** any logged-in user. Ends every session of the current user, on every device, this one included,
+ *       and clears this browser's cookies.
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     responses:
+ *       '204': { description: Every session ended; the cookies are cleared }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.post('/logout-all', requireAuth, async (req, res) => {
   const ended = await revokeUserSessions(req.user.id)
   await recordAudit('logout_all', {
@@ -218,6 +310,30 @@ router.post('/logout-all', requireAuth, async (req, res) => {
 })
 
 // GET /api/auth/me: the logged-in user's profile (the frontend calls this on page load to restore the session)
+/**
+ * @openapi
+ * /api/auth/me:
+ *   get:
+ *     tags: [Auth]
+ *     summary: Get the logged-in user
+ *     description: |
+ *       **Roles:** any logged-in user, also while `must_change_password` is true. The frontend calls this on page
+ *       load to restore the session.
+ *     responses:
+ *       '200':
+ *         description: The current user's profile
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/CurrentUser' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '404':
+ *         description: The user was deleted while the request ran (a rare race)
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: User not found }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.get('/me', requireAuth, async (req, res) => {
   const [rows] = await pool.query(`${AUTH_USER_SELECT} WHERE u.id = ?`, [req.user.id])
   // Safety net: requireAuth already rejects deleted users, so this only triggers in a race with a delete
@@ -233,6 +349,49 @@ router.get('/me', requireAuth, async (req, res) => {
 // Sessions: every OTHER session of this user ends (other browsers and devices: their rows are revoked). The session
 // that made the change stays as it is, cookie and all, so the person who changed the password stays logged in.
 // session_version is not raised: that would end this session too.
+/**
+ * @openapi
+ * /api/auth/change-password:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Change your own password
+ *     description: |
+ *       **Roles:** any logged-in user (your own account only), also while `must_change_password` is true: this is
+ *       how a temporary password is replaced, and it clears the flag. Every **other** session of the user ends; this
+ *       one stays logged in.
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/ChangePasswordRequest' }
+ *     responses:
+ *       '200':
+ *         description: Password changed
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/ChangePasswordResponse' }
+ *       '400':
+ *         description: |
+ *           Validation failed (e.g. the new password is too short or has no number), the current password is wrong
+ *           (`INVALID_CURRENT_PASSWORD`), or the new password is the same as the current one
+ *         content:
+ *           application/json:
+ *             schema:
+ *               oneOf:
+ *                 - $ref: '#/components/schemas/ValidationError'
+ *                 - $ref: '#/components/schemas/Error'
+ *             examples:
+ *               wrongCurrent: { value: { message: Current password is wrong, code: INVALID_CURRENT_PASSWORD } }
+ *               same: { value: { message: New password must be different from the current one } }
+ *               weak:
+ *                 value:
+ *                   message: New password must be at least 10 characters
+ *                   errors: [{ field: newPassword, message: New password must be at least 10 characters }]
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.post('/change-password', requireAuth, validate(schemas.changePassword), async (req, res) => {
   const { currentPassword, newPassword } = req.valid.body
   const [[user]] = await pool.query(`${AUTH_USER_SELECT} WHERE u.id = ?`, [req.user.id])
@@ -287,6 +446,39 @@ const TOKEN_PROBLEMS = {
 // Public. Tells the set-password page whether to show the form, before the user types anything. It changes nothing.
 // An unknown token, one replaced by a newer link and one of a deactivated account all answer the same 'invalid'
 // (one indexed lookup each), and a link that can't be used never reveals whose it is.
+/**
+ * @openapi
+ * /api/auth/set-password/validate:
+ *   get:
+ *     tags: [Auth]
+ *     summary: Check a set-password link
+ *     description: |
+ *       Public. Tells the set-password page whether to show the form, before the user types anything. Changes
+ *       nothing. Always 200: the state of the token is in `status`. Rate-limited to 30 requests per IP per 15 minutes.
+ *     security: []
+ *     parameters:
+ *       - name: token
+ *         in: query
+ *         required: true
+ *         description: The token from the emailed link
+ *         schema: { type: string, minLength: 1, maxLength: 200 }
+ *         example: Qm9vdHN0cmFwVG9rZW5FeGFtcGxlRm9yRG9jczEyMzQ1Ng
+ *     responses:
+ *       '200':
+ *         description: The token's state
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/SetPasswordTokenStatus' }
+ *             examples:
+ *               valid: { value: { status: valid, purpose: setup, email: liridon.gashi@example.com, expires_at: '2026-11-28T10:00:00.000Z' } }
+ *               expired:
+ *                 value: { status: expired, purpose: setup, message: This link has expired. Ask your administrator or HR for a new link., code: TOKEN_EXPIRED }
+ *               invalid:
+ *                 value: { status: invalid, purpose: null, message: This link is not valid. Ask your administrator or HR for a new link., code: TOKEN_INVALID }
+ *       '400': { $ref: '#/components/responses/BadRequest' }
+ *       '429': { $ref: '#/components/responses/TooManyRequests' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.get(
   '/set-password/validate',
   setPasswordRateLimit,
@@ -311,6 +503,51 @@ router.get(
 //   422 WEAK_PASSWORD { errors: [{ field: 'new_password', message }] }   the token stays unused
 // Sessions: like a reset, it ends any session the user still has (rows revoked, session_version raised), and clears
 // a login lock.
+/**
+ * @openapi
+ * /api/auth/set-password:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Set a password with an emailed link
+ *     description: |
+ *       Public (the person has no usable password yet). Used for a new account's setup link, a reset link from an
+ *       admin or HR, and a "Forgot password" link. Sets the password, clears `must_change_password`, marks the link
+ *       used and ends any session the user still had. The user is **not** logged in: they log in afterwards.
+ *       Rate-limited to 30 requests per IP per 15 minutes.
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/SetPasswordRequest' }
+ *     responses:
+ *       '200':
+ *         description: Password set
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Message' }
+ *             example: { message: 'Password set, please log in.' }
+ *       '400':
+ *         description: Validation failed, or the link can't be used (`TOKEN_INVALID`, `TOKEN_EXPIRED`, `TOKEN_USED`)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               oneOf:
+ *                 - $ref: '#/components/schemas/ValidationError'
+ *                 - $ref: '#/components/schemas/Error'
+ *             example: { message: This link has already been used. Ask your administrator or HR for a new link., code: TOKEN_USED }
+ *       '422':
+ *         description: The password breaks the rule (10–72 characters, a letter and a number). The link stays unused.
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/ValidationError' }
+ *             example:
+ *               message: New password must contain at least one number
+ *               code: WEAK_PASSWORD
+ *               errors: [{ field: new_password, message: New password must contain at least one number }]
+ *       '429': { $ref: '#/components/responses/TooManyRequests' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.post('/set-password', setPasswordRateLimit, validate(schemas.setPassword), async (req, res) => {
   const { token, new_password: password } = req.valid.body
 
@@ -365,6 +602,21 @@ router.post('/set-password', setPasswordRateLimit, validate(schemas.setPassword)
 
 // GET /api/auth/config → { email_enabled }. Public: what the sign-in page may offer (the "Forgot password?" link only
 // when email is set up). Decided by the server's settings.
+/**
+ * @openapi
+ * /api/auth/config:
+ *   get:
+ *     tags: [Auth]
+ *     summary: What the sign-in page may offer
+ *     description: Public. Whether email is set up, so the sign-in page knows whether to show "Forgot password?".
+ *     security: []
+ *     responses:
+ *       '200':
+ *         description: The sign-in options
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/AuthConfig' }
+ */
 router.get('/config', (req, res) => {
   res.json({ email_enabled: isEmailConfigured() })
 })
@@ -387,6 +639,34 @@ const emailFingerprint = (email) => crypto.createHash('sha256').update(email).di
 // Only an active account that has set its own password gets a 1-hour 'forgot' link; pending invitations get nothing
 // (Admin/HR resend their setup link). The current password and sessions are left alone: anyone can ask, and the user
 // may still know their password.
+/**
+ * @openapi
+ * /api/auth/forgot-password:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Request a password reset link
+ *     description: |
+ *       Public. Always answers the same 200, whether or not the account exists, so it can't be used to find out
+ *       which emails have accounts. Only an active account that has set its own password gets a 1-hour reset link
+ *       (when email is set up on the server). The current password keeps working until the link is used.
+ *       Rate-limited to 5 requests per IP per 15 minutes, and 3 emails per account per hour.
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/ForgotPasswordRequest' }
+ *     responses:
+ *       '200':
+ *         description: The same answer in every case
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Message' }
+ *             example: { message: "If an account exists for this email, we've sent a password reset link." }
+ *       '422': { $ref: '#/components/responses/UnprocessableEntity' }
+ *       '429': { $ref: '#/components/responses/TooManyRequests' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.post(
   '/forgot-password',
   forgotPasswordRateLimit,

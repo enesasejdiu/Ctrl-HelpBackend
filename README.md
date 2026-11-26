@@ -16,6 +16,8 @@ This repository is the REST API. The frontend lives in a separate repository: **
 - **bcryptjs**: password hashing
 - **helmet**, **cors**: security headers and allowing the frontend origin
 - **dotenv**: configuration from `.env`
+- **swagger-jsdoc** + **swagger-ui-express**: interactive API documentation at `/api-docs`, generated from JSDoc
+  comments on the routes (see [Interactive API docs](#interactive-api-docs-swagger))
 - **nodemon**: auto-restart during development
 
 ## Requirements
@@ -53,6 +55,10 @@ npm run dev          # starts the API with auto-reload
 
 The API runs on **http://localhost:5050**. Check it with http://localhost:5050/api/health → `{ "status": "ok" }`.
 (Port 5000 is not used because macOS AirPlay occupies it.)
+
+The interactive API documentation is at **http://localhost:5050/api-docs** (the raw OpenAPI spec at
+`/api-docs.json`). Log in there with a demo account and try every endpoint; see
+[Interactive API docs](#interactive-api-docs-swagger).
 
 | Script                               | Description                                                                                                                             |
 | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1833,6 +1839,10 @@ ticket still has its category and priority. The rollback keeps every category, p
 
 ## API endpoints
 
+The full, interactive reference (every parameter, request body, response and error, with examples and the roles
+allowed) is served by the API itself at `/api-docs`; see [Interactive API docs](#interactive-api-docs-swagger). The
+table below is the quick overview.
+
 All endpoints except health, login, logout and the two set-password ones need a session: the `tf_session` cookie (an `Authorization` header is
 ignored). POST/PATCH/PUT/DELETE requests also need `X-CSRF-Token` equal to the `tf_csrf` cookie. See
 [Sessions](#sessions-cookies-and-csrf).
@@ -1925,6 +1935,23 @@ Import it, run one of the **Login** requests (Postman keeps the session cookies,
 Log in as the admin to be allowed every request. Requests that change data (create, status, assign, ...) modify
 the demo data; see [Backups and reseeding](#backups-and-reseeding) to reset it.
 
+### Interactive API docs (Swagger)
+
+With the server running, open [http://localhost:5050/api-docs](http://localhost:5050/api-docs) for the interactive
+documentation (Swagger UI) of every endpoint: parameters, request bodies, every response with its schema, and which
+roles may call it. The raw OpenAPI 3 spec is at [`/api-docs.json`](http://localhost:5050/api-docs.json) (import it into
+Postman or a client generator).
+
+To try requests from the page: open **Auth → POST /api/auth/login**, **Try it out**, and log in (e.g. as
+`admin@ticketflow.local`). The browser keeps the session cookie and sends it with every later request, and the page
+copies `tf_csrf` into `X-CSRF-Token` on changes by itself, so there is nothing to paste into **Authorize**. (The API
+has no Bearer tokens: an `Authorization` header is ignored.) Requests change the data like any other client.
+
+The spec is built when the server starts, from the `@openapi` JSDoc block above each route in `src/routes/` and the
+shared schemas in `src/docs/components.yaml`. A new route needs its own block: `tests/api-docs.test.js` fails until the
+spec lists exactly the routes the app has. "Try it out" sends requests to `API_URL` (default
+`http://localhost:<PORT>`); set it when the API is reached at another address.
+
 ## Project structure
 
 ```
@@ -1953,6 +1980,9 @@ src/
   shutdown.js             Graceful shutdown on SIGTERM/SIGINT: finish open requests, close the pool, exit 0
   app.js                  Express app: middleware, routes, error handling
   db.js                   MySQL connection pool
+  docs/
+    swagger.js            API docs: the OpenAPI spec (swagger-jsdoc) and the Swagger UI options, served at /api-docs
+    components.yaml       Shared OpenAPI schemas, parameters and error responses; endpoints are @openapi blocks in routes/
   logger.js               Structured logs (pino): request ids, the access log, redaction of secrets
   sentry.js               Optional error tracking (Sentry): 5xx and crashes only, no personal data
   crash.js                Uncaught exceptions / unhandled rejections: log, report, exit 1

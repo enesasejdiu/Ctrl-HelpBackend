@@ -55,6 +55,25 @@ function fieldError(res, field, message) {
 router.use(requireAuth)
 
 // GET /api/users/agents → active agents and admins, for the "Assign to" dropdown
+/**
+ * @openapi
+ * /api/users/agents:
+ *   get:
+ *     tags: [Users]
+ *     summary: List who can be assigned tickets
+ *     description: '**Roles:** `agent`, `admin`. Every active agent and admin, by name, for the "Assign to" dropdown.'
+ *     responses:
+ *       '200':
+ *         description: Active agents and admins
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items: { $ref: '#/components/schemas/AgentOption' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.get('/agents', requireRole('agent', 'admin'), async (req, res) => {
   const [rows] = await pool.query(
     "SELECT id, name FROM users WHERE is_active = TRUE AND role IN ('agent', 'admin') ORDER BY name",
@@ -66,6 +85,42 @@ router.get('/agents', requireRole('agent', 'admin'), async (req, res) => {
 // before); with page: { items, total, page, pageSize }, by name unless sorted. sort: name, email, role, department,
 // created_at, last_login_at
 // (src/pagination.js)
+/**
+ * @openapi
+ * /api/users:
+ *   get:
+ *     tags: [Users]
+ *     summary: List user accounts
+ *     description: |
+ *       **Roles:** `admin`, `hr`. Every account, active or not. There are no filters.
+ *
+ *       **Without `page`** the answer is a plain array, newest account first. **With `page`** it is
+ *       `{ items, total, page, pageSize }`, by name unless `sort` says otherwise.
+ *     parameters:
+ *       - $ref: '#/components/parameters/Page'
+ *       - $ref: '#/components/parameters/PageSize'
+ *       - name: sort
+ *         in: query
+ *         description: |
+ *           Sort column. name/email/role/department ascending by default, created_at/last_login_at descending.
+ *           Users without a department, or who never logged in, come last either way.
+ *         schema: { type: string, enum: [name, email, role, department, created_at, last_login_at] }
+ *       - $ref: '#/components/parameters/Order'
+ *     responses:
+ *       '200':
+ *         description: The users (a plain array without `page`, a page object with it)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               oneOf:
+ *                 - type: array
+ *                   items: { $ref: '#/components/schemas/User' }
+ *                 - $ref: '#/components/schemas/PagedUsers'
+ *       '400': { $ref: '#/components/responses/BadRequest' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.get('/', requireRole('admin', 'hr'), validate(schemas.listUsers), async (req, res) => {
   const orderSql = orderBySql(USER_SORTS, req.valid.query, {
     defaultSql: 'u.created_at DESC, u.id DESC',
@@ -93,6 +148,57 @@ router.get('/', requireRole('admin', 'hr'), validate(schemas.listUsers), async (
 //   account (send a new link with POST /api/users/:id/resend-link).
 // Not set up → 201 { user, temporaryPassword, password_delivery: 'temporary_password' }: the temporary password is
 //   returned only in this response (only its hash is stored), and the user must change it at the first login.
+/**
+ * @openapi
+ * /api/users:
+ *   post:
+ *     tags: [Users]
+ *     summary: Create a user account
+ *     description: |
+ *       **Roles:** `admin` (any role; `role` is required), `hr` (employees only; `role` may be left out). This is the
+ *       only way accounts are created: there is no self-registration.
+ *
+ *       The server makes the first password, and how the user gets it depends on its email settings:
+ *       - email set up → `password_delivery: "email"`: a one-time setup link (48 hours) is emailed to the user;
+ *       - otherwise → `password_delivery: "temporary_password"`: `temporaryPassword` is in this response, once.
+ *
+ *       Either way the user must set their own password first (`must_change_password: true`).
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/CreateUserRequest' }
+ *           example: { name: Vjosa Hoxha, email: vjosa.hoxha@example.com, role: employee, department_id: 2, job_title: Sales Representative }
+ *     responses:
+ *       '201':
+ *         description: The new account
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/UserPasswordResponse' }
+ *       '400':
+ *         description: Validation failed (an admin left out role, an unknown department, a password field sent, …)
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/ValidationError' }
+ *             examples:
+ *               role: { value: { message: Role is required, errors: [{ field: role, message: Role is required }] } }
+ *               department: { value: { message: Department not found, errors: [{ field: department_id, message: Department not found }] } }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403':
+ *         description: Not admin or HR, or HR creating a non-employee
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: HR can only create employee accounts }
+ *       '409':
+ *         description: The email is taken
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: An account with this email already exists }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.post('/', requireRole('admin', 'hr'), validate(schemas.createUser), async (req, res) => {
   const { name, email } = req.valid.body
   const isHr = req.user.role === 'hr'
@@ -186,6 +292,55 @@ async function loadTarget(req, action) {
 // Only while the user still has no password of their own (must_change_password); otherwise 409 PASSWORD_ALREADY_SET
 // (a forgotten password goes through reset-password instead). 409 EMAIL_NOT_CONFIGURED when email isn't set up
 // (there is no link to send: use reset-password for a new temporary password), 409 ACCOUNT_DEACTIVATED.
+/**
+ * @openapi
+ * /api/users/{id}/resend-link:
+ *   post:
+ *     tags: [Users]
+ *     summary: Send a new set-password link
+ *     description: |
+ *       **Roles:** `admin` (any other user), `hr` (employees only). Not for your own account.
+ *       Emails a fresh one-time link, e.g. when the first one expired; the old link stops working. Only while the
+ *       user hasn't set a password yet, and only when email is set up.
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     parameters:
+ *       - $ref: '#/components/parameters/UserId'
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/ResendLinkRequest' }
+ *     responses:
+ *       '200':
+ *         description: The link was sent
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/UserPasswordResponse' }
+ *             example:
+ *               password_delivery: email
+ *               user: { id: 9, name: Vjosa Hoxha, email: vjosa.hoxha@example.com, role: employee, must_change_password: true, is_active: true }
+ *       '400': { $ref: '#/components/responses/BadRequest' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403':
+ *         description: Not admin or HR, your own account, or HR and the user is not an employee
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Use Change password for your own account }
+ *       '404':
+ *         description: No such user
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: User not found }
+ *       '409':
+ *         description: Email not set up (`EMAIL_NOT_CONFIGURED`), account deactivated (`ACCOUNT_DEACTIVATED`), or the user already set a password (`PASSWORD_ALREADY_SET`)
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: This user has already set a password. Use Reset password instead, code: PASSWORD_ALREADY_SET }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.post('/:id/resend-link', requireRole('admin', 'hr'), validate(schemas.resendLink), async (req, res) => {
   const { id } = req.valid.params
   const target = await loadTarget(req, 'send links to')
@@ -253,6 +408,44 @@ async function checkResetAllowed(req, res, next) {
 //   returned only here, which the user must change at the next login.
 // Sessions: either way every session the user had ends at once (rows revoked, session_version raised; 401 on the next
 // request).
+/**
+ * @openapi
+ * /api/users/{id}/reset-password:
+ *   post:
+ *     tags: [Users]
+ *     summary: Reset a user's password
+ *     description: |
+ *       **Roles:** `admin` (any other user), `hr` (employees only). Not for your own account (use
+ *       `POST /api/auth/change-password`). Takes **no body** (any field is refused).
+ *
+ *       The old password stops working at once, every session of the user ends, the account is unlocked, and
+ *       `must_change_password` is set. Like account creation, the new password goes out as an emailed link
+ *       (`password_delivery: "email"`) or comes back once as `temporaryPassword`.
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     parameters:
+ *       - $ref: '#/components/parameters/UserId'
+ *     responses:
+ *       '200':
+ *         description: The password was reset
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/UserPasswordResponse' }
+ *       '400': { $ref: '#/components/responses/BadRequest' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403':
+ *         description: Not admin or HR, your own account, or HR and the user is not an employee
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: HR can only reset passwords of employee accounts }
+ *       '404':
+ *         description: No such user
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: User not found }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.post(
   '/:id/reset-password',
   requireRole('admin', 'hr'),
@@ -482,6 +675,68 @@ async function editUser(req, res) {
   res.json(await findUser(id))
 }
 
+/**
+ * @openapi
+ * /api/users/{id}:
+ *   patch:
+ *     tags: [Users]
+ *     summary: Update a user account
+ *     description: |
+ *       **Roles:** `admin` (anyone, including their own details), `hr` (employee accounts only, and never `role`).
+ *       Only the fields sent change.
+ *
+ *       Rules: nobody changes their own `role` or `is_active`; the last active admin can't be demoted or
+ *       deactivated. A role change or deactivation ends the user's sessions, and if they stop being staff their
+ *       unfinished tickets are unassigned (an `assigned` ticket goes back to `open`).
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     parameters:
+ *       - $ref: '#/components/parameters/UserId'
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/UpdateUserRequest' }
+ *           examples:
+ *             details: { value: { job_title: Sales Team Lead, department_id: 2 } }
+ *             promote: { value: { role: agent } }
+ *             deactivate: { value: { is_active: false } }
+ *     responses:
+ *       '200':
+ *         description: The updated user
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/User' }
+ *       '400':
+ *         description: Validation failed (nothing to change, unknown field, unknown department, …)
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/ValidationError' }
+ *             example:
+ *               message: Send at least one of name, email, department_id, job_title, role or is_active to change
+ *               errors: [{ field: body, message: 'Send at least one of name, email, department_id, job_title, role or is_active to change' }]
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403':
+ *         description: Not admin or HR, HR changing a non-employee or sending role, or changing your own role/active status
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             examples:
+ *               hrRole: { value: { message: HR cannot change roles } }
+ *               self: { value: { message: You cannot change your own role or active status } }
+ *       '404':
+ *         description: No such user
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: User not found }
+ *       '409':
+ *         description: The email is taken, or this is the last active admin
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: This is the last active admin. Make someone else an admin first }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.patch(
   '/:id',
   requireRole('admin', 'hr'),

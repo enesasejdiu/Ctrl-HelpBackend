@@ -1,0 +1,1116 @@
+# Shared OpenAPI components for the API docs (src/docs/swagger.js reads this file with swagger-jsdoc).
+# Response schemas follow what the routes actually send (src/routes/*, src/kb.js, src/attachments.js, src/settings.js);
+# request schemas follow the zod schemas in src/schemas/. password_hash is never part of any response.
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: tf_session
+      description: >
+        The session token (a JWT, valid 8 hours), set as an httpOnly cookie by `POST /api/auth/login`. In this page you
+        don't paste it anywhere: log in with **Try it out** and the browser sends the cookie by itself. With curl, keep
+        the cookies from the login response (`-c cookies.txt`) and send them back (`-b cookies.txt`).
+    csrfToken:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+      description: >
+        Required on every POST, PATCH, PUT and DELETE made with the session cookie: the value of the `tf_csrf` cookie
+        set at login (double-submit). This page fills it in automatically from the cookie; enter it here only to
+        override that.
+
+  parameters:
+    TicketId:
+      name: id
+      in: path
+      required: true
+      description: The ticket's id
+      schema: { type: integer, minimum: 1, example: 42 }
+    UserId:
+      name: id
+      in: path
+      required: true
+      description: The user's id
+      schema: { type: integer, minimum: 1, example: 4 }
+    Page:
+      name: page
+      in: query
+      required: false
+      description: Page number (1 or more). Sending it switches the response to the paged form `{ items, total, page, pageSize }`.
+      schema: { type: integer, minimum: 1, maximum: 1000000, example: 1 }
+    PageSize:
+      name: pageSize
+      in: query
+      required: false
+      description: Rows per page (default 25). Only used together with `page`.
+      schema: { type: integer, minimum: 1, maximum: 100, default: 25, example: 25 }
+    Order:
+      name: order
+      in: query
+      required: false
+      description: Sort direction; each sort column has its own default when left out.
+      schema: { type: string, enum: [asc, desc] }
+
+  schemas:
+    # ---------------------------------------------------------------------------------------------------------------
+    # Errors
+    Error:
+      type: object
+      required: [message]
+      properties:
+        message: { type: string, description: A message ready to show to the user, example: Ticket not found }
+        code:
+          type: string
+          description: A fixed name for some errors that clients react to (e.g. PASSWORD_CHANGE_REQUIRED, CSRF_INVALID)
+          example: TICKET_NOT_CLOSED
+      additionalProperties: true
+    FieldError:
+      type: object
+      required: [field, message]
+      properties:
+        field: { type: string, example: title }
+        message: { type: string, example: Title is required }
+    ValidationError:
+      type: object
+      required: [message, errors]
+      description: A request that failed validation. `message` is the first problem; `errors` lists every one.
+      properties:
+        message: { type: string, example: Title is required }
+        code: { type: string, description: Present on some 409/422 answers, example: NAME_TAKEN }
+        errors:
+          type: array
+          items: { $ref: '#/components/schemas/FieldError' }
+    ServerError:
+      type: object
+      required: [message, request_id]
+      properties:
+        message: { type: string, example: 'Something went wrong (reference: 3f1c2a9e-5b7d-4e0a-9c1b-8d2f6e4a7b10)' }
+        request_id:
+          type: string
+          description: The request id (also in the X-Request-Id header), for finding the server log lines
+          example: 3f1c2a9e-5b7d-4e0a-9c1b-8d2f6e4a7b10
+    Message:
+      type: object
+      required: [message]
+      properties:
+        message: { type: string, example: 'Password set, please log in.' }
+
+    # ---------------------------------------------------------------------------------------------------------------
+    # Enums
+    UserRole:
+      type: string
+      enum: [employee, agent, hr, admin]
+      description: '`employee` = Employee, `agent` = IT staff, `hr` = HR, `admin` = Administrator'
+      example: employee
+    TicketStatus:
+      type: string
+      enum: [open, assigned, in_progress, waiting_for_user, resolved, closed, reopened]
+      example: open
+    PasswordDelivery:
+      type: string
+      enum: [email, temporary_password]
+      description: >
+        How the new user gets their password, decided by the server's email settings: `email` = a one-time link is
+        emailed to them (48 hours), `temporary_password` = a temporary password is returned once in this response.
+      example: temporary_password
+    AuditAction:
+      type: string
+      enum:
+        - login_success
+        - login_failure
+        - account_locked
+        - logout
+        - logout_all
+        - password_changed
+        - password_reset
+        - password_reset_requested
+        - password_reset_self
+        - password_set_with_link
+        - user_created
+        - invite_resent
+        - user_updated
+        - role_changed
+        - user_activated
+        - user_deactivated
+        - attachment_uploaded
+        - attachment_deleted
+        - ticket_auto_closed
+        - ticket_escalated
+        - kb.article_created
+        - kb.article_updated
+        - kb.article_published
+        - kb.article_unpublished
+        - kb.article_deleted
+        - kb.category_created
+        - kb.category_updated
+        - kb.category_deleted
+        - canned.shared_created
+        - canned.shared_updated
+        - canned.shared_deleted
+      example: login_success
+
+    # ---------------------------------------------------------------------------------------------------------------
+    # Users and auth
+    UserRef:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: integer, example: 2 }
+        name: { type: string, example: Arben Krasniqi }
+    User:
+      type: object
+      description: A user account as admins and HR see it. The password hash is never sent.
+      properties:
+        id: { type: integer, example: 4 }
+        name: { type: string, maxLength: 100, example: Liridon Gashi }
+        email: { type: string, format: email, maxLength: 150, example: liridon.gashi@example.com }
+        role: { $ref: '#/components/schemas/UserRole' }
+        department_id: { type: integer, nullable: true, example: 3 }
+        department_name: { type: string, nullable: true, example: Finance }
+        job_title: { type: string, nullable: true, maxLength: 255, example: Accountant }
+        is_active: { type: boolean, example: true }
+        must_change_password:
+          type: boolean
+          description: True until the user has set their own password (new account, or after a reset)
+          example: false
+        last_login_at: { type: string, format: date-time, nullable: true, example: '2026-11-25T08:14:03.000Z' }
+        created_at: { type: string, format: date-time, example: '2026-10-01T09:00:00.000Z' }
+        updated_at: { type: string, format: date-time, example: '2026-11-20T13:45:10.000Z' }
+    CurrentUser:
+      type: object
+      description: The logged-in user's own profile (login, /me, change-password). The password hash is never sent.
+      properties:
+        id: { type: integer, example: 4 }
+        name: { type: string, example: Liridon Gashi }
+        email: { type: string, format: email, example: liridon.gashi@example.com }
+        role: { $ref: '#/components/schemas/UserRole' }
+        department_id: { type: integer, nullable: true, example: 3 }
+        department_name: { type: string, nullable: true, example: Finance }
+        job_title: { type: string, nullable: true, example: Accountant }
+        created_at: { type: string, format: date-time, example: '2026-10-01T09:00:00.000Z' }
+        last_login_at: { type: string, format: date-time, nullable: true, example: '2026-11-26T07:58:41.000Z' }
+        must_change_password:
+          type: boolean
+          description: When true, send the user to the change-password screen; every other endpoint answers 403 until then
+          example: false
+    PagedUsers:
+      type: object
+      required: [items, total, page, pageSize]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/User' }
+        total: { type: integer, example: 42 }
+        page: { type: integer, example: 1 }
+        pageSize: { type: integer, example: 25 }
+    LoginRequest:
+      type: object
+      required: [email, password]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 150
+          description: Trimmed and lowercased before the lookup
+          example: admin@ticketflow.local
+        password: { type: string, minLength: 1, format: password, example: Password123 }
+    LoginResponse:
+      type: object
+      required: [user]
+      properties:
+        user: { $ref: '#/components/schemas/CurrentUser' }
+    ChangePasswordRequest:
+      type: object
+      required: [currentPassword, newPassword]
+      additionalProperties: false
+      properties:
+        currentPassword: { type: string, minLength: 1, format: password, example: TempPass2026x }
+        newPassword:
+          type: string
+          format: password
+          minLength: 10
+          maxLength: 72
+          description: 10–72 characters with at least one letter and one number; must differ from the current one
+          example: NewSecret2026
+    ChangePasswordResponse:
+      type: object
+      required: [message, user]
+      properties:
+        message: { type: string, example: Password changed }
+        user: { $ref: '#/components/schemas/CurrentUser' }
+    SetPasswordRequest:
+      type: object
+      required: [token, new_password]
+      additionalProperties: false
+      properties:
+        token:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: The token from the emailed link
+          example: Qm9vdHN0cmFwVG9rZW5FeGFtcGxlRm9yRG9jczEyMzQ1Ng
+        new_password:
+          type: string
+          format: password
+          description: 10–72 characters with at least one letter and one number (checked after the token; 422 WEAK_PASSWORD)
+          example: NewSecret2026
+    ForgotPasswordRequest:
+      type: object
+      required: [email]
+      additionalProperties: false
+      properties:
+        email: { type: string, format: email, maxLength: 150, example: liridon.gashi@example.com }
+    SetPasswordTokenStatus:
+      type: object
+      required: [status, purpose]
+      description: >
+        `valid` comes with `email` and `expires_at`. `expired`, `used` and `invalid` come with `message` and `code`
+        instead (and `purpose: null` for `invalid`).
+      properties:
+        status: { type: string, enum: [valid, expired, used, invalid], example: valid }
+        purpose:
+          type: string
+          nullable: true
+          enum: [setup, reset, forgot, null]
+          description: '`setup` = new account, `reset` = reset by admin/HR, `forgot` = "Forgot password"'
+          example: setup
+        email: { type: string, format: email, example: liridon.gashi@example.com }
+        expires_at: { type: string, format: date-time, example: '2026-11-28T10:00:00.000Z' }
+        message: { type: string, example: This link has expired. Ask your administrator or HR for a new link. }
+        code: { type: string, enum: [TOKEN_INVALID, TOKEN_EXPIRED, TOKEN_USED], example: TOKEN_EXPIRED }
+    AuthConfig:
+      type: object
+      required: [email_enabled]
+      properties:
+        email_enabled:
+          type: boolean
+          description: Whether the sign-in page may offer "Forgot password?" (email is set up on the server)
+          example: false
+    CreateUserRequest:
+      type: object
+      required: [name, email]
+      additionalProperties: false
+      description: >
+        No password field: the server always makes it. `role` is required for admins; HR may leave it out (it then
+        means `employee`) and may only create employees.
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100, example: Vjosa Hoxha }
+        email: { type: string, format: email, maxLength: 150, example: vjosa.hoxha@example.com }
+        role: { $ref: '#/components/schemas/UserRole' }
+        department_id: { type: integer, minimum: 1, nullable: true, example: 2 }
+        job_title: { type: string, maxLength: 255, nullable: true, example: Sales Representative }
+    UpdateUserRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: >
+        Only the fields sent change; send at least one. `null` clears `department_id` and `job_title`. HR may not send
+        `role` at all. Nobody may change their own `role` or `is_active`, and the last active admin can't lose either.
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100, example: Vjosa Hoxha-Berisha }
+        email: { type: string, format: email, maxLength: 150, example: vjosa.berisha@example.com }
+        department_id: { type: integer, minimum: 1, nullable: true, example: 2 }
+        job_title: { type: string, maxLength: 255, nullable: true, example: Sales Team Lead }
+        role: { $ref: '#/components/schemas/UserRole' }
+        is_active:
+          type: boolean
+          description: false deactivates the account (ends its sessions and releases its unfinished tickets)
+          example: true
+    ResendLinkRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        purpose:
+          type: string
+          enum: [setup, reset]
+          description: Which kind of link to send; left out, the kind of the user's last link (or `setup`)
+          example: setup
+    UserPasswordResponse:
+      type: object
+      required: [user, password_delivery]
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        password_delivery: { $ref: '#/components/schemas/PasswordDelivery' }
+        temporaryPassword:
+          type: string
+          description: Only when `password_delivery` is `temporary_password`. Shown this once; only its hash is stored.
+          example: Kx7mPq2vRt9w
+    AgentOption:
+      type: object
+      properties:
+        id: { type: integer, example: 2 }
+        name: { type: string, example: Arben Krasniqi }
+
+    # ---------------------------------------------------------------------------------------------------------------
+    # Tickets
+    Ticket:
+      type: object
+      properties:
+        id: { type: integer, example: 42 }
+        title: { type: string, maxLength: 150, example: Laptop does not connect to office Wi-Fi }
+        description:
+          type: string
+          example: Since this morning my laptop shows "No internet" on the OfficeNet network. Other devices work.
+        requester_id: { type: integer, example: 4 }
+        assigned_to: { type: integer, nullable: true, description: The assignee's user id, example: 2 }
+        category_id: { type: integer, example: 3 }
+        priority_id: { type: integer, example: 3 }
+        status: { $ref: '#/components/schemas/TicketStatus' }
+        resolution:
+          type: string
+          nullable: true
+          description: The resolution note (kept when the ticket is reopened, as the previous resolution)
+          example: null
+        created_at: { type: string, format: date-time, example: '2026-11-25T08:30:00.000Z' }
+        updated_at: { type: string, format: date-time, example: '2026-11-25T09:05:12.000Z' }
+        resolved_at: { type: string, format: date-time, nullable: true, example: null }
+        closed_at: { type: string, format: date-time, nullable: true, example: null }
+        requester_name: { type: string, example: Liridon Gashi }
+        assignee_name: { type: string, nullable: true, example: Arben Krasniqi }
+        category_name: { type: string, example: Network }
+        priority_name: { type: string, example: High }
+        priority_level: { type: integer, description: The priority's rank (higher = more urgent), example: 3 }
+        target_hours: { type: integer, description: The priority's target resolution time in hours, example: 24 }
+        is_overdue:
+          type: boolean
+          description: Unfinished (not resolved or closed) and older than the priority's target_hours
+          example: false
+    PagedTickets:
+      type: object
+      required: [items, total, page, pageSize]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Ticket' }
+        total: { type: integer, example: 137 }
+        page: { type: integer, example: 1 }
+        pageSize: { type: integer, example: 25 }
+    TicketHistoryEntry:
+      type: object
+      properties:
+        id: { type: integer, example: 311 }
+        ticket_id: { type: integer, example: 42 }
+        changed_by: { type: integer, nullable: true, description: null = the system (e.g. auto-close), example: 2 }
+        field_changed: { type: string, enum: [status, priority, assigned_to], example: status }
+        old_value: { type: string, nullable: true, description: 'Display text (names, not ids)', example: open }
+        new_value: { type: string, nullable: true, example: assigned }
+        changed_at: { type: string, format: date-time, example: '2026-11-25T09:05:12.000Z' }
+        changed_by_name: { type: string, description: '"System" when changed_by is null', example: Arben Krasniqi }
+    Rating:
+      type: object
+      properties:
+        stars: { type: integer, minimum: 1, maximum: 5, example: 5 }
+        comment: { type: string, nullable: true, maxLength: 500, example: 'Fixed quickly, thank you!' }
+        created_at: { type: string, format: date-time, example: '2026-11-26T10:12:00.000Z' }
+    TicketDetail:
+      allOf:
+        - $ref: '#/components/schemas/Ticket'
+        - type: object
+          properties:
+            comments:
+              type: array
+              description: Oldest first. Internal notes are left out for employees and HR.
+              items: { $ref: '#/components/schemas/Comment' }
+            history:
+              type: array
+              description: Every status, priority and assignee change, oldest first
+              items: { $ref: '#/components/schemas/TicketHistoryEntry' }
+            attachments:
+              type: array
+              description: Oldest first. Files added with an internal note are left out for employees and HR.
+              items: { $ref: '#/components/schemas/Attachment' }
+            rating:
+              allOf: [{ $ref: '#/components/schemas/Rating' }]
+              nullable: true
+              description: null until the requester rates the closed ticket
+    CreateTicketRequest:
+      type: object
+      required: [title, description, category_id]
+      additionalProperties: false
+      properties:
+        title:
+          {
+            type: string,
+            minLength: 1,
+            maxLength: 150,
+            description: Trimmed,
+            example: Printer on 2nd floor jams on every page,
+          }
+        description:
+          type: string
+          minLength: 1
+          maxLength: 10000
+          description: Trimmed
+          example: The HP printer next to the kitchen jams after one page. I already restarted it twice.
+        category_id: { type: integer, minimum: 1, description: An active category, example: 1 }
+        priority_id:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: An active priority; left out or null = the default priority
+          example: 2
+    UpdateTicketStatusRequest:
+      type: object
+      required: [status]
+      additionalProperties: false
+      properties:
+        status: { $ref: '#/components/schemas/TicketStatus' }
+        resolution:
+          type: string
+          maxLength: 10000
+          nullable: true
+          description: >
+            The resolution note. Required when moving to `resolved` unless the ticket already has one from an earlier
+            resolve (then a new one replaces it). Ignored for other statuses.
+          example: Replaced the Wi-Fi driver and re-joined the laptop to OfficeNet.
+    UpdateTicketPriorityRequest:
+      type: object
+      required: [priority_id]
+      additionalProperties: false
+      properties:
+        priority_id: { type: integer, minimum: 1, example: 4 }
+    AssignTicketRequest:
+      type: object
+      required: [assigned_to]
+      additionalProperties: false
+      properties:
+        assigned_to:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: An active agent or admin; null = unassign. Agents may only assign themselves or release their own ticket.
+          example: 2
+    RateTicketRequest:
+      type: object
+      required: [stars]
+      additionalProperties: false
+      properties:
+        stars: { type: integer, minimum: 1, maximum: 5, description: 'A JSON number, not a string', example: 5 }
+        comment:
+          type: string
+          maxLength: 500
+          nullable: true
+          description: Trimmed; empty counts as none
+          example: Fixed quickly, thank you!
+
+    # ---------------------------------------------------------------------------------------------------------------
+    # Comments
+    Comment:
+      type: object
+      properties:
+        id: { type: integer, example: 77 }
+        ticket_id: { type: integer, example: 42 }
+        user_id: { type: integer, description: The author, example: 2 }
+        content: { type: string, example: Could you tell me which Windows version the laptop runs? }
+        is_internal: { type: boolean, description: 'An internal note, visible to staff only', example: false }
+        created_at: { type: string, format: date-time, example: '2026-11-25T09:10:00.000Z' }
+        author_name: { type: string, example: Arben Krasniqi }
+        author_role: { $ref: '#/components/schemas/UserRole' }
+    CreateCommentRequest:
+      type: object
+      required: [content]
+      additionalProperties: false
+      properties:
+        content:
+          type: string
+          minLength: 1
+          maxLength: 10000
+          description: Trimmed; may not be empty
+          example: Could you tell me which Windows version the laptop runs?
+        is_internal:
+          type: boolean
+          description: true = internal note (staff only). Ignored (always false) when an employee or HR sends it.
+          example: false
+
+    # ---------------------------------------------------------------------------------------------------------------
+    # Attachments
+    Attachment:
+      type: object
+      properties:
+        id: { type: integer, example: 15 }
+        ticket_id: { type: integer, example: 42 }
+        comment_id: { type: integer, nullable: true, description: The comment the file was added with, example: null }
+        original_name: { type: string, maxLength: 255, example: wifi-error.png }
+        mime_type:
+          type: string
+          enum: [image/png, image/jpeg, image/gif, image/webp, application/pdf, text/plain, text/csv]
+          example: image/png
+        size_bytes: { type: integer, example: 184320 }
+        sha256:
+          type: string
+          nullable: true
+          example: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+        uploaded_by: { $ref: '#/components/schemas/UserRef' }
+        created_at: { type: string, format: date-time, example: '2026-11-25T08:31:20.000Z' }
+    UploadAttachmentsRequest:
+      type: object
+      required: [files]
+      properties:
+        files:
+          type: array
+          minItems: 1
+          maxItems: 5
+          description: >
+            1–5 files, each at most 10 MB and not empty. Allowed: png, jpg/jpeg, gif, webp, pdf, txt, log, csv; the
+            content must match the extension. A ticket can have at most 20 attachments.
+          items: { type: string, format: binary }
+        comment_id:
+          type: integer
+          minimum: 1
+          description: Optional; a comment on this ticket (that the user can see) the files belong to
+          example: 77
+
+    # ---------------------------------------------------------------------------------------------------------------
+    # Departments
+    Department:
+      type: object
+      properties:
+        id: { type: integer, example: 3 }
+        name: { type: string, maxLength: 100, example: Finance }
+        user_count: { type: integer, description: Users in this department, example: 12 }
+        created_at: { type: string, format: date-time, example: '2026-10-01T09:00:00.000Z' }
+        updated_at: { type: string, format: date-time, example: '2026-10-01T09:00:00.000Z' }
+    DepartmentRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Trimmed, runs of spaces collapsed; unique ignoring letter case
+          example: Human Resources
+
+    # ---------------------------------------------------------------------------------------------------------------
+    # Categories, priorities, settings
+    Category:
+      type: object
+      properties:
+        id: { type: integer, example: 3 }
+        name: { type: string, maxLength: 50, example: Network }
+        description:
+          { type: string, nullable: true, maxLength: 255, example: 'Wi-Fi, cabling, internet and network outages' }
+        sort_order: { type: integer, example: 3 }
+        is_active: { type: boolean, description: false = archived (can't be chosen for new tickets), example: true }
+        created_at: { type: string, format: date-time, example: '2026-10-01T09:00:00.000Z' }
+        updated_at: { type: string, format: date-time, example: '2026-10-01T09:00:00.000Z' }
+        ticket_count: { type: integer, description: Admins only, example: 18 }
+    CreateCategoryRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 50, example: Phones }
+        description: { type: string, maxLength: 255, nullable: true, example: Desk phones and company mobiles }
+        sort_order:
+          type: integer
+          minimum: 0
+          maximum: 100000
+          description: Left out = after the last category
+          example: 7
+    UpdateCategoryRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 1, maxLength: 50, example: Phones }
+        description: { type: string, maxLength: 255, nullable: true, example: Desk phones and company mobiles }
+        sort_order: { type: integer, minimum: 0, maximum: 100000, example: 2 }
+        is_active: { type: boolean, description: false archives the category, example: false }
+    Priority:
+      type: object
+      properties:
+        id: { type: integer, example: 3 }
+        name: { type: string, maxLength: 50, example: High }
+        rank: { type: integer, description: Unique; higher = more urgent, example: 3 }
+        target_hours: { type: integer, description: Target resolution time in hours, example: 24 }
+        is_default: { type: boolean, description: Exactly one priority is the default, example: false }
+        is_active: { type: boolean, example: true }
+        created_at: { type: string, format: date-time, example: '2026-10-01T09:00:00.000Z' }
+        updated_at: { type: string, format: date-time, example: '2026-10-01T09:00:00.000Z' }
+        ticket_count: { type: integer, description: Admins only, example: 9 }
+    CreatePriorityRequest:
+      type: object
+      required: [name, rank, target_hours]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 50, example: Urgent }
+        rank: { type: integer, minimum: 1, maximum: 1000, example: 5 }
+        target_hours: { type: integer, minimum: 1, maximum: 8760, example: 2 }
+        is_default: { type: boolean, description: true makes it the default instead of the current one, example: false }
+    UpdatePriorityRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 1, maxLength: 50, example: Urgent }
+        rank: { type: integer, minimum: 1, maximum: 1000, example: 5 }
+        target_hours: { type: integer, minimum: 1, maximum: 8760, example: 2 }
+        is_default:
+          type: boolean
+          description: >
+            true makes this the default (the old default stops being one). false on the current default is refused
+            (409 PRIORITY_IS_DEFAULT): make another priority the default instead.
+          example: true
+        is_active: { type: boolean, example: true }
+    ReorderPrioritiesRequest:
+      type: object
+      required: [ids]
+      additionalProperties: false
+      properties:
+        ids:
+          type: array
+          description: Every priority id exactly once, least urgent first. Ranks become 1, 2, 3, … in this order.
+          items: { type: integer, minimum: 1 }
+          example: [1, 2, 3, 4]
+    MetaResponse:
+      type: object
+      properties:
+        categories:
+          type: array
+          description: Every category, archived ones too; `ticket_count` for admins only
+          items:
+            type: object
+            properties:
+              id: { type: integer, example: 3 }
+              name: { type: string, example: Network }
+              description: { type: string, nullable: true, example: 'Wi-Fi, cabling, internet and network outages' }
+              sort_order: { type: integer, example: 3 }
+              is_active: { type: boolean, example: true }
+              ticket_count: { type: integer, example: 18 }
+        priorities:
+          type: array
+          description: Every priority, archived ones too, least urgent first
+          items:
+            type: object
+            properties:
+              id: { type: integer, example: 3 }
+              name: { type: string, example: High }
+              level: { type: integer, description: Same as rank (older name), example: 3 }
+              rank: { type: integer, example: 3 }
+              target_hours: { type: integer, example: 24 }
+              is_default: { type: boolean, example: false }
+              is_active: { type: boolean, example: true }
+        password_delivery: { $ref: '#/components/schemas/PasswordDelivery' }
+    PublicSettings:
+      type: object
+      properties:
+        company_name: { type: string, example: TicketFlow }
+        email_enabled: { type: boolean, example: false }
+    AdminSettings:
+      type: object
+      properties:
+        company_name: { type: string, example: TicketFlow }
+        auto_close_days:
+          type: integer
+          minimum: 0
+          maximum: 365
+          description: Days a resolved ticket stays resolved before it is closed automatically; 0 = never
+          example: 7
+        escalation_enabled: { type: boolean, example: true }
+        escalation_unassigned_minutes:
+          type: integer
+          minimum: 15
+          maximum: 1440
+          description: How long an urgent ticket may stay unassigned before admins are emailed
+          example: 120
+    UpdateSettingsRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        company_name: { type: string, minLength: 1, maxLength: 100, example: Acme Corp IT }
+        auto_close_days: { type: integer, minimum: 0, maximum: 365, example: 7 }
+        escalation_enabled: { type: boolean, example: true }
+        escalation_unassigned_minutes: { type: integer, minimum: 15, maximum: 1440, example: 120 }
+
+    # ---------------------------------------------------------------------------------------------------------------
+    # Statistics
+    Stats:
+      type: object
+      description: >
+        Resolution time = hours from created_at to resolved_at, rounded to 1 decimal; closed tickets keep their
+        resolved_at and count as resolved. Averages are null when there is nothing to average.
+      properties:
+        total: { type: integer, description: Every ticket, example: 137 }
+        byStatus:
+          type: array
+          description: Only statuses that occur, in workflow order
+          items:
+            type: object
+            properties:
+              status: { $ref: '#/components/schemas/TicketStatus' }
+              count: { type: integer, example: 12 }
+        avgResolutionHours: { type: number, nullable: true, example: 18.4 }
+        resolvedCount: { type: integer, example: 96 }
+        overdueCount: { type: integer, example: 5 }
+        byPriority:
+          type: array
+          description: Every priority (most urgent first) with its target and actual average
+          items:
+            type: object
+            properties:
+              name: { type: string, example: High }
+              target_hours: { type: integer, example: 24 }
+              count: { type: integer, example: 31 }
+              avg_hours: { type: number, nullable: true, example: 15.2 }
+        byCategory:
+          type: array
+          description: Every category, most tickets first
+          items:
+            type: object
+            properties:
+              name: { type: string, example: Network }
+              count: { type: integer, example: 40 }
+        byAgent:
+          type: array
+          description: Every active agent and admin, with the tickets currently assigned to them
+          items:
+            type: object
+            properties:
+              name: { type: string, example: Arben Krasniqi }
+              assigned: { type: integer, example: 25 }
+              resolved: { type: integer, example: 21 }
+              avg_hours: { type: number, nullable: true, example: 12.7 }
+        trend:
+          type: array
+          description: Tickets created and resolved per ISO week, the last 8 weeks, oldest first
+          items:
+            type: object
+            properties:
+              week: { type: string, example: 2026-W48 }
+              created: { type: integer, example: 14 }
+              resolved: { type: integer, example: 11 }
+        ratings:
+          type: object
+          properties:
+            average: { type: number, nullable: true, example: 4.6 }
+            count: { type: integer, example: 58 }
+            byAgent:
+              type: array
+              items:
+                type: object
+                properties:
+                  name: { type: string, example: Arben Krasniqi }
+                  average: { type: number, nullable: true, example: 4.8 }
+                  count: { type: integer, example: 30 }
+
+    # ---------------------------------------------------------------------------------------------------------------
+    # Audit
+    AuditEntry:
+      type: object
+      properties:
+        id: { type: integer, example: 1024 }
+        created_at: { type: string, format: date-time, example: '2026-11-26T07:58:41.000Z' }
+        action: { $ref: '#/components/schemas/AuditAction' }
+        actor:
+          {
+            allOf: [{ $ref: '#/components/schemas/UserRef' }],
+            nullable: true,
+            description: Who did it (null = nobody logged in / the system),
+          }
+        target:
+          { allOf: [{ $ref: '#/components/schemas/UserRef' }], nullable: true, description: The user it was done to }
+        details:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: Action-specific facts; never passwords, tokens or session ids
+          example: { email: admin@ticketflow.local }
+        ip: { type: string, nullable: true, example: 192.168.1.25 }
+    AuditPage:
+      type: object
+      properties:
+        entries:
+          type: array
+          items: { $ref: '#/components/schemas/AuditEntry' }
+        total: { type: integer, example: 812 }
+        page: { type: integer, example: 1 }
+        pageSize: { type: integer, example: 25 }
+
+    # ---------------------------------------------------------------------------------------------------------------
+    # Knowledge base
+    KbCategoryRef:
+      type: object
+      properties:
+        id: { type: integer, example: 1 }
+        name: { type: string, example: Network & Wi-Fi }
+        slug: { type: string, example: network-wi-fi }
+    KbCategory:
+      type: object
+      properties:
+        id: { type: integer, example: 1 }
+        name: { type: string, maxLength: 60, example: Network & Wi-Fi }
+        slug: { type: string, maxLength: 80, example: network-wi-fi }
+        sort_order: { type: integer, example: 0 }
+        published_count: { type: integer, description: Published articles in it, example: 6 }
+    CreateKbCategoryRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          {
+            type: string,
+            minLength: 1,
+            maxLength: 60,
+            description: Unique ignoring case; the slug is made from it,
+            example: Printers,
+          }
+        sort_order: { type: integer, minimum: -100000, maximum: 100000, default: 0, example: 2 }
+    UpdateKbCategoryRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name:
+          {
+            type: string,
+            minLength: 1,
+            maxLength: 60,
+            description: A new name gets a new slug,
+            example: Printers & Scanners,
+          }
+        sort_order: { type: integer, minimum: -100000, maximum: 100000, example: 3 }
+    KbArticleListItem:
+      type: object
+      properties:
+        id: { type: integer, example: 8 }
+        slug: { type: string, example: connect-to-office-wi-fi }
+        title: { type: string, example: Connect to the office Wi-Fi }
+        summary:
+          {
+            type: string,
+            description: "The article's summary, or the start of its text",
+            example: How to join OfficeNet on Windows and macOS.,
+          }
+        category: { $ref: '#/components/schemas/KbCategoryRef' }
+        status: { type: string, enum: [draft, published], example: published }
+        updated_at: { type: string, format: date-time, example: '2026-11-20T10:00:00.123Z' }
+        published_at: { type: string, format: date-time, nullable: true, example: '2026-11-02T08:00:00.000Z' }
+    KbArticlePage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/KbArticleListItem' }
+        total: { type: integer, example: 23 }
+        page: { type: integer, example: 1 }
+        pageSize: { type: integer, example: 25 }
+    KbArticle:
+      type: object
+      properties:
+        id: { type: integer, example: 8 }
+        slug: { type: string, example: connect-to-office-wi-fi }
+        title: { type: string, example: Connect to the office Wi-Fi }
+        summary: { type: string, nullable: true, example: How to join OfficeNet on Windows and macOS. }
+        body:
+          { type: string, description: 'Markdown, exactly as written', example: "## Windows\n1. Click the Wi-Fi icon…" }
+        category: { $ref: '#/components/schemas/KbCategoryRef' }
+        status: { type: string, enum: [draft, published], example: published }
+        published_at: { type: string, format: date-time, nullable: true, example: '2026-11-02T08:00:00.000Z' }
+        created_at: { type: string, format: date-time, example: '2026-11-01T15:20:00.000Z' }
+        updated_at:
+          type: string
+          format: date-time
+          description: Send this back as updated_at when saving changes
+          example: '2026-11-20T10:00:00.123Z'
+        author: { allOf: [{ $ref: '#/components/schemas/UserRef' }], nullable: true }
+        updated_by: { allOf: [{ $ref: '#/components/schemas/UserRef' }], nullable: true }
+    CreateKbArticleRequest:
+      type: object
+      required: [title, body, category_id]
+      additionalProperties: false
+      properties:
+        title: { type: string, minLength: 5, maxLength: 200, example: Connect to the office Wi-Fi }
+        summary:
+          {
+            type: string,
+            maxLength: 300,
+            nullable: true,
+            description: Empty counts as none,
+            example: How to join OfficeNet on Windows and macOS.,
+          }
+        body:
+          {
+            type: string,
+            maxLength: 100000,
+            description: Markdown; not only whitespace,
+            example: "## Windows\n1. Click the Wi-Fi icon…",
+          }
+        category_id: { type: integer, minimum: 1, example: 1 }
+        status: { type: string, enum: [draft, published], default: draft, example: draft }
+    UpdateKbArticleRequest:
+      type: object
+      required: [updated_at]
+      additionalProperties: false
+      description: updated_at plus at least one field to change
+      properties:
+        updated_at:
+          type: string
+          format: date-time
+          description: The article's updated_at as loaded; a different value in the database means someone else saved in between (409)
+          example: '2026-11-20T10:00:00.123Z'
+        title: { type: string, minLength: 5, maxLength: 200, example: Connect to the office Wi-Fi (updated) }
+        slug:
+          type: string
+          maxLength: 220
+          pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$'
+          description: Only before the first publish; not new, manage or search
+          example: office-wi-fi
+        summary: { type: string, maxLength: 300, nullable: true, example: How to join OfficeNet. }
+        body: { type: string, maxLength: 100000, example: "## Windows\n1. Click the Wi-Fi icon…" }
+        category_id: { type: integer, minimum: 1, example: 1 }
+        status:
+          {
+            type: string,
+            enum: [draft, published],
+            description: 'published publishes, draft unpublishes',
+            example: published,
+          }
+
+    # ---------------------------------------------------------------------------------------------------------------
+    # Canned responses
+    CannedResponse:
+      type: object
+      properties:
+        id: { type: integer, example: 5 }
+        title: { type: string, maxLength: 100, example: Restart request }
+        body:
+          {
+            type: string,
+            maxLength: 5000,
+            example: "Hi,\nplease restart your computer and let us know if the problem is still there.",
+          }
+        shared: { type: boolean, description: Shared with all staff (true) or personal (false), example: true }
+        owner_id: { type: integer, nullable: true, description: null for shared responses, example: null }
+        usage_count: { type: integer, example: 31 }
+        last_used_at: { type: string, format: date-time, nullable: true, example: '2026-11-25T14:02:00.000Z' }
+        created_at: { type: string, format: date-time, example: '2026-11-10T09:00:00.000Z' }
+        updated_at: { type: string, format: date-time, example: '2026-11-12T11:30:00.000Z' }
+        updated_by: { allOf: [{ $ref: '#/components/schemas/UserRef' }], nullable: true }
+        can_edit: { type: boolean, description: Whether the current user may change or delete it, example: true }
+    CreateCannedResponseRequest:
+      type: object
+      required: [title, body]
+      additionalProperties: false
+      properties:
+        title:
+          {
+            type: string,
+            minLength: 1,
+            maxLength: 100,
+            description: Trimmed; unique within its scope,
+            example: Restart request,
+          }
+        body:
+          {
+            type: string,
+            maxLength: 5000,
+            description: Kept as written; not only spaces,
+            example: Please restart your computer and let us know if it helps.,
+          }
+        shared:
+          { type: boolean, default: false, description: true = shared with all staff (admins only), example: false }
+    UpdateCannedResponseRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: Send title, body or both. Whether it is shared can't change.
+      properties:
+        title: { type: string, minLength: 1, maxLength: 100, example: Restart request (Windows) }
+        body: { type: string, maxLength: 5000, example: Please restart Windows and let us know if it helps. }
+
+    # ---------------------------------------------------------------------------------------------------------------
+    # Search
+    SearchSuggestions:
+      type: object
+      properties:
+        tickets:
+          type: array
+          description: Up to 5 unfinished tickets the user may see, best match first
+          items:
+            type: object
+            properties:
+              id: { type: integer, example: 42 }
+              number: { type: integer, description: Same as id (shown as "#42"), example: 42 }
+              title: { type: string, example: Laptop does not connect to office Wi-Fi }
+              status: { $ref: '#/components/schemas/TicketStatus' }
+              updated_at: { type: string, format: date-time, example: '2026-11-25T09:05:12.000Z' }
+        articles:
+          type: array
+          description: Up to 5 published articles, best match first
+          items:
+            type: object
+            properties:
+              slug: { type: string, example: connect-to-office-wi-fi }
+              title: { type: string, example: Connect to the office Wi-Fi }
+              summary: { type: string, example: How to join OfficeNet on Windows and macOS. }
+
+  responses:
+    BadRequest:
+      description: >
+        Bad request: the body, query or path failed validation (`{ message, errors }`), the body is not valid JSON, or
+        a rule was broken (`{ message, code? }`).
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/ValidationError'
+              - $ref: '#/components/schemas/Error'
+          example:
+            message: Title is required
+            errors: [{ field: title, message: Title is required }]
+    Unauthorized:
+      description: 'Not logged in, or the session ended (expired, logged out, password reset, deactivated, role changed).'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            notLoggedIn: { value: { message: Not logged in } }
+            expired: { value: { message: 'Session expired, please log in again' } }
+    Forbidden:
+      description: >
+        Forbidden: the role may not do this, the CSRF header is missing or wrong (`CSRF_INVALID`), or the user must
+        change their temporary password first (`PASSWORD_CHANGE_REQUIRED`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            role: { value: { message: You do not have permission for this action } }
+            csrf:
+              { value: { message: Missing or invalid CSRF token. Reload the page and try again., code: CSRF_INVALID } }
+            passwordChange:
+              value: { message: You must change your password before continuing, code: PASSWORD_CHANGE_REQUIRED }
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { message: Not found }
+    Conflict:
+      description: Conflict with the current state (a duplicate, or something still in use)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    UnprocessableEntity:
+      description: Validation failed (this endpoint answers 422 instead of 400)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ValidationError' }
+    TooManyRequests:
+      description: Rate limit reached; see the Retry-After header
+      headers:
+        Retry-After: { schema: { type: integer }, description: Seconds to wait }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { message: Too many attempts. Wait a few minutes and try again., code: RATE_LIMITED }
+    InternalError:
+      description: Unexpected server error. The details are only in the server log; quote request_id.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ServerError' }

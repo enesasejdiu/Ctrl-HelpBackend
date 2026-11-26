@@ -7,6 +7,8 @@ const cookieParser = require('cookie-parser')
 const { notFound, errorHandler } = require('./middleware/errors')
 const { requestLogger } = require('./logger')
 const apiRoutes = require('./routes')
+const swaggerUi = require('swagger-ui-express')
+const apiDocs = require('./docs/swagger')
 
 // Read once, when the app is created: production adds HSTS and trusts the reverse proxy
 const isProduction = process.env.NODE_ENV === 'production'
@@ -67,7 +69,41 @@ app.use('/api/kb', express.json({ limit: KB_BODY_LIMIT }))
 app.use(express.json({ limit: BODY_LIMIT })) // parse JSON request bodies
 app.use(cookieParser()) // req.cookies, for the session and CSRF cookies
 
-// Health check, used to confirm the API is up
+// API documentation (src/docs/swagger.js): Swagger UI at /api-docs and the raw OpenAPI spec at /api-docs.json. Public,
+// like the spec itself; trying a request from the page still needs a login. The page needs scripts and styles, so it
+// gets its own content security policy instead of the API's default-src 'none'.
+app.get('/api-docs.json', (req, res) => {
+  res.json(apiDocs.spec)
+})
+app.use(
+  '/api-docs',
+  (req, res, next) => {
+    res.set('Content-Security-Policy', apiDocs.DOCS_CSP)
+    next()
+  },
+  swaggerUi.serve,
+  swaggerUi.setup(apiDocs.spec, apiDocs.uiOptions),
+)
+
+/**
+ * @openapi
+ * /api/health:
+ *   get:
+ *     tags: [Health]
+ *     summary: Check that the API is up
+ *     description: Answers as long as the server process runs. Does not touch the database. Public.
+ *     security: []
+ *     responses:
+ *       '200':
+ *         description: The API is up
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [status]
+ *               properties:
+ *                 status: { type: string, enum: [ok], example: ok }
+ */
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' })
 })

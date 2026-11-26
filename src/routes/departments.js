@@ -42,7 +42,64 @@ async function loadDepartment(req, res, next) {
 
 router.use(requireAuth)
 
+/**
+ * @openapi
+ * components:
+ *   parameters:
+ *     DepartmentId:
+ *       name: id
+ *       in: path
+ *       required: true
+ *       description: The department's id
+ *       schema: { type: integer, minimum: 1, example: 3 }
+ */
+
 // GET /api/departments → [{ id, name, user_count, created_at, updated_at }], sorted by name
+/**
+ * @openapi
+ * /api/departments:
+ *   get:
+ *     tags: [Departments]
+ *     summary: List departments
+ *     description: '**Roles:** any logged-in user. Every department with its number of users, by name.'
+ *     responses:
+ *       '200':
+ *         description: The departments
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items: { $ref: '#/components/schemas/Department' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ *   post:
+ *     tags: [Departments]
+ *     summary: Create a department
+ *     description: '**Roles:** `admin`, `hr`. Names are unique ignoring letter case.'
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/DepartmentRequest' }
+ *     responses:
+ *       '201':
+ *         description: The new department
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Department' }
+ *       '400': { $ref: '#/components/responses/BadRequest' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '409':
+ *         description: The name is taken
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: A department with this name already exists, code: DEPARTMENT_NAME_TAKEN }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.get('/', async (req, res) => {
   const [rows] = await pool.query(`${DEPARTMENTS_WITH_COUNTS} GROUP BY d.id ORDER BY d.name, d.id`)
   res.json(rows)
@@ -66,6 +123,69 @@ router.post('/', canManage, validate(schemas.departmentBody), async (req, res) =
 
 // PATCH /api/departments/:id { name } (admin and HR) → the renamed department
 // The same name exactly is a no-op (nothing is written, updated_at stays). A change of letter case is a real rename.
+/**
+ * @openapi
+ * /api/departments/{id}:
+ *   patch:
+ *     tags: [Departments]
+ *     summary: Rename a department
+ *     description: '**Roles:** `admin`, `hr`. The exact same name changes nothing; a change of letter case is a rename.'
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     parameters:
+ *       - $ref: '#/components/parameters/DepartmentId'
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/DepartmentRequest' }
+ *     responses:
+ *       '200':
+ *         description: The department
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Department' }
+ *       '400': { $ref: '#/components/responses/BadRequest' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '404':
+ *         description: No such department
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Department not found }
+ *       '409':
+ *         description: The name is taken
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: A department with this name already exists, code: DEPARTMENT_NAME_TAKEN }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ *   delete:
+ *     tags: [Departments]
+ *     summary: Delete an empty department
+ *     description: '**Roles:** `admin`, `hr`. Only when no user is in it.'
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     parameters:
+ *       - $ref: '#/components/parameters/DepartmentId'
+ *     responses:
+ *       '204': { description: Deleted }
+ *       '400': { $ref: '#/components/responses/BadRequest' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '404':
+ *         description: No such department
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Department not found }
+ *       '409':
+ *         description: Users are still in it
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Move the users out of this department before deleting it, code: DEPARTMENT_NOT_EMPTY, user_count: 4 }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.patch(
   '/:id',
   canManage,

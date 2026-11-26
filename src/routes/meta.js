@@ -17,6 +17,26 @@ router.use(requireAuth)
 // tickets still have them; a form for a new ticket offers only the active ones. Categories come in sort_order, then
 // name; priorities least urgent first, with their rank (and level, its old name, for older clients) and is_default.
 // Admins also get each category's ticket_count (the settings page uses it to say whether it can be deleted).
+/**
+ * @openapi
+ * /api/meta:
+ *   get:
+ *     tags: [Meta]
+ *     summary: Lookup data for forms and filters
+ *     description: |
+ *       **Roles:** any logged-in user. Every category and priority, archived ones too (old tickets still have them;
+ *       a new-ticket form should offer only `is_active` ones), and how new passwords are delivered.
+ *       Admins also get each category's `ticket_count`.
+ *     responses:
+ *       '200':
+ *         description: Categories, priorities and the password delivery mode
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/MetaResponse' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.get('/', async (req, res) => {
   const [categories, priorities] = await Promise.all([settings.allCategories(), settings.allPriorities()])
   let categoryList = categories.map(({ id, name, description, sort_order: sortOrder, is_active: isActive }) => ({

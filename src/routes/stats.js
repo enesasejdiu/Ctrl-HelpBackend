@@ -19,6 +19,28 @@ function toNumber(value) {
 
 router.use(requireAuth, requireRole('admin'))
 
+/**
+ * @openapi
+ * /api/stats:
+ *   get:
+ *     tags: [Statistics]
+ *     summary: Dashboard statistics
+ *     description: |
+ *       **Roles:** `admin`. Everything the dashboard shows, in one object: ticket counts by status, priority,
+ *       category and agent; average resolution time overall and per priority (vs. its target) and per agent; overdue
+ *       count; the created-vs-resolved trend of the last 8 weeks; and satisfaction ratings.
+ *
+ *       Resolution time is the hours from `created_at` to `resolved_at`, rounded to 1 decimal.
+ *     responses:
+ *       '200':
+ *         description: The statistics
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Stats' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.get('/', async (req, res) => {
   // Total number of tickets
   const [[{ total }]] = await pool.query('SELECT COUNT(*) AS total FROM tickets')

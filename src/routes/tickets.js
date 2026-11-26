@@ -74,6 +74,66 @@ router.use(requireAuth)
 // Without page: every matching ticket as a plain array (as before). With page: { items, total, page, pageSize },
 // newest first unless sorted.
 // sort: created_at, updated_at, priority, status, title (src/pagination.js)
+/**
+ * @openapi
+ * /api/tickets:
+ *   get:
+ *     tags: [Tickets]
+ *     summary: List tickets
+ *     description: |
+ *       **Roles:** any logged-in user. Staff (`agent`, `admin`) see every ticket; `employee` and `hr` see only the
+ *       tickets they raised. All filters are optional and combine with AND; an empty value (`?status=`) means no filter.
+ *
+ *       **Without `page`** the answer is a plain array of every matching ticket, most urgent first, then newest.
+ *       **With `page`** it is `{ items, total, page, pageSize }`, newest first unless `sort` says otherwise.
+ *     parameters:
+ *       - name: status
+ *         in: query
+ *         schema: { $ref: '#/components/schemas/TicketStatus' }
+ *       - name: priority
+ *         in: query
+ *         description: Priority id
+ *         schema: { type: integer, minimum: 1, example: 3 }
+ *       - name: category
+ *         in: query
+ *         description: Category id
+ *         schema: { type: integer, minimum: 1, example: 1 }
+ *       - name: assigned
+ *         in: query
+ *         description: '`me` = assigned to the current user, `unassigned` = nobody'
+ *         schema: { type: string, enum: [me, unassigned] }
+ *       - name: q
+ *         in: query
+ *         description: Text search in title and description (contains, case-insensitive)
+ *         schema: { type: string, example: printer }
+ *       - name: overdue
+ *         in: query
+ *         description: '`1` = only unfinished tickets older than their priority''s target time'
+ *         schema: { type: string, enum: ['1'] }
+ *       - $ref: '#/components/parameters/Page'
+ *       - $ref: '#/components/parameters/PageSize'
+ *       - name: sort
+ *         in: query
+ *         description: |
+ *           Sort column. Defaults: created_at/updated_at/priority newest or most urgent first (desc), status/title asc.
+ *           `status` sorts in workflow order (open → reopened).
+ *         schema: { type: string, enum: [created_at, updated_at, priority, status, title] }
+ *       - $ref: '#/components/parameters/Order'
+ *     responses:
+ *       '200':
+ *         description: The tickets (a plain array without `page`, a page object with it)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               oneOf:
+ *                 - type: array
+ *                   items: { $ref: '#/components/schemas/Ticket' }
+ *                 - $ref: '#/components/schemas/PagedTickets'
+ *       '400': { $ref: '#/components/responses/BadRequest' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.get('/', validate(schemas.listTickets), async (req, res) => {
   const { status, priority, category, assigned, q, overdue } = req.valid.query
 
@@ -141,6 +201,51 @@ const inactive = (what) =>
 // POST /api/tickets { title, description, category_id, priority_id? }
 // priority_id left out: the default priority. Unknown ids → 400 Invalid category/priority; archived ones → 422
 // CATEGORY_INACTIVE / PRIORITY_INACTIVE.
+/**
+ * @openapi
+ * /api/tickets:
+ *   post:
+ *     tags: [Tickets]
+ *     summary: Create a ticket
+ *     description: |
+ *       **Roles:** any logged-in user. The current user becomes the requester; the ticket starts as `open` and
+ *       unassigned. Without `priority_id` the default priority is used. IT staff are emailed in the background.
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/CreateTicketRequest' }
+ *     responses:
+ *       '201':
+ *         description: The new ticket
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Ticket' }
+ *       '400':
+ *         description: Validation failed, an unknown category or priority id, or no priority sent and no default set
+ *         content:
+ *           application/json:
+ *             schema:
+ *               oneOf:
+ *                 - $ref: '#/components/schemas/ValidationError'
+ *                 - $ref: '#/components/schemas/Error'
+ *             examples:
+ *               validation: { value: { message: Title is required, errors: [{ field: title, message: Title is required }] } }
+ *               unknownCategory: { value: { message: Invalid category } }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '422':
+ *         description: The category or priority is archived (`CATEGORY_INACTIVE`, `PRIORITY_INACTIVE`)
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/ValidationError' }
+ *             example:
+ *               message: This category is archived and can't be chosen
+ *               code: CATEGORY_INACTIVE
+ *               errors: [{ field: category_id, message: This category is archived and can't be chosen }]
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.post('/', validate(schemas.createTicket), async (req, res) => {
   const { title, description, category_id: categoryId } = req.valid.body
 
@@ -178,6 +283,39 @@ async function loadRating(ticketId) {
 }
 
 // GET /api/tickets/:id → ticket + comments + history (oldest first) + attachments + rating (null until rated)
+/**
+ * @openapi
+ * /api/tickets/{id}:
+ *   get:
+ *     tags: [Tickets]
+ *     summary: Get one ticket with comments, history, attachments and rating
+ *     description: |
+ *       **Roles:** staff (`agent`, `admin`) any ticket; `employee` and `hr` only their own (403 otherwise).
+ *       Internal notes, and files added with them, are left out for non-staff.
+ *     parameters:
+ *       - $ref: '#/components/parameters/TicketId'
+ *     responses:
+ *       '200':
+ *         description: The ticket
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/TicketDetail' }
+ *       '400': { $ref: '#/components/responses/BadRequest' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403':
+ *         description: Not your ticket (or a general 403, see Forbidden)
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: You can only view your own tickets }
+ *       '404':
+ *         description: No such ticket
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Ticket not found }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.get('/:id', validate(schemas.getTicket), async (req, res) => {
   const ticket = await loadTicket(req.valid.params.id, req.user)
 
@@ -214,6 +352,61 @@ router.get('/:id', validate(schemas.getTicket), async (req, res) => {
 //   someone else (staff included) → 403 NOT_REQUESTER; rated before → 409 ALREADY_RATED (also when it was reopened
 //   since); not closed → 400 TICKET_NOT_CLOSED. Bad stars or comment → 400 with field errors.
 // The ticket's assignee at this moment is kept with the rating, for their average on the dashboard (GET /api/stats).
+/**
+ * @openapi
+ * /api/tickets/{id}/rating:
+ *   post:
+ *     tags: [Ratings]
+ *     summary: Rate a closed ticket
+ *     description: |
+ *       **Roles:** only the ticket's requester (whatever their role), once, and only when the ticket is `closed`.
+ *       The current assignee is stored with the rating for the statistics.
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     parameters:
+ *       - $ref: '#/components/parameters/TicketId'
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/RateTicketRequest' }
+ *     responses:
+ *       '201':
+ *         description: The rating
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Rating' }
+ *       '400':
+ *         description: Validation failed, or the ticket is not closed (`TICKET_NOT_CLOSED`)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               oneOf:
+ *                 - $ref: '#/components/schemas/ValidationError'
+ *                 - $ref: '#/components/schemas/Error'
+ *             examples:
+ *               notClosed: { value: { message: Only a closed ticket can be rated, code: TICKET_NOT_CLOSED } }
+ *               stars: { value: { message: Choose from 1 to 5 stars, errors: [{ field: stars, message: Choose from 1 to 5 stars }] } }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403':
+ *         description: Not the requester (`NOT_REQUESTER`), not your ticket, or a general 403
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Only the person who reported this ticket can rate it, code: NOT_REQUESTER }
+ *       '404':
+ *         description: No such ticket
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Ticket not found }
+ *       '409':
+ *         description: Already rated (also when it was reopened since)
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: This ticket has already been rated, code: ALREADY_RATED }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.post('/:id/rating', validate(schemas.rateTicket), async (req, res) => {
   const ticket = await loadTicket(req.valid.params.id, req.user)
   const { stars, comment } = req.valid.body
@@ -256,6 +449,105 @@ async function loadVisibleTicket(req, res, next) {
 }
 
 // GET /api/tickets/:id/attachments → [{ id, ticket_id, original_name, mime_type, size_bytes, uploaded_by, created_at }]
+/**
+ * @openapi
+ * /api/tickets/{id}/attachments:
+ *   get:
+ *     tags: [Attachments]
+ *     summary: List a ticket's attachments
+ *     description: |
+ *       **Roles:** staff (`agent`, `admin`) any ticket; `employee` and `hr` only their own. Oldest first; files
+ *       added with an internal note are left out for non-staff. A ticket you can't see answers 404, like a missing one.
+ *     parameters:
+ *       - $ref: '#/components/parameters/TicketId'
+ *     responses:
+ *       '200':
+ *         description: The attachments
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items: { $ref: '#/components/schemas/Attachment' }
+ *       '400': { $ref: '#/components/responses/BadRequest' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '404':
+ *         description: No such ticket, or not yours
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Ticket not found }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ *   post:
+ *     tags: [Attachments]
+ *     summary: Upload files to a ticket
+ *     description: |
+ *       **Roles:** staff (`agent`, `admin`) any ticket; `employee` and `hr` only their own.
+ *       `multipart/form-data` with 1–5 files in the field `files` (each up to 10 MB, not empty), and optionally
+ *       `comment_id`. Allowed types: png, jpg/jpeg, gif, webp, pdf, txt, log, csv, and the content must match the
+ *       extension. At most 20 attachments per ticket. Every file is checked before any is saved: all or none.
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     parameters:
+ *       - $ref: '#/components/parameters/TicketId'
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema: { $ref: '#/components/schemas/UploadAttachmentsRequest' }
+ *           encoding:
+ *             files: { contentType: 'image/png, image/jpeg, image/gif, image/webp, application/pdf, text/plain, text/csv' }
+ *     responses:
+ *       '201':
+ *         description: The new attachments
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items: { $ref: '#/components/schemas/Attachment' }
+ *       '400':
+ *         description: |
+ *           No files (`NO_FILES`), more than 5 (`TOO_MANY_FILES`), the ticket would exceed 20 (`TOO_MANY_ATTACHMENTS`),
+ *           a bad field or broken body (`INVALID_UPLOAD`), or a bad ticket id
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example:
+ *               message: A ticket can have at most 20 attachments. This one has 18, so you can add 2 more.
+ *               code: TOO_MANY_ATTACHMENTS
+ *               max_per_ticket: 20
+ *               current: 18
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '404':
+ *         description: No such ticket, or not yours
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Ticket not found }
+ *       '413':
+ *         description: A file is larger than 10 MB
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Each file can be at most 10 MB, code: FILE_TOO_LARGE, max_bytes: 10485760 }
+ *       '415':
+ *         description: A file type that isn't allowed, or content that doesn't match its extension
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example:
+ *               message: "setup.exe: this file type isn't allowed"
+ *               code: UNSUPPORTED_FILE_TYPE
+ *               file: setup.exe
+ *               allowed: [png, jpg, jpeg, gif, webp, pdf, txt, log, csv]
+ *       '422':
+ *         description: An empty file (`EMPTY_FILE`), or comment_id is not a comment on this ticket you can see (`COMMENT_NOT_ON_TICKET`)
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: notes.txt is empty, code: EMPTY_FILE, file: notes.txt }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.get('/:id/attachments', validate(schemas.getTicket), loadVisibleTicket, listTicketAttachments)
 
 // POST /api/tickets/:id/attachments (multipart, field "files", 1–5 files of up to 10 MB) → 201 the new attachments.
@@ -263,6 +555,47 @@ router.get('/:id/attachments', validate(schemas.getTicket), loadVisibleTicket, l
 router.post('/:id/attachments', validate(schemas.getTicket), loadVisibleTicket, receiveFiles, uploadAttachments)
 
 // POST /api/tickets/:id/comments { content, is_internal }
+/**
+ * @openapi
+ * /api/tickets/{id}/comments:
+ *   post:
+ *     tags: [Comments]
+ *     summary: Add a comment or internal note
+ *     description: |
+ *       **Roles:** staff (`agent`, `admin`) on any ticket; `employee` and `hr` on their own tickets only.
+ *       Only staff can write internal notes (`is_internal: true`); for anyone else the flag is ignored. A public
+ *       comment emails the other side in the background; an internal note emails nobody.
+ *       Comments are read with `GET /api/tickets/{id}`.
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     parameters:
+ *       - $ref: '#/components/parameters/TicketId'
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/CreateCommentRequest' }
+ *     responses:
+ *       '201':
+ *         description: The new comment
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Comment' }
+ *       '400': { $ref: '#/components/responses/BadRequest' }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403':
+ *         description: Not your ticket (or a general 403, see Forbidden)
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: You can only view your own tickets }
+ *       '404':
+ *         description: No such ticket
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Ticket not found }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.post('/:id/comments', validate(addComment), async (req, res) => {
   const ticket = await loadTicket(req.valid.params.id, req.user)
   const { content, is_internal: wantsInternal } = req.valid.body
@@ -287,6 +620,64 @@ router.post('/:id/comments', validate(addComment), async (req, res) => {
 })
 
 // PATCH /api/tickets/:id/status { status, resolution? }
+/**
+ * @openapi
+ * /api/tickets/{id}/status:
+ *   patch:
+ *     tags: [Tickets]
+ *     summary: Change a ticket's status
+ *     description: |
+ *       **Roles:**
+ *       - `agent`, `admin`: any status on any ticket. Moving to `resolved` needs a resolution note (or keeps the
+ *         one from an earlier resolve) and emails the requester.
+ *       - `employee`, `hr`: only on their own tickets, and only to confirm a fix (`resolved` → `closed`) or say it
+ *         isn't fixed (`resolved`/`closed` → `reopened`).
+ *
+ *       `resolved` sets resolved_at; `closed` sets closed_at; any other status clears both.
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     parameters:
+ *       - $ref: '#/components/parameters/TicketId'
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/UpdateTicketStatusRequest' }
+ *           examples:
+ *             resolve: { value: { status: resolved, resolution: Replaced the Wi-Fi driver and re-joined the laptop to OfficeNet. } }
+ *             startWork: { value: { status: in_progress } }
+ *             confirmFix: { value: { status: closed } }
+ *     responses:
+ *       '200':
+ *         description: The updated ticket
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Ticket' }
+ *       '400':
+ *         description: Validation failed, the ticket already has this status, or no resolution note for `resolved`
+ *         content:
+ *           application/json:
+ *             schema:
+ *               oneOf:
+ *                 - $ref: '#/components/schemas/ValidationError'
+ *                 - $ref: '#/components/schemas/Error'
+ *             examples:
+ *               same: { value: { message: Ticket is already resolved } }
+ *               noNote: { value: { message: Please write a resolution note } }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403':
+ *         description: Not your ticket, or a change an employee may not make
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: You can only close or reopen your resolved tickets }
+ *       '404':
+ *         description: No such ticket
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Ticket not found }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.patch('/:id/status', validate(schemas.updateStatus), async (req, res) => {
   const ticket = await loadTicket(req.valid.params.id, req.user)
   const { status } = req.valid.body
@@ -329,6 +720,57 @@ router.patch('/:id/status', validate(schemas.updateStatus), async (req, res) => 
 })
 
 // PATCH /api/tickets/:id/priority { priority_id } (staff only)
+/**
+ * @openapi
+ * /api/tickets/{id}/priority:
+ *   patch:
+ *     tags: [Tickets]
+ *     summary: Change a ticket's priority
+ *     description: |
+ *       **Roles:** `agent`, `admin`. The change is recorded in the ticket's history. Sending the priority the ticket
+ *       already has changes nothing (also when that priority is archived).
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     parameters:
+ *       - $ref: '#/components/parameters/TicketId'
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/UpdateTicketPriorityRequest' }
+ *     responses:
+ *       '200':
+ *         description: The updated ticket
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Ticket' }
+ *       '400':
+ *         description: Validation failed, or no such priority
+ *         content:
+ *           application/json:
+ *             schema:
+ *               oneOf:
+ *                 - $ref: '#/components/schemas/ValidationError'
+ *                 - $ref: '#/components/schemas/Error'
+ *             example: { message: Invalid priority }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403': { $ref: '#/components/responses/Forbidden' }
+ *       '404':
+ *         description: No such ticket
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Ticket not found }
+ *       '422':
+ *         description: The priority is archived
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/ValidationError' }
+ *             example:
+ *               message: This priority is archived and can't be chosen
+ *               code: PRIORITY_INACTIVE
+ *               errors: [{ field: priority_id, message: This priority is archived and can't be chosen }]
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.patch('/:id/priority', requireRole('agent', 'admin'), validate(schemas.updatePriority), async (req, res) => {
   const ticket = await loadTicket(req.valid.params.id, req.user)
   const { priority_id: priorityId } = req.valid.body
@@ -349,6 +791,59 @@ router.patch('/:id/priority', requireRole('agent', 'admin'), validate(schemas.up
 })
 
 // PATCH /api/tickets/:id/assign { assigned_to } (staff only; null = unassign)
+/**
+ * @openapi
+ * /api/tickets/{id}/assign:
+ *   patch:
+ *     tags: [Tickets]
+ *     summary: Assign or unassign a ticket
+ *     description: |
+ *       **Roles:** `admin` may assign any active agent or admin, or unassign. `agent` may only take the ticket
+ *       (`assigned_to` = their own id) or release one they hold (`null`).
+ *
+ *       Assigning moves an `open` or `reopened` ticket to `assigned`; unassigning moves an `assigned` ticket back to
+ *       `open`. The new assignee is emailed (unless they assigned themselves).
+ *     security: [{ cookieAuth: [], csrfToken: [] }]
+ *     parameters:
+ *       - $ref: '#/components/parameters/TicketId'
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { $ref: '#/components/schemas/AssignTicketRequest' }
+ *           examples:
+ *             assign: { value: { assigned_to: 2 } }
+ *             unassign: { value: { assigned_to: null } }
+ *     responses:
+ *       '200':
+ *         description: The updated ticket
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Ticket' }
+ *       '400':
+ *         description: Validation failed, or the user is not an active agent or admin
+ *         content:
+ *           application/json:
+ *             schema:
+ *               oneOf:
+ *                 - $ref: '#/components/schemas/ValidationError'
+ *                 - $ref: '#/components/schemas/Error'
+ *             example: { message: That user cannot be assigned tickets }
+ *       '401': { $ref: '#/components/responses/Unauthorized' }
+ *       '403':
+ *         description: Not staff, or an agent assigning someone else
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Agents can only assign tickets to themselves }
+ *       '404':
+ *         description: No such ticket
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ *             example: { message: Ticket not found }
+ *       '500': { $ref: '#/components/responses/InternalError' }
+ */
 router.patch('/:id/assign', requireRole('agent', 'admin'), validate(schemas.assignTicket), async (req, res) => {
   const ticket = await loadTicket(req.valid.params.id, req.user)
   const { assigned_to: assigneeId } = req.valid.body
